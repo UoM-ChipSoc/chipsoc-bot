@@ -1,0 +1,36 @@
+[package]
+name = "chipsoc-bot"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chipsoc-admin.workspace = true
+chipsoc-client.workspace = true
+chipsoc-config.workspace = true
+chipsoc-engine.workspace = true
+chipsoc-discord.workspace = true
+chipsoc-model.workspace = true
+chipsoc-fedproto.workspace = true
+chipsoc-web.workspace = true
+chipsoc-tui.workspace = true
+chipsoc-runtime.workspace = true
+clap = { version = "4.6.7", features = ["derive", "env"] }
+dotenvy.workspace = true
+getrandom.workspace = true
+inquire = "0.9.4"
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
+tracing.workspace = true
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[dev-dependencies]
+chipsoc-web = { workspace = true, features = ["testing"] }
+
+[lints]
+workspace = true

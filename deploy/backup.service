@@ -1,0 +1,30 @@
+# Installed by scripts/deploy.sh, which fills in the @…@ values.
+# First a consistent copy of the database while the bot runs (sqlite's backup
+# command, safe in WAL mode), into backups/ next to it; the 14 newest are kept.
+# Then, once `deploy.sh backup-setup` has set them up, the off-site backup:
+# @DIR@/backup-offsite (deploy/backup-offsite.sh) encrypts that copy with the
+# secrets and sends it off the server.
+# Run by @SERVICE@-backup.timer, and by `deploy.sh backup`.
+[Unit]
+Description=Back up the Discord server bot's database and secrets (@SERVICE@)
+# Not on a server the bot was moved off (`deploy.sh migrate` writes that file).
+ConditionPathExists=!@DIR@/MOVED-TO
+
+[Service]
+Type=oneshot
+User=@USER@
+Group=@USER@
+StateDirectory=@SERVICE@
+# Backups hold what the database does: the bot's user alone reads them.
+StateDirectoryMode=0700
+UMask=0077
+ExecStart=/bin/sh -c 'set -eu; umask 077; d=/var/lib/@SERVICE@/backups; mkdir -p "$$d"; chmod 700 "$$d"; f="$$d/bot-$$(date +%%Y%%m%%d-%%H%%M%%S).db"; sqlite3 /var/lib/@SERVICE@/bot.db ".backup $$f"; chmod 600 "$$d"/bot-[0-9]*.db; ls -1t "$$d"/bot-[0-9]*.db | tail -n +15 | xargs -r rm -f --'
+# As root ("+": none of the limits here apply to it), since it reads the
+# root-only .env. Does nothing until backup-setup has run.
+ExecStart=+@DIR@/backup-offsite run
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes

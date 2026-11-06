@@ -1,0 +1,6 @@
+.env*
+lock.toml.bak
+.apply.lock
+.write.lock
+*.tmp
+*.moving

@@ -1,0 +1,22 @@
+# Roles, top of the hierarchy first. The bot's own role must stay above these.
+
+[[role]]
+key = "committee"
+name = "Committee"
+color = "#e67e22"
+hoist = true
+permissions = ["MANAGE_MESSAGES", "KICK_MEMBERS"]
+
+[[role]]
+key = "volunteer"
+name = "Volunteer"
+
+[[role]]
+key = "student"
+name = "Student"
+mentionable = true
+
+[[role]]
+key = "everyone"
+name = "@everyone"
+permissions = ["VIEW_CHANNEL", "SEND_MESSAGES", "READ_MESSAGE_HISTORY"]

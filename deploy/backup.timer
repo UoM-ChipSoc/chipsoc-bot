@@ -1,0 +1,13 @@
+# Installed by scripts/deploy.sh. Backs up the database daily, and off the
+# server once set up (see @SERVICE@-backup.service). BACKUP_CALENDAR in
+# deploy.env sets when (systemd OnCalendar; default daily).
+[Unit]
+Description=Scheduled backup of the Discord server bot's database (@SERVICE@)
+
+[Timer]
+OnCalendar=@BACKUP_CALENDAR@
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

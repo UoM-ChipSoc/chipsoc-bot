@@ -1,0 +1,10 @@
+/target
+**/*.rs.bk
+.env
+*.token
+/data/
+deploy.env
+.env.server
+backups/
+/.deploy-state/
+/.tmp/

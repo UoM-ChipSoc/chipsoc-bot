@@ -1,0 +1,7 @@
+# The server's settings. `chipsoc-bot export` writes this from a real server.
+[guild]
+name = "Example Community"
+description = "A small example server"
+# Channel keys from categories/*.toml.
+system_channel = "welcome"
+rules_channel = "rules"

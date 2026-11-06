@@ -1,0 +1,17 @@
+# The bot's features. Each section turns one on.
+name = "Example Community"
+admin_role = "committee"
+archive = "archive"
+
+[log]
+# Plans, approvals, drift and errors.
+bot = "bot"
+
+# A role people can apply for with /volunteer (and the button in #rules).
+[[position]]
+role = "volunteer"
+intro = "Help plan events and look after the server."
+
+[review]
+# Where applications and suggestions wait for Accept or Reject.
+channel = "bot"

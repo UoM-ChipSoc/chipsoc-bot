@@ -1,0 +1,709 @@
+//! Carry out a [`Plan`]: each step sends only what it changes. The lockfile is
+//! saved after every step that changes something, and a failed step doesn't
+//! stop the rest; the report says what happened to each.
+
+use anyhow::{Context, Result, anyhow, bail};
+use base64::Engine;
+use chipsoc_config::schema::*;
+use chipsoc_config::template::{FORUM_POST_TITLE, render};
+use chipsoc_config::{Config, projects, resolved_onboarding};
+use chipsoc_model::{Action, Change, Field, ObjectKind, OrderScope, Plan};
+use serde_json::{Map, Value, json};
+
+use crate::wire::{self, id, s};
+use crate::{ApiError, Method, Rest};
+
+/// Discord's channel flag for a forum post pinned at the top.
+const PINNED_THREAD: u64 = 1 << 1;
+
+/// What happened to one step.
+#[derive(Debug)]
+pub struct Outcome {
+    pub action: Action,
+    pub result: Result<(), String>,
+}
+
+#[derive(Debug, Default)]
+pub struct Report {
+    pub outcomes: Vec<Outcome>,
+}
+
+impl Report {
+    pub fn failed(&self) -> impl Iterator<Item = &Outcome> {
+        self.outcomes.iter().filter(|o| o.result.is_err())
+    }
+}
+
+/// Where the executor reports progress and saves the lockfile.
+pub trait Sink {
+    fn saved(&mut self, lock: &Lock) -> impl std::future::Future<Output = Result<()>> + Send;
+    fn step(&mut self, _action: &Action, _result: &Result<(), String>) {}
+}
+
+/// Run `plan`. `live` is the export it was planned from: who holds managed
+/// roles is read from it, not paged through again for each role.
+pub async fn execute(
+    rest: &impl Rest,
+    cfg: &Config,
+    plan: &Plan,
+    live: Option<&Snapshot>,
+    lock: &mut Lock,
+    sink: &mut impl Sink,
+) -> Report {
+    let mut report = Report::default();
+    // Objects already in sync count as applied as they are.
+    let touched: std::collections::BTreeSet<String> = plan.actions.iter().filter_map(Action::object).collect();
+    for (obj, h) in &plan.hashes {
+        if !touched.contains(obj) {
+            lock.applied.hashes.insert(obj.clone(), h.clone());
+        }
+    }
+    for action in plan.actions.iter().filter(|a| a.mutates()) {
+        let mut ex = Exec { rest, cfg, lock, live };
+        let result = ex.run(action).await.map_err(|e| format!("{e:#}"));
+        if result.is_ok()
+            && let Some(obj) = action.object()
+        {
+            match (action, plan.hashes.get(&obj)) {
+                (Action::Archive { .. } | Action::Delete { .. }, _) => {
+                    lock.applied.hashes.remove(&obj);
+                }
+                (_, Some(h)) => {
+                    lock.applied.hashes.insert(obj, h.clone());
+                }
+                _ => {}
+            }
+        }
+        let result = match (result, sink.saved(lock).await) {
+            (Ok(()), Err(e)) => Err(format!("done in Discord, but saving the lockfile failed: {e:#}")),
+            (r, _) => r,
+        };
+        sink.step(action, &result);
+        report.outcomes.push(Outcome { action: action.clone(), result });
+    }
+    report
+}
+
+struct Exec<'a, R> {
+    rest: &'a R,
+    cfg: &'a Config,
+    lock: &'a mut Lock,
+    live: Option<&'a Snapshot>,
+}
+
+/// Every key's id, or an error naming the ones that don't exist yet.
+fn resolve(keys: &[String], id_of: impl Fn(&str) -> Option<Snowflake>) -> Result<Vec<Snowflake>> {
+    let missing: Vec<&str> = keys.iter().map(String::as_str).filter(|k| id_of(k).is_none()).collect();
+    if !missing.is_empty() {
+        bail!("not created yet: {}", missing.join(", "));
+    }
+    Ok(keys.iter().filter_map(|k| id_of(k)).collect())
+}
+
+/// "a", "a and b", "a, b and c".
+fn and_list(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+fn has(changes: &[Change], f: Field) -> bool {
+    changes.iter().any(|c| c.field == f)
+}
+
+fn guild(lock: &Lock) -> Result<Snowflake> {
+    lock.guild.context("the lockfile doesn't say which server this is; run `export` or pass --guild")
+}
+
+fn want_role<'a>(cfg: &'a Config, key: &str) -> Result<&'a Role> {
+    cfg.desired.role(key).with_context(|| format!("role `{key}` isn't in config"))
+}
+
+impl<R: Rest> Exec<'_, R> {
+    async fn call(&self, method: Method, path: String, body: Option<Value>) -> Result<Value> {
+        self.rest.call(method, &path, body).await
+    }
+
+    async fn run(&mut self, a: &Action) -> Result<()> {
+        let g = guild(self.lock)?;
+        match a {
+            Action::Create { kind, key } => self.create(g, *kind, key).await,
+            Action::Edit { kind, key, id, changes, .. } => self.edit(g, *kind, key, *id, changes).await,
+            Action::Reorder { scope, to, .. } => self.reorder(g, scope, to).await,
+            Action::Archive { kind, key, id } => self.archive(*kind, key, *id).await,
+            Action::Delete { kind, key, id } => {
+                match kind {
+                    ObjectKind::Role => {
+                        self.call(Method::Delete, format!("guilds/{g}/roles/{id}"), None).await?;
+                        self.lock.roles.retain(|_, v| v != id);
+                    }
+                    ObjectKind::Channel | ObjectKind::Category => {
+                        self.call(Method::Delete, format!("channels/{id}"), None).await?;
+                        self.lock.channels.retain(|_, v| v != id);
+                        self.lock.categories.retain(|_, v| v != id);
+                    }
+                    other => bail!("can't delete a {other} ({key})"),
+                }
+                Ok(())
+            }
+            Action::Skip { .. } => Ok(()),
+        }
+    }
+
+    /// Give and take a role so exactly the configured people hold it.
+    async fn holders(&mut self, g: Snowflake, key: &str, role: Snowflake) -> Result<()> {
+        let d = &self.cfg.desired;
+        let known = self.live.filter(|l| !l.members.is_empty()).and_then(|l| Some((l.holders.get(key)?, &l.members)));
+        let (have, present) = match known {
+            Some((have, present)) => (have.clone(), present.clone()),
+            None => {
+                let members = crate::export::members(self.rest, g).await?;
+                let have = members.iter().filter(|(_, roles)| roles.contains(&role)).map(|(u, _)| *u).collect();
+                (have, members.iter().map(|(u, _)| *u).collect())
+            }
+        };
+        let want = d.holders.get(key).cloned().unwrap_or_default();
+        if self.cfg.bot.admin_role.as_deref() == Some(key) && !want.iter().any(|u| present.contains(u)) {
+            bail!("the config gives the admin role to nobody in the server, so it isn't taken from anyone");
+        }
+        let mut failed = Vec::new();
+        for u in want.difference(&have).filter(|u| present.contains(u)) {
+            if let Err(e) = self.call(Method::Put, format!("guilds/{g}/members/{u}/roles/{role}"), None).await {
+                failed.push(format!("give <@{u}>: {e:#}"));
+            }
+        }
+        for u in have.difference(&want) {
+            if let Err(e) = self.call(Method::Delete, format!("guilds/{g}/members/{u}/roles/{role}"), None).await {
+                failed.push(format!("take from <@{u}>: {e:#}"));
+            }
+        }
+        if !failed.is_empty() {
+            bail!("{}", failed.join("; "));
+        }
+        Ok(())
+    }
+
+    /// The one object at `list` with this name (and type, and parent) that no
+    /// key claims: a create that reached Discord but not the lockfile, or a
+    /// lockfile that was lost. Several such is refused rather than guessed, or
+    /// made into one more.
+    async fn unclaimed(
+        &self,
+        list: String,
+        name: &str,
+        kind: Option<u8>,
+        parent: Option<Option<Snowflake>>,
+    ) -> Result<Option<Snowflake>> {
+        let items = self.call(Method::Get, list, None).await?;
+        let claimed: std::collections::BTreeSet<Snowflake> =
+            [&self.lock.roles, &self.lock.categories, &self.lock.channels]
+                .into_iter()
+                .flat_map(|m| m.values().copied())
+                .chain(self.lock.archived.values().copied())
+                .collect();
+        let found: Vec<Snowflake> = items
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|x| x["name"] == name && kind.is_none_or(|k| x["type"].as_u64() == Some(k.into())))
+            .filter(|x| parent.is_none_or(|p| id(&x["parent_id"]) == p))
+            .filter_map(|x| id(&x["id"]))
+            .filter(|i| !claimed.contains(i))
+            .collect();
+        match found[..] {
+            [] => Ok(None),
+            [one] => Ok(Some(one)),
+            _ => bail!(
+                "{} things named `{name}` are already there and lock.toml claims none of them; \
+                 put the right one's id in lock.toml (or restore lock.toml.bak), or rename the others",
+                found.len()
+            ),
+        }
+    }
+
+    async fn create(&mut self, g: Snowflake, kind: ObjectKind, key: &str) -> Result<()> {
+        let want = &self.cfg.desired;
+        match kind {
+            ObjectKind::Role => {
+                let r = want_role(self.cfg, key)?;
+                let body = wire::role_json(r).map_err(|e| anyhow!(e))?;
+                let made = match self.unclaimed(format!("guilds/{g}/roles"), &r.name, None, None).await? {
+                    // Probably ours from a run that crashed before saving: take it over.
+                    Some(existing) => {
+                        self.call(Method::Patch, format!("guilds/{g}/roles/{existing}"), Some(body)).await?
+                    }
+                    None => self.call(Method::Post, format!("guilds/{g}/roles"), Some(body)).await?,
+                };
+                self.lock.roles.insert(key.to_owned(), id(&made["id"]).context("no id in reply")?);
+            }
+            ObjectKind::Category => {
+                let c = &want.category(key).context("category not in config")?.category;
+                let ows = wire::overwrites_json(&c.overwrites, self.lock).map_err(|e| anyhow!(e))?;
+                let body = json!({ "name": c.name, "type": 4, "permission_overwrites": ows });
+                let made = match self.unclaimed(format!("guilds/{g}/channels"), &c.name, Some(4), None).await? {
+                    Some(existing) => self.call(Method::Patch, format!("channels/{existing}"), Some(body)).await?,
+                    None => self.call(Method::Post, format!("guilds/{g}/channels"), Some(body)).await?,
+                };
+                self.lock.categories.insert(key.to_owned(), id(&made["id"]).context("no id in reply")?);
+            }
+            ObjectKind::Channel => {
+                let (c, cat) = want.channels().find(|(c, _)| c.key == key).context("channel not in config")?;
+                let parent = match cat {
+                    Some(cat) => Some(
+                        self.lock
+                            .category(&cat.key)
+                            .with_context(|| format!("category `{}` doesn't exist yet", cat.key))?,
+                    ),
+                    None => None,
+                };
+                let body = wire::channel_json(c, parent, self.lock, &Value::Null).map_err(|e| anyhow!(e))?;
+                let kind = Some(c.kind.discord());
+                let made = match self.unclaimed(format!("guilds/{g}/channels"), &c.name, kind, Some(parent)).await? {
+                    Some(existing) => self.call(Method::Patch, format!("channels/{existing}"), Some(body)).await?,
+                    None => self.call(Method::Post, format!("guilds/{g}/channels"), Some(body)).await?,
+                };
+                self.lock.channels.insert(key.to_owned(), id(&made["id"]).context("no id in reply")?);
+            }
+            ObjectKind::Post => self.post(key, None).await?,
+            ObjectKind::ProjectPost => self.project_post(key, None).await?,
+            ObjectKind::Onboarding | ObjectKind::Screening | ObjectKind::Server | ObjectKind::Holders => {
+                self.edit(g, kind, key, g, &[]).await?
+            }
+            ObjectKind::AutoMod => {
+                let r = want.settings.automod.iter().find(|r| r.key == key).context("rule not in config")?;
+                let body = wire::automod_json(r, self.lock).map_err(|e| anyhow!(e))?;
+                let made = self.call(Method::Post, format!("guilds/{g}/auto-moderation/rules"), Some(body)).await?;
+                self.lock.automod.insert(key.to_owned(), id(&made["id"]).context("no id in reply")?);
+            }
+        }
+        Ok(())
+    }
+
+    async fn edit(
+        &mut self,
+        g: Snowflake,
+        kind: ObjectKind,
+        key: &str,
+        oid: Snowflake,
+        changes: &[Change],
+    ) -> Result<()> {
+        let want = &self.cfg.desired;
+        match kind {
+            ObjectKind::Role => {
+                let r = want_role(self.cfg, key)?;
+                let full = wire::role_json(r).map_err(|e| anyhow!(e))?;
+                let mut patch = Map::new();
+                for (f, k) in [
+                    (Field::Name, "name"),
+                    (Field::Color, "color"),
+                    (Field::Hoist, "hoist"),
+                    (Field::Mentionable, "mentionable"),
+                    (Field::Permissions, "permissions"),
+                ] {
+                    if has(changes, f) {
+                        patch.insert(k.into(), full[k].clone());
+                    }
+                }
+                self.call(Method::Patch, format!("guilds/{g}/roles/{oid}"), Some(Value::Object(patch))).await?;
+            }
+            ObjectKind::Category => {
+                let c = &want.category(key).context("category not in config")?.category;
+                let mut patch = Map::new();
+                if has(changes, Field::Name) {
+                    patch.insert("name".into(), json!(c.name));
+                }
+                if has(changes, Field::Overwrites) {
+                    patch.insert(
+                        "permission_overwrites".into(),
+                        wire::overwrites_json(&c.overwrites, self.lock).map_err(|e| anyhow!(e))?,
+                    );
+                }
+                self.call(Method::Patch, format!("channels/{oid}"), Some(Value::Object(patch))).await?;
+            }
+            ObjectKind::Channel => {
+                let (c, cat) = want.channels().find(|(c, _)| c.key == key).context("channel not in config")?;
+                let parent = match cat {
+                    Some(cat) => Some(
+                        self.lock
+                            .category(&cat.key)
+                            .with_context(|| format!("category `{}` doesn't exist yet", cat.key))?,
+                    ),
+                    None => None,
+                };
+                let live_tags = if has(changes, Field::Tags) {
+                    self.call(Method::Get, format!("channels/{oid}"), None).await?["available_tags"].clone()
+                } else {
+                    Value::Null
+                };
+                let full = wire::channel_json(c, parent, self.lock, &live_tags).map_err(|e| anyhow!(e))?;
+                let mut patch = Map::new();
+                for (f, k) in [
+                    (Field::Name, "name"),
+                    (Field::Type, "type"),
+                    (Field::Topic, "topic"),
+                    (Field::Slowmode, "rate_limit_per_user"),
+                    (Field::Nsfw, "nsfw"),
+                    (Field::UserLimit, "user_limit"),
+                    (Field::Tags, "available_tags"),
+                    (Field::Overwrites, "permission_overwrites"),
+                    (Field::Parent, "parent_id"),
+                ] {
+                    if has(changes, f) {
+                        patch.insert(k.into(), full[k].clone());
+                    }
+                }
+                self.call(Method::Patch, format!("channels/{oid}"), Some(Value::Object(patch))).await?;
+            }
+            ObjectKind::Server => self.server(g, changes).await?,
+            ObjectKind::Post => self.post(key, Some(oid)).await?,
+            ObjectKind::ProjectPost => {
+                let existing = self.lock.project_posts.get(key).copied();
+                self.project_post(key, existing).await?;
+            }
+            ObjectKind::Onboarding => {
+                let o = want.settings.onboarding.as_ref().context("no onboarding in config")?;
+                let body = wire::onboarding_json(&resolved_onboarding(o, want), self.lock);
+                self.call(Method::Put, format!("guilds/{g}/onboarding"), Some(body)).await?;
+            }
+            ObjectKind::Screening => {
+                let sc = want.settings.screening.as_ref().context("no screening in config")?;
+                self.call(Method::Patch, format!("guilds/{g}/member-verification"), Some(wire::screening_json(sc)))
+                    .await?;
+            }
+            ObjectKind::Holders => self.holders(g, key, oid).await?,
+            ObjectKind::AutoMod => {
+                let r = want.settings.automod.iter().find(|r| r.key == key).context("rule not in config")?;
+                let body = wire::automod_json(r, self.lock).map_err(|e| anyhow!(e))?;
+                match self.call(Method::Patch, format!("guilds/{g}/auto-moderation/rules/{oid}"), Some(body)).await {
+                    Err(e) if ApiError::status_of(&e) == Some(404) => {
+                        bail!(
+                            "Discord doesn't let bots change its built-in rules; edit it in Server Settings → AutoMod"
+                        )
+                    }
+                    r => r?,
+                };
+                self.lock.automod.insert(key.to_owned(), oid);
+            }
+        }
+        Ok(())
+    }
+
+    async fn server(&mut self, g: Snowflake, changes: &[Change]) -> Result<()> {
+        let w = &self.cfg.desired.server.guild;
+        let mut patch = Map::new();
+        let chan = |k: &Option<String>| -> Result<Option<String>> {
+            match k.as_deref() {
+                None => Ok(None),
+                Some(k) => Ok(Some(
+                    self.lock.channel(k).with_context(|| format!("channel `{k}` doesn't exist yet"))?.to_string(),
+                )),
+            }
+        };
+        for c in changes {
+            let (k, v) = match c.field {
+                Field::Name => ("name", json!(w.name)),
+                Field::Description => ("description", json!(w.description)),
+                Field::VerificationLevel => ("verification_level", json!(w.verification_level)),
+                Field::ContentFilter => ("explicit_content_filter", json!(w.explicit_content_filter)),
+                Field::Notifications => ("default_message_notifications", json!(w.default_message_notifications)),
+                Field::SystemChannel => ("system_channel_id", json!(chan(&w.system_channel)?)),
+                Field::RulesChannel => ("rules_channel_id", json!(chan(&w.rules_channel)?)),
+                Field::UpdatesChannel => ("public_updates_channel_id", json!(chan(&w.updates_channel)?)),
+                Field::AfkChannel => ("afk_channel_id", json!(chan(&w.afk_channel)?)),
+                Field::Icon => ("icon", json!(self.image(&w.icon)?)),
+                Field::Banner => ("banner", json!(self.image(&w.banner)?)),
+                _ => continue,
+            };
+            patch.insert(k.into(), v);
+        }
+        let reply = self.call(Method::Patch, format!("guilds/{g}"), Some(Value::Object(patch))).await?;
+        for name in ["icon", "banner"] {
+            if has(changes, if name == "icon" { Field::Icon } else { Field::Banner })
+                && let (Some(file), Some(discord)) = (self.cfg.desired.assets.get(name), reply[name].as_str())
+            {
+                self.lock.assets.insert(name.into(), AssetRef { file: file.clone(), discord: discord.into() });
+            }
+        }
+        Ok(())
+    }
+
+    /// An image file as the data URI Discord wants.
+    fn image(&self, file: &Option<String>) -> Result<String> {
+        let f = file.as_deref().context("no image file set")?;
+        let bytes = std::fs::read(chipsoc_config::inside(&self.cfg.dir, f)?).with_context(|| format!("reading {f}"))?;
+        let mime = match f.rsplit('.').next().map(str::to_lowercase).as_deref() {
+            Some("png") => "image/png",
+            Some("jpg" | "jpeg") => "image/jpeg",
+            Some("gif") => "image/gif",
+            Some("webp") => "image/webp",
+            _ => bail!("{f}: use a .png, .jpg, .gif or .webp image"),
+        };
+        Ok(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+    }
+
+    /// The bot's own user id.
+    async fn me(&self) -> Result<Snowflake> {
+        id(&self.call(Method::Get, "users/@me".into(), None).await?["id"]).context("no id for the bot")
+    }
+
+    /// A message the bot posted in `ch` that says exactly `want`: the managed
+    /// post, when the lockfile lost track of it.
+    async fn find_post(&self, ch: Snowflake, want: &chipsoc_config::template::Rendered) -> Result<Option<Snowflake>> {
+        let me = self.me().await?;
+        let recent = self.call(Method::Get, format!("channels/{ch}/messages?limit=100"), None).await?;
+        let claimed: std::collections::BTreeSet<Snowflake> = self.lock.posts.values().map(|p| p.message).collect();
+        Ok(recent
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|m| id(&m["author"]["id"]) == Some(me) && wire::rendered_from(m) == *want)
+            .filter_map(|m| id(&m["id"]))
+            .find(|m| !claimed.contains(m)))
+    }
+
+    /// Create or update a channel's managed post (re-posting if it was deleted).
+    async fn post(&mut self, key: &str, existing: Option<Snowflake>) -> Result<()> {
+        let src = self.cfg.desired.posts.get(key).context("no post for this channel in config")?;
+        let ch = self.lock.channel(key).with_context(|| format!("channel `{key}` doesn't exist yet"))?;
+        let rendered = render(src, self.lock);
+        if self.cfg.desired.channel(key).is_some_and(|c| c.kind.has_tags()) {
+            return self.forum_post(key, ch, &rendered, existing).await;
+        }
+        let body = wire::message_json(&rendered);
+        // Looking is best effort: without message history, post as before.
+        if existing.is_none()
+            && let Ok(Some(m)) = self.find_post(ch, &rendered).await
+        {
+            self.lock.posts.insert(key.to_owned(), PostRef { message: m });
+            return Ok(());
+        }
+        if let Some(m) = existing {
+            match self.call(Method::Patch, format!("channels/{ch}/messages/{m}"), Some(body.clone())).await {
+                Ok(_) => return Ok(()),
+                Err(e) if ApiError::status_of(&e) == Some(404) => {} // deleted in Discord: post again
+                Err(e) => return Err(e),
+            }
+        }
+        let made = self.call(Method::Post, format!("channels/{ch}/messages"), Some(body)).await?;
+        self.lock.posts.insert(key.to_owned(), PostRef { message: id(&made["id"]).context("no id in reply")? });
+        Ok(())
+    }
+
+    /// A forum's managed post: a pinned thread titled [`FORUM_POST_TITLE`],
+    /// kept by its id, which is also its first message's.
+    async fn forum_post(
+        &mut self,
+        key: &str,
+        forum: Snowflake,
+        rendered: &chipsoc_config::template::Rendered,
+        existing: Option<Snowflake>,
+    ) -> Result<()> {
+        let message = wire::message_json(rendered);
+        if existing.is_none() {
+            let claimed = self.lock.posts.values().map(|p| p.message).collect();
+            if let Ok(Some(t)) = self.find_thread(forum, FORUM_POST_TITLE, rendered, claimed).await {
+                self.lock.posts.insert(key.to_owned(), PostRef { message: t.thread });
+                return Ok(());
+            }
+        }
+        if let Some(t) = existing {
+            match self.call(Method::Patch, format!("channels/{t}/messages/{t}"), Some(message.clone())).await {
+                Ok(_) => return Ok(()),
+                Err(e) if ApiError::status_of(&e) == Some(404) => {} // deleted in Discord: post again
+                Err(e) => return Err(e),
+            }
+        }
+        let body = json!({ "name": FORUM_POST_TITLE, "message": message });
+        let made = self.call(Method::Post, format!("channels/{forum}/threads"), Some(body)).await?;
+        let thread = id(&made["id"]).context("no id in reply")?;
+        self.lock.posts.insert(key.to_owned(), PostRef { message: thread });
+        let pin = json!({ "flags": PINNED_THREAD });
+        self.call(Method::Patch, format!("channels/{thread}"), Some(pin))
+            .await
+            .context("posted, but couldn't pin it (the bot needs Manage Threads there)")?;
+        Ok(())
+    }
+
+    async fn project_post(&mut self, slug: &str, existing: Option<ThreadRef>) -> Result<()> {
+        let p = self.cfg.projects.iter().find(|p| p.slug == slug).context("project not in config")?;
+        let forum_key = &self.cfg.bot.projects.as_ref().context("no [projects] in bot.toml")?.forum;
+        let forum = self.lock.channel(forum_key).with_context(|| format!("forum `{forum_key}` doesn't exist yet"))?;
+        let post = projects::post(p, self.lock, self.cfg.desired.project_posts.get(slug).map(String::as_str));
+        let available = self.call(Method::Get, format!("channels/{forum}"), None).await?["available_tags"].clone();
+        let wanted: Vec<String> = post.tags.iter().map(|t| t.to_lowercase()).collect();
+        let tag_ids: Vec<String> = available
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|t| wanted.contains(&s(&t["name"]).to_lowercase()))
+            .filter_map(|t| id(&t["id"]).map(|i| i.to_string()))
+            .take(5)
+            .collect();
+        let title: String = post.title.chars().take(100).collect();
+        let message = wire::message_json(&post.body);
+        let claimed = self.lock.project_posts.values().map(|t| t.thread).collect();
+        let found = if existing.is_none() {
+            self.find_thread(forum, &title, &post.body, claimed).await.ok().flatten()
+        } else {
+            None
+        };
+        if let Some(t) = found {
+            self.lock.project_posts.insert(slug.to_owned(), t);
+        }
+        let existing = existing.or(found);
+        if let Some(t) = existing {
+            let thread = self
+                .call(
+                    Method::Patch,
+                    format!("channels/{}", t.thread),
+                    Some(json!({ "name": title, "applied_tags": tag_ids })),
+                )
+                .await;
+            let msg = self
+                .call(Method::Patch, format!("channels/{}/messages/{}", t.thread, t.message), Some(message.clone()))
+                .await;
+            match (thread, msg) {
+                (Ok(_), Ok(_)) => return Ok(()),
+                (Err(e), _) | (_, Err(e)) if ApiError::status_of(&e) != Some(404) => return Err(e),
+                _ => {} // deleted in Discord: post again
+            }
+        }
+        let body = json!({ "name": title, "applied_tags": tag_ids, "message": message });
+        let made = self.call(Method::Post, format!("channels/{forum}/threads"), Some(body)).await?;
+        let thread = id(&made["id"]).context("no id in reply")?;
+        let message = id(&made["message"]["id"]).unwrap_or(thread);
+        self.lock.project_posts.insert(slug.to_owned(), ThreadRef { thread, message });
+        Ok(())
+    }
+
+    /// A forum post the bot started in `forum` with this title and first
+    /// message, that the lockfile lost track of (none of `claimed`).
+    async fn find_thread(
+        &self,
+        forum: Snowflake,
+        title: &str,
+        want: &chipsoc_config::template::Rendered,
+        claimed: std::collections::BTreeSet<Snowflake>,
+    ) -> Result<Option<ThreadRef>> {
+        let me = self.me().await?;
+        let g = guild(self.lock)?;
+        let active = self.call(Method::Get, format!("guilds/{g}/threads/active"), None).await?;
+        let old = self.call(Method::Get, format!("channels/{forum}/threads/archived/public"), None).await?;
+        let candidates: Vec<Snowflake> = [&active["threads"], &old["threads"]]
+            .into_iter()
+            .flat_map(|l| l.as_array().into_iter().flatten())
+            .filter(|t| id(&t["parent_id"]) == Some(forum) && id(&t["owner_id"]) == Some(me) && t["name"] == title)
+            .filter_map(|t| id(&t["id"]))
+            .filter(|t| !claimed.contains(t))
+            .collect();
+        for thread in candidates {
+            // A forum post's first message has the thread's id.
+            let Ok(first) = self.call(Method::Get, format!("channels/{thread}/messages/{thread}"), None).await else {
+                continue;
+            };
+            if wire::rendered_from(&first) == *want {
+                return Ok(Some(ThreadRef { thread, message: thread }));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn reorder(&mut self, g: Snowflake, scope: &OrderScope, to: &[String]) -> Result<()> {
+        match scope {
+            OrderScope::Roles => {
+                let g_json = self.call(Method::Get, format!("guilds/{g}"), None).await?;
+                let me = self.call(Method::Get, "users/@me".into(), None).await?;
+                let bot = crate::bot_role_in(&g_json, &me["id"]).map(|(b, _)| b);
+                let pos = |r: &Value| r["position"].as_i64().unwrap_or(0);
+                let mut live: Vec<&Value> =
+                    g_json["roles"].as_array().into_iter().flatten().filter(|r| id(&r["id"]) != Some(g)).collect();
+                live.sort_by_key(|r| (-pos(r), id(&r["id"])));
+                let ordered = resolve(to, |k| self.lock.role(k))?;
+                // Discord refuses the whole request if it names a role at or
+                // above the bot's own: only those below it are sent.
+                let bot_pos = bot.and_then(|b| live.iter().find(|r| id(&r["id"]) == Some(b))).map(|r| pos(r));
+                let below = |r: &&Value| bot_pos.is_none_or(|b| pos(r) < b) && id(&r["id"]) != bot;
+                let stuck: Vec<String> = to
+                    .iter()
+                    .zip(&ordered)
+                    .filter(|(_, i)| live.iter().find(|r| id(&r["id"]) == Some(**i)).is_some_and(|r| !below(r)))
+                    .map(|(k, i)| {
+                        let r = live.iter().find(|r| id(&r["id"]) == Some(*i));
+                        r.map_or_else(|| k.clone(), |r| s(&r["name"]))
+                    })
+                    .collect();
+                let live: Vec<&Value> = live.into_iter().filter(below).collect();
+                // Roles config doesn't list keep the top, in their current order.
+                let mut all: Vec<&Value> =
+                    live.iter().copied().filter(|r| !id(&r["id"]).is_some_and(|i| ordered.contains(&i))).collect();
+                all.extend(ordered.iter().filter_map(|i| live.iter().copied().find(|r| id(&r["id"]) == Some(*i))));
+                let n = all.len() as i64;
+                let body: Vec<Value> = all
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| !r["managed"].as_bool().unwrap_or(false))
+                    .map(|(i, r)| json!({ "id": r["id"], "position": n - i as i64 }))
+                    .collect();
+                if !body.is_empty() {
+                    self.call(Method::Patch, format!("guilds/{g}/roles"), Some(json!(body))).await?;
+                }
+                if !stuck.is_empty() {
+                    bail!(
+                        "moved the others, but not {}: {} above the bot's role, and Discord only lets a bot move \
+                         roles below its own. Ask the server owner to drag the bot's role to the top in Server \
+                         Settings → Roles, then apply again",
+                        and_list(&stuck),
+                        if stuck.len() == 1 { "it's" } else { "they're" }
+                    );
+                }
+            }
+            OrderScope::Categories => {
+                let body: Vec<Value> = resolve(to, |k| self.lock.category(k))?
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, c)| json!({ "id": c.to_string(), "position": i }))
+                    .collect();
+                self.call(Method::Patch, format!("guilds/{g}/channels"), Some(json!(body))).await?;
+            }
+            OrderScope::Channels(_) => {
+                let body: Vec<Value> = resolve(to, |k| self.lock.channel(k))?
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, c)| json!({ "id": c.to_string(), "position": i }))
+                    .collect();
+                self.call(Method::Patch, format!("guilds/{g}/channels"), Some(json!(body))).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Move to the archive category, visible to admins only, read-only.
+    async fn archive(&mut self, kind: ObjectKind, key: &str, oid: Snowflake) -> Result<()> {
+        let mut ows = vec![
+            json!({ "id": guild(self.lock)?.to_string(), "type": 0, "allow": "0", "deny": (1u64 << 10).to_string() }),
+        ];
+        if let Some(admin) = self.cfg.bot.admin_role.as_deref().and_then(|k| self.lock.role(k)) {
+            let send = (1u64 << 11) | (1u64 << 38);
+            ows.push(json!({ "id": admin.to_string(), "type": 0, "allow": (1u64 << 10).to_string(), "deny": send.to_string() }));
+        }
+        let mut patch = json!({ "permission_overwrites": ows });
+        if kind == ObjectKind::Channel {
+            let cat = self
+                .cfg
+                .bot
+                .archive
+                .as_deref()
+                .context("set `archive` (a category) in bot.toml to archive channels")?;
+            let cat_id =
+                self.lock.category(cat).with_context(|| format!("archive category `{cat}` doesn't exist yet"))?;
+            patch["parent_id"] = json!(cat_id.to_string());
+        }
+        self.call(Method::Patch, format!("channels/{oid}"), Some(patch)).await?;
+        self.lock.channels.retain(|_, v| *v != oid);
+        self.lock.categories.retain(|_, v| *v != oid);
+        self.lock.archived.insert(format!("{key}-{oid}"), oid);
+        Ok(())
+    }
+}

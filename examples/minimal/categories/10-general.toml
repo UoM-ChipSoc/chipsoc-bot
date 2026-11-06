@@ -1,0 +1,33 @@
+# One category and its channels, in Discord's order.
+[category]
+key = "general"
+name = "General"
+
+[[channel]]
+key = "welcome"
+name = "welcome"
+topic = "Say hello"
+
+[[channel]]
+key = "rules"
+name = "rules"
+post = "content/rules.md"
+# Only the committee posts here; channels inherit the category's entries.
+[[channel.overwrites]]
+role = "everyone"
+deny = ["SEND_MESSAGES"]
+
+[[channel]]
+key = "chat"
+name = "chat"
+
+[[channel]]
+key = "bot"
+name = "bot"
+topic = "Plans, approvals and problems: admins read this"
+[[channel.overwrites]]
+role = "everyone"
+deny = ["VIEW_CHANNEL"]
+[[channel.overwrites]]
+role = "committee"
+allow = ["VIEW_CHANNEL"]

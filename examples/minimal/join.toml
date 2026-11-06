@@ -1,0 +1,14 @@
+# The bot's join flow: one question, its answer gives a role.
+access_role = "student"
+intro = "Welcome! One quick question."
+
+[[step]]
+key = "who"
+question = "Are you a student?"
+
+[[step.option]]
+label = "Yes"
+roles = ["student"]
+
+[[step.option]]
+label = "No, just visiting"

@@ -1,0 +1,50 @@
+[package]
+name = "chipsoc-web"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum = "0.8.9"
+axum-extra = { version = "0.12.6", features = ["cookie-private"] }
+chrono.workspace = true
+cookie = "0.18.1"
+chipsoc-admin.workspace = true
+chipsoc-client.workspace = true
+chipsoc-config.workspace = true
+chipsoc-discord.workspace = true
+chipsoc-engine.workspace = true
+chipsoc-model.workspace = true
+chipsoc-store.workspace = true
+chipsoc-voice.workspace = true
+dioxus = { version = "0.7.10", default-features = false, features = ["macro", "html", "signals"] }
+dioxus-ssr = "0.7.10"
+getrandom.workspace = true
+http = "1"
+hyper = { version = "1.12.0", features = ["server", "http1"] }
+hyper-util = { version = "0.1.21", features = ["tokio", "server", "service"] }
+oauth2.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_urlencoded = "0.7.1"
+sha2 = "0.11.1"
+subtle = "2.6.1"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "sync", "time", "fs", "io-util"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tower = { version = "0.5.3", features = ["util"] }
+tracing.workspace = true
+
+[features]
+# `testing`: a server on a pretend Discord, for other crates' tests.
+testing = []
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

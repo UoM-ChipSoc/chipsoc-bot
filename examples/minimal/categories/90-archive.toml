@@ -1,0 +1,5 @@
+# Removed channels move here (hidden, history kept).
+[category]
+key = "archive"
+name = "Archive"
+overwrites = [{ role = "everyone", deny = ["VIEW_CHANNEL"] }]

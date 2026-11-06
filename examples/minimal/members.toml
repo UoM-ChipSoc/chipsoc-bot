@@ -1,0 +1,3 @@
+# Who holds which roles: role key = [Discord user ids]. Only roles listed
+# here have their holders managed. Replace with your committee's ids.
+committee = ["111111111111111111"]
