@@ -649,7 +649,7 @@ async fn run(ctx: &Ctx, cmd: &Cmd, by: &Actor) -> (String, Vec<Component>) {
     if let Some(op) = op(cmd) {
         let (mut text, buttons) = edit(ctx, &op, by).await;
         // Closing a position closes its window: everyone who applied is listed now.
-        if let Cmd::PositionOpen { open: false, .. } = cmd {
+        if chipsoc_admin::rounds::closes_window(std::slice::from_ref(&op)) {
             match chipsoc_admin::rounds::post_closed(ctx).await {
                 Ok(0) => {}
                 Ok(n) => text.push_str(&format!(
@@ -758,7 +758,7 @@ async fn run(ctx: &Ctx, cmd: &Cmd, by: &Actor) -> (String, Vec<Component>) {
 
 /// `/server history [@admin]`.
 async fn changes(ctx: &Ctx, user: Option<Snowflake>) -> String {
-    match chipsoc_admin::history_of(ctx, user, SHOWN).await {
+    match chipsoc_admin::config_history(ctx, user, SHOWN).await {
         Ok(done) => {
             let lines = done
                 .iter()
@@ -889,7 +889,7 @@ async fn queue(ctx: &Ctx) -> String {
 }
 
 async fn history(ctx: &Ctx) -> String {
-    match chipsoc_admin::history(ctx, SHOWN as i64).await {
+    match chipsoc_admin::queue_history(ctx, SHOWN as i64).await {
         Ok(past) => list(
             &ctx.cfg(),
             "**Latest decisions:**",

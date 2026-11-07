@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use chipsoc_config::recording::{self as conf, Recording};
+use chipsoc_discord::wire::shown_of;
 use chipsoc_discord::{Method, Rest as _};
 use chipsoc_voice::capture::{Feed, Input, OggFiles, Recorder, Running};
 use chipsoc_voice::store::{self, Meta, Person, Transcript};
@@ -239,11 +240,6 @@ fn may_record(ctx: &Ctx, member: Option<&PartialMember>, rec: &Recording) -> boo
         || member.is_some_and(|m| rec.who.iter().filter_map(|k| ctx.role(k)).any(|r| m.roles.contains(&r)))
 }
 
-/// A member's name as the server shows it.
-fn shown(nick: Option<&str>, global: Option<&str>, user: &str) -> String {
-    nick.or(global).filter(|n| !n.is_empty()).unwrap_or(user).to_owned()
-}
-
 /// `/record start` or `/record stop`.
 pub async fn handle(ctx: &Ctx, i: &Interaction, options: &[CommandDataOption]) {
     let Some(rec) = ctx.cfg().bot.recording.clone() else {
@@ -258,7 +254,10 @@ pub async fn handle(ctx: &Ctx, i: &Interaction, options: &[CommandDataOption]) {
     let by = match invoker(i) {
         Some(u) => {
             let m = i.member.as_ref();
-            Person { id: u.id.get(), name: shown(m.and_then(|m| m.nick.as_deref()), u.global_name.as_deref(), &u.name) }
+            Person {
+                id: u.id.get(),
+                name: shown_of(m.and_then(|m| m.nick.as_deref()), u.global_name.as_deref(), &u.name),
+            }
         }
         None => return,
     };
@@ -815,7 +814,9 @@ pub(crate) fn on_event(ctx: &Arc<Ctx>, event: &Event) {
                 let names: HashMap<u64, String> = g
                     .members
                     .iter()
-                    .map(|m| (m.user.id.get(), shown(m.nick.as_deref(), m.user.global_name.as_deref(), &m.user.name)))
+                    .map(|m| {
+                        (m.user.id.get(), shown_of(m.nick.as_deref(), m.user.global_name.as_deref(), &m.user.name))
+                    })
                     .collect();
                 let mut v = lock(&ctx.rec.voice);
                 v.clear();
@@ -896,7 +897,7 @@ fn voice_state(ctx: &Arc<Ctx>, s: &VoiceState) {
     }
     let member = s.member.as_ref();
     let bot = member.is_some_and(|m| m.user.bot);
-    let name = member.map(|m| shown(m.nick.as_deref(), m.user.global_name.as_deref(), &m.user.name));
+    let name = member.map(|m| shown_of(m.nick.as_deref(), m.user.global_name.as_deref(), &m.user.name));
     let before = {
         let mut v = lock(&ctx.rec.voice);
         let before = v.get(&user).map(|x| x.channel);

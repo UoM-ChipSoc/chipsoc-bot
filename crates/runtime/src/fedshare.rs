@@ -209,12 +209,8 @@ pub async fn on_message(ctx: &Ctx, m: &Message) {
     if chipsoc_discord::wire::id(&thread["parent_id"]).map(|p| p.0) != Some(help.get()) {
         return;
     }
-    let by = m
-        .member
-        .as_ref()
-        .and_then(|mm| mm.nick.clone())
-        .or_else(|| m.author.global_name.clone())
-        .unwrap_or_else(|| m.author.name.clone());
+    let nick = m.member.as_ref().and_then(|mm| mm.nick.as_deref());
+    let by = chipsoc_discord::wire::shown_of(nick, m.author.global_name.as_deref(), &m.author.name);
     let guild = Snowflake(ctx.guild.get());
     let item = shares::question(
         guild,
@@ -351,16 +347,9 @@ pub async fn command(ctx: &Ctx, i: &Interaction, what: &str, given: &str) {
         Err(why) => return ctx.respond(i, &ui::ephemeral(&why.markdown())).await,
     };
     let kind = pick.kind();
-    let options = choices(ctx, kind);
-    if options.is_empty() {
-        let text = format!(
-            "No partner takes {} from us yet: list `{}` in a peer's `send` in federation.toml.",
-            kind.plural(),
-            kind.plural()
-        );
-        return ctx.respond(i, &ui::ephemeral(&text)).await;
-    }
-    let Some(menu) = share_menu(ctx, pick) else { return };
+    let Some(menu) = share_menu(ctx, pick) else {
+        return ctx.respond(i, &ui::ephemeral(&shares::nobody_takes(kind))).await;
+    };
     let text = format!(
         "Share this {} with which partners? Each posts it where they've chosen, after their own review (unless they've turned that off).",
         shares::noun(kind)

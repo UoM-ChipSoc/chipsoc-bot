@@ -121,7 +121,6 @@ pub async fn poll_loop(ctx: Arc<Ctx>) {
             }
         };
         for f in feeds.into_iter().filter(|f| !f.paused) {
-            let Some(channel) = ctx.channel(&f.channel_key) else { continue };
             let feed = match fetch(&f.url).await {
                 Ok(feed) => feed,
                 Err(e) => {
@@ -133,31 +132,83 @@ pub async fn poll_loop(ctx: Arc<Ctx>) {
             if f.title.as_deref() != Some(name.as_str()) {
                 ctx.log_err(ctx.db().set_feed_title(f.id, &name).await, "keeping a feed's title");
             }
-            let forum = ctx.cfg().desired.channel(&f.channel_key).is_some_and(|c| c.kind.has_tags());
-            for entry in feed.entries.iter().take(10).rev() {
-                if !ctx.db().mark_item(f.id, &entry.id).await.unwrap_or(false) {
-                    continue;
-                }
-                let posted = if forum {
-                    let item = entry.title.as_ref().map_or_else(|| name.clone(), |t| t.content.trim().to_owned());
-                    let body = format!("{} · from **{}**", line(entry), ui::escape(&name));
-                    let post = serde_json::json!({
-                        "name": ui::truncate(&item, 95),
-                        "message": { "content": ui::truncate(&body, ui::MAX_CONTENT) },
-                    });
-                    ctx.call(Method::Post, &format!("channels/{channel}/threads"), Some(post)).await.map(drop)
-                } else {
-                    let text = format!("📰 **{}** · {}", ui::escape(&ui::truncate(&name, 80)), line(entry));
-                    ctx.post(channel, &text, &[]).await.map(drop)
-                };
-                // Seen only once it's actually posted; otherwise try again next time.
-                if let Err(e) = posted {
-                    tracing::warn!(?e, url = f.url, "posting feed item failed");
-                    ctx.log_err(ctx.db().unmark_item(f.id, &entry.id).await, "unmarking feed item");
-                } else {
-                    share(&ctx, &f.url, &name, entry).await;
-                }
-            }
+            post_new(&ctx, &f, &feed).await;
         }
+    }
+}
+
+/// Post what's new in `feed` (as just read; its newest 10, oldest first) in
+/// `f`'s channel: a line each, or a post each in a forum. An item counts as
+/// seen once it's posted; one that fails is tried again next time.
+async fn post_new(ctx: &Ctx, f: &chipsoc_store::Feed, feed: &feed_rs::model::Feed) {
+    let Some(channel) = ctx.channel(&f.channel_key) else { return };
+    let name = title(feed, &f.url);
+    let forum = ctx.cfg().desired.channel(&f.channel_key).is_some_and(|c| c.kind.has_tags());
+    for entry in feed.entries.iter().take(10).rev() {
+        if !ctx.db().mark_item(f.id, &entry.id).await.unwrap_or(false) {
+            continue;
+        }
+        let posted = if forum {
+            let item = entry.title.as_ref().map_or_else(|| name.clone(), |t| t.content.trim().to_owned());
+            let body = format!("{} · from **{}**", line(entry), ui::escape(&name));
+            let post = serde_json::json!({
+                "name": ui::truncate(&item, 95),
+                "message": { "content": ui::truncate(&body, ui::MAX_CONTENT) },
+            });
+            ctx.call(Method::Post, &format!("channels/{channel}/threads"), Some(post)).await.map(drop)
+        } else {
+            let text = format!("📰 **{}** · {}", ui::escape(&ui::truncate(&name, 80)), line(entry));
+            ctx.post(channel, &text, &[]).await.map(drop)
+        };
+        if let Err(e) = posted {
+            tracing::warn!(?e, url = f.url, "posting feed item failed");
+            ctx.log_err(ctx.db().unmark_item(f.id, &entry.id).await, "unmarking feed item");
+        } else {
+            share(ctx, &f.url, &name, entry).await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ATOM: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Chip News</title>
+  <id>urn:chip-news</id>
+  <updated>2026-01-02T00:00:00Z</updated>
+  <entry><title>Second *chip*</title><id>urn:2</id><updated>2026-01-02T00:00:00Z</updated>
+    <link href="https://example.org/2"/></entry>
+  <entry><title>First chip</title><id>urn:1</id><updated>2026-01-01T00:00:00Z</updated>
+    <link href="https://example.org/1"/></entry>
+</feed>"#;
+
+    /// New items are posted oldest first, each once; one whose post fails
+    /// is posted the next time round.
+    #[tokio::test]
+    async fn new_items_are_posted_once_and_a_failed_one_again() {
+        let (_root, fake, ctx) = crate::tests::server().await;
+        let ch = ctx.cfg().desired.lock.channel("events").unwrap();
+        let id = ctx.db().add_feed("https://example.org/feed", "events", "7", 0).await.unwrap();
+        let f = ctx.db().feed(id).await.unwrap().unwrap();
+        let feed = feed_rs::parser::parse(ATOM.as_bytes()).unwrap();
+        let texts = || -> Vec<String> {
+            let st = fake.state.lock().unwrap();
+            let here = st.messages.iter().filter(|m| m["channel_id"] == ch.to_string());
+            here.map(|m| m["content"].as_str().unwrap_or_default().to_owned()).collect()
+        };
+
+        fake.fail(&format!("POST channels/{ch}/messages"), 500, false);
+        post_new(&ctx, &f, &feed).await;
+        assert_eq!(texts(), ["📰 **Chip News** · Second \\*chip\\* https://example.org/2"], "the first failed");
+
+        post_new(&ctx, &f, &feed).await;
+        post_new(&ctx, &f, &feed).await;
+        let want = [
+            "📰 **Chip News** · Second \\*chip\\* https://example.org/2",
+            "📰 **Chip News** · First chip https://example.org/1",
+        ];
+        assert_eq!(texts(), want, "tried again once, nothing twice");
     }
 }

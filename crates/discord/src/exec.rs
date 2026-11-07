@@ -135,9 +135,18 @@ pub async fn execute(
         }
     }
     let me = std::sync::OnceLock::new();
+    let mut changed = BTreeSet::new();
     for action in plan.actions.iter().filter(|a| a.mutates()) {
-        let mut ex = Exec { rest, cfg, lock, live, me: &me };
+        let mut ex = Exec { rest, cfg, lock, live, me: &me, changed: &changed };
         let result = ex.run(action).await.map_err(|e| format!("{e:#}"));
+        match action {
+            Action::Edit { id, .. } | Action::Archive { id, .. } | Action::Delete { id, .. } => {
+                changed.insert(*id);
+            }
+            // One found already there is sent again in full.
+            Action::Create { kind: ObjectKind::Channel, key } => changed.extend(lock.channel(key)),
+            _ => {}
+        }
         if result.is_ok()
             && let Some(obj) = action.object()
         {
@@ -168,6 +177,8 @@ struct Exec<'a, R> {
     live: Option<&'a Snapshot>,
     /// The bot's own user id, once asked.
     me: &'a std::sync::OnceLock<Snowflake>,
+    /// What earlier steps changed (or tried to), so `live` is out of date for it.
+    changed: &'a BTreeSet<Snowflake>,
 }
 
 /// Every key's id, or an error naming the ones that don't exist yet.
@@ -562,10 +573,17 @@ impl<R: Rest> Exec<'_, R> {
 
     /// The bot's messages in `ch` after `first` that say `want`, in order: a
     /// long post's later parts, when the lockfile lost track of them. Stops
-    /// at the first part not found (it and the rest are posted again).
-    async fn find_later(&self, ch: Snowflake, first: Snowflake, want: &[Rendered]) -> Result<Vec<Snowflake>> {
+    /// at the first part not found (it and the rest are posted again). Also
+    /// the bot's other messages after the last one found, which in a forum
+    /// post it keeps can only be old parts.
+    async fn find_later(
+        &self,
+        ch: Snowflake,
+        first: Snowflake,
+        want: &[Rendered],
+    ) -> Result<(Vec<Snowflake>, Vec<Snowflake>)> {
         if want.is_empty() {
-            return Ok(Vec::new());
+            return Ok(Default::default());
         }
         let me = self.me().await?;
         let claimed = self.claimed();
@@ -574,7 +592,8 @@ impl<R: Rest> Exec<'_, R> {
             .as_array()
             .into_iter()
             .flatten()
-            .filter(|m| id(&m["author"]["id"]) == Some(me))
+            // Its own messages, not notices (such as a rename's).
+            .filter(|m| id(&m["author"]["id"]) == Some(me) && m["type"].as_u64().unwrap_or(0) == 0)
             .filter_map(|m| Some((id(&m["id"])?, wire::rendered_from(m))))
             .filter(|(m, _)| !claimed.contains(m) && *m > first)
             .collect();
@@ -586,7 +605,8 @@ impl<R: Rest> Exec<'_, R> {
             ids.push(mine[from + j].0);
             from += j + 1;
         }
-        Ok(ids)
+        let after = mine[from..].iter().map(|(m, _)| *m).collect();
+        Ok((ids, after))
     }
 
     /// What Discord had in each part of a post when this plan was made (as
@@ -640,7 +660,7 @@ impl<R: Rest> Exec<'_, R> {
     /// Bring a post's later parts (the bot's messages in `ch` after the
     /// first) in line with `want`, and keep their ids in the lockfile.
     /// `old` are the ones there; `have`, what each said, when known.
-    async fn finish(
+    async fn keep_later_parts(
         &mut self,
         post: Entry<'_>,
         ch: Snowflake,
@@ -648,7 +668,7 @@ impl<R: Rest> Exec<'_, R> {
         want: &[Rendered],
         have: &[String],
     ) -> Result<()> {
-        let (ids, result) = self.later(ch, old, want, have).await;
+        let (ids, result) = self.sync_later_parts(ch, old, want, have).await;
         match post {
             Entry::Post(k) | Entry::Thread(k) => self.lock.posts.get_mut(k).map(|p| p.parts = ids),
             Entry::Project(s) => self.lock.project_posts.get_mut(s).map(|t| t.parts = ids),
@@ -660,7 +680,7 @@ impl<R: Rest> Exec<'_, R> {
     /// the ones missing after them, and take away the ones no longer needed.
     /// One found deleted is posted again with those after it, to keep the
     /// order. Returns the ids now in use, with what stopped it, if anything.
-    async fn later(
+    async fn sync_later_parts(
         &self,
         ch: Snowflake,
         old: &[Snowflake],
@@ -750,14 +770,18 @@ impl<R: Rest> Exec<'_, R> {
         if existing.is_none()
             && let Ok(Some(m)) = self.find_post(ch, first).await
         {
-            let found = self.find_later(ch, m, later).await.unwrap_or_default();
+            // Messages of the bot's after the parts found aren't taken away
+            // here: in a channel they may be anything it posted.
+            let (found, _) = self.find_later(ch, m, later).await.unwrap_or_default();
             let have = signatures(&later[..found.len()]);
             self.lock.posts.insert(key.to_owned(), PostRef { message: m, parts: found.clone() });
-            return self.finish(entry, ch, &found, later, &have).await;
+            return self.keep_later_parts(entry, ch, &found, later, &have).await;
         }
         if let Some(m) = existing {
             match self.edit_first(entry, ch, m, first, &have).await {
-                Ok(()) => return self.finish(entry, ch, &old, later, have.get(1..).unwrap_or_default()).await,
+                Ok(()) => {
+                    return self.keep_later_parts(entry, ch, &old, later, have.get(1..).unwrap_or_default()).await;
+                }
                 Err(e) if ApiError::status_of(&e) == Some(404) => {} // deleted in Discord: post again
                 Err(e) => return Err(e),
             }
@@ -766,7 +790,7 @@ impl<R: Rest> Exec<'_, R> {
         let made = self.call(Method::Post, format!("channels/{ch}/messages"), Some(wire::message_json(first))).await?;
         let message = id(&made["id"]).context("no id in reply")?;
         self.lock.posts.insert(key.to_owned(), PostRef { message, parts: Vec::new() });
-        self.finish(entry, ch, &[], later, &[]).await?;
+        self.keep_later_parts(entry, ch, &[], later, &[]).await?;
         cleared.map_or(Ok(()), |e| Err(e.context("posted again, but the old parts are still there")))
     }
 
@@ -811,18 +835,26 @@ impl<R: Rest> Exec<'_, R> {
         self.forum_thread(Entry::Thread(key), forum, &t.title, Some(&t.tags), &parts, existing, None).await
     }
 
-    /// The ids of `forum`'s tags named in `names` (matched case-insensitively), at most 5.
+    /// A forum or forum post as the plan's export read it, unless an
+    /// earlier step changed it (a forum's tags sent again get new ids).
+    fn read_before(&self, channel: Snowflake) -> Option<&Value> {
+        self.live?.forums_read.get(&channel).filter(|_| !self.changed.contains(&channel))
+    }
+
+    /// The ids of `forum`'s tags named in `names` (matched case-insensitively),
+    /// at most 5. As the plan read them, unless one is missing there.
     async fn tag_ids(&self, forum: Snowflake, names: &[String]) -> Result<Vec<String>> {
-        let available = self.call(Method::Get, format!("channels/{forum}"), None).await?["available_tags"].clone();
         let wanted: Vec<String> = names.iter().map(|t| t.to_lowercase()).collect();
-        Ok(available
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|t| wanted.contains(&s(&t["name"]).to_lowercase()))
-            .filter_map(|t| id(&t["id"]).map(|i| i.to_string()))
-            .take(5)
-            .collect())
+        let named = |available: &Value| -> Vec<(String, String)> {
+            let tags = available.as_array().into_iter().flatten();
+            let tags = tags.map(|t| (s(&t["name"]).to_lowercase(), id(&t["id"]).map(|i| i.to_string())));
+            tags.filter_map(|(name, i)| Some((name, i?))).filter(|(name, _)| wanted.contains(name)).collect()
+        };
+        let mut found = self.read_before(forum).map(|f| named(&f["available_tags"])).unwrap_or_default();
+        if !wanted.iter().all(|w| found.iter().any(|(name, _)| name == w)) {
+            found = named(&self.call(Method::Get, format!("channels/{forum}"), None).await?["available_tags"]);
+        }
+        Ok(found.into_iter().map(|(_, i)| i).take(5).collect())
     }
 
     /// A forum post the bot keeps (a forum's own post, a project's, or a
@@ -853,9 +885,12 @@ impl<R: Rest> Exec<'_, R> {
         } else {
             None
         };
+        // Found again: its old parts that changed since, taken away below
+        // (they're posted again after those found).
+        let mut stale = Vec::new();
         let found = match found {
             Some(mut t) => {
-                t.parts = self.find_later(t.thread, t.message, later).await.unwrap_or_default();
+                (t.parts, stale) = self.find_later(t.thread, t.message, later).await.unwrap_or_default();
                 // The first part is sent again below with the title and tags.
                 have = [vec![String::new()], signatures(&later[..t.parts.len()])].concat();
                 self.set_thread_ref(entry, t.clone());
@@ -865,7 +900,12 @@ impl<R: Rest> Exec<'_, R> {
         };
         let old = self.thread_ref(entry);
         if let Some(t) = existing.or(found) {
-            match self.keep_thread(entry, &t, &title, tag_ids.as_deref(), pin, first, &have).await {
+            let mut kept = self.keep_thread(entry, &t, &title, tag_ids.as_deref(), pin, first, &have, true).await;
+            // Archived since the plan read it: read it again, to open it.
+            if kept.as_ref().err().is_some_and(|e| ApiError::code_of(e) == Some(ARCHIVED_THREAD)) {
+                kept = self.keep_thread(entry, &t, &title, tag_ids.as_deref(), pin, first, &have, false).await;
+            }
+            match kept {
                 Ok(renamed) => {
                     // A new title leaves a notice in the thread.
                     let notices = match renamed {
@@ -875,8 +915,11 @@ impl<R: Rest> Exec<'_, R> {
                         },
                         false => Ok(()),
                     };
-                    self.finish(entry, t.thread, &t.parts, later, have.get(1..).unwrap_or_default()).await?;
-                    return notices.context("renamed, but couldn't delete Discord's rename notice in it");
+                    let stale_left = self.clear(t.thread, &stale).await;
+                    self.keep_later_parts(entry, t.thread, &t.parts, later, have.get(1..).unwrap_or_default()).await?;
+                    notices.context("renamed, but couldn't delete Discord's rename notice in it")?;
+                    return stale_left
+                        .map_or(Ok(()), |e| Err(e.context("found again, but its old parts are still there")));
                 }
                 Err(e) if ApiError::status_of(&e) == Some(404) => {} // deleted in Discord: post again
                 Err(e) => return Err(e),
@@ -894,7 +937,7 @@ impl<R: Rest> Exec<'_, R> {
         let thread = id(&made["id"]).context("no id in reply")?;
         let message = id(&made["message"]["id"]).unwrap_or(thread);
         self.set_thread_ref(entry, ThreadRef { thread, message, parts: Vec::new() });
-        let rest = self.finish(entry, thread, &[], later, &[]).await;
+        let rest = self.keep_later_parts(entry, thread, &[], later, &[]).await;
         if pin == Some(true) {
             self.call(Method::Patch, format!("channels/{thread}"), Some(json!({ "flags": PINNED_THREAD })))
                 .await
@@ -906,7 +949,8 @@ impl<R: Rest> Exec<'_, R> {
 
     /// Bring a kept forum post's thread (title, tags, pin; opened if
     /// archived) and first message in line, sending only what differs.
-    /// Whether it was renamed. A 404 means it's gone.
+    /// Whether it was renamed. A 404 means it's gone. `as_planned`: compare
+    /// with the thread as the plan read it, when it did.
     #[allow(clippy::too_many_arguments)]
     async fn keep_thread(
         &self,
@@ -917,12 +961,16 @@ impl<R: Rest> Exec<'_, R> {
         pin: Option<bool>,
         first: &Rendered,
         have: &[String],
+        as_planned: bool,
     ) -> Result<bool> {
         // As Discord has it now; if it can't be read, everything is sent.
-        let live = match self.call(Method::Get, format!("channels/{}", t.thread), None).await {
-            Ok(c) => Some(c),
-            Err(e) if ApiError::status_of(&e) == Some(404) => return Err(e),
-            Err(_) => None,
+        let live = match self.read_before(t.thread).filter(|_| as_planned) {
+            Some(c) => Some(c.clone()),
+            None => match self.call(Method::Get, format!("channels/{}", t.thread), None).await {
+                Ok(c) => Some(c),
+                Err(e) if ApiError::status_of(&e) == Some(404) => return Err(e),
+                Err(_) => None,
+            },
         };
         let mut patch = Map::new();
         let renamed = live.as_ref().is_some_and(|c| c["name"].as_str() != Some(title));

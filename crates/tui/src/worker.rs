@@ -105,6 +105,24 @@ pub enum Job {
     Admin(Admin),
 }
 
+impl Job {
+    /// What this job reports when it fails with `why`, so the UI isn't
+    /// left waiting for it.
+    fn failed(&self, why: String) -> Msg {
+        match self {
+            Self::Plan => Msg::Planned(Err(why)),
+            Self::Apply(_) => Msg::Applied(Err(why)),
+            Self::Pull => Msg::Pulled(Err(why)),
+            Self::Drift => Msg::Drifted(Err(why)),
+            Self::Status => Msg::Status(Err(why)),
+            Self::Schema => Msg::Schema(Err(why), true),
+            Self::Ops(_) => Msg::Edited(Err(why)),
+            Self::Load(area) => Msg::Loaded(*area, Err(why)),
+            Self::Admin(_) => Msg::Did(Err(why)),
+        }
+    }
+}
+
 pub enum Msg {
     Planned(Result<Plan, String>),
     Step(Action, Result<(), String>),
@@ -161,9 +179,18 @@ impl<R: Rest + Clone + 'static> Worker<R> {
         Ok(Self { backend: Arc::new(Backend::Remote(client)), ..self })
     }
 
-    pub fn spawn(&self, job: Job) {
+    /// Run `job` in the background. If it panics, it's reported failed, so
+    /// the UI doesn't stay busy. Done once what it says is sent.
+    pub fn spawn(&self, job: Job) -> tokio::task::JoinHandle<()> {
         let w = self.clone();
-        tokio::spawn(async move { w.run(job).await });
+        let failed = job.failed("That stopped unexpectedly (a bug in the bot's TUI); try again.".into());
+        let tx = self.tx.clone();
+        let running = tokio::spawn(async move { w.run(job).await });
+        tokio::spawn(async move {
+            if running.await.is_err() {
+                let _ = tx.send(failed);
+            }
+        })
     }
 
     pub async fn run(&self, job: Job) {

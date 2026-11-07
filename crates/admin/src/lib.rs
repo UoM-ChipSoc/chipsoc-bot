@@ -43,13 +43,13 @@ pub use forums::{
     Closed, Lead, NewIdea, NewResource, Post, archive_resource, close_idea, closing_line, ideas, post_idea,
     post_resource, precheck_resource, resources, vet_resource,
 };
-pub use owner::{Done, history_of, only_owner, owner_id, undo, undo_question, undo_question_for, undo_said};
+pub use owner::{Done, config_history, only_owner, owner_id, undo, undo_question, undo_question_for, undo_said};
 pub use people::{
     FormerMember, Holding, Named, Person, Roster, appoint, forget_former, remove_lead, restore, roster, unappoint,
 };
 pub use queue::{
     Answer, Decided, LEAD_WISH, Past, Pending, accept_says, already, claim, claim_lead, claim_seen, decide,
-    decide_seen, decide_with, history, lead, made_lead, make_lead, mark_card, pending, reason_label, reject_says,
+    decide_seen, decide_with, lead, made_lead, make_lead, mark_card, pending, queue_history, reason_label, reject_says,
     says_of, settle, settle_with, submitted_by, what, what_md,
 };
 pub use said::{Part, Refusal, Said};

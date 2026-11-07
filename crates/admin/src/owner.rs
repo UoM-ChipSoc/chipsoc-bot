@@ -118,13 +118,13 @@ pub struct Done {
     pub revertible: bool,
 }
 
-/// How far back [`history_of`] looks for what one person did.
+/// How far back [`config_history`] looks for what one person did.
 pub const WEEK: i64 = 7 * 24 * 60 * 60;
 
 /// What happened, newest first, at most `limit`. Without `user`: the
 /// config's latest commits, with who made them. With `user`: what they did
 /// in the last [`WEEK`], from the audit log and the config's history.
-pub async fn history_of<H: Host>(h: &H, user: Option<Snowflake>, limit: usize) -> Result<Vec<Done>> {
+pub async fn config_history<H: Host>(h: &H, user: Option<Snowflake>, limit: usize) -> Result<Vec<Done>> {
     let since = crate::now() - WEEK;
     let dir = h.cfg().dir.clone();
     let commits = chipsoc_config::blocking(move || Ok(git::log(&dir, 200))).await?;

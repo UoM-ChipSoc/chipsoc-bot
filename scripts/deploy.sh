@@ -506,9 +506,11 @@ build_release() {
 # root. Root copies out the binary alone, reading it as the build user.
 build_there() {
   local h=$1 commit=$2 name=$3 run
-  # The Opus codec (for voice recordings) is built from source with CMake;
-  # the gateway's TLS links to OpenSSL.
-  ensure_pkgs "$h" cmake gcc make curl pkg-config
+  # The Opus codec (for voice recordings) is the system's if pkg-config
+  # finds it (libopus-dev), else built from source with CMake; the
+  # gateway's TLS links to OpenSSL.
+  ensure_pkgs "$h" gcc make curl pkg-config
+  on_host "$h" "pkg-config --exists opus" || ensure_pkgs "$h" cmake
   on_host "$h" "pkg-config --exists openssl" ||
     note "$h lacks OpenSSL's headers, so the build fails: install them (Debian, Ubuntu: libssl-dev; Fedora: openssl-devel)"
   on_host "$h" "id $BUILDER >/dev/null 2>&1 ||

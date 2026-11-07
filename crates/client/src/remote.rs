@@ -350,14 +350,9 @@ impl Client {
 
     /// Who a username or name (`@ada`, `Ada Lovelace`) could be.
     pub async fn find_members(&self, query: &str) -> Result<chipsoc_admin::Found> {
-        let q: String = query
-            .bytes()
-            .map(|b| match b {
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
-                _ => format!("%{b:02X}"),
-            })
-            .collect();
-        self.get(&format!("members/find?q={q}")).await
+        let mut url = reqwest::Url::parse(&self.url("members/find"))?;
+        url.query_pairs_mut().append_pair("q", query);
+        self.send(self.http.get(url).timeout(QUICK)).await
     }
 
     /// Give `user` a role members.toml lists; what happened.

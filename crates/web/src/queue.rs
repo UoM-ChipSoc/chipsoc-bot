@@ -27,7 +27,7 @@ pub(crate) async fn page<R: Rest + Clone + 'static>(
     let loaded = async {
         let desk = app.desk(&s).await?;
         let on = chipsoc_admin::Host::cfg(&desk).bot.review.is_some();
-        let (pending, past) = (chipsoc_admin::pending(&desk).await?, chipsoc_admin::history(&desk, 50).await?);
+        let (pending, past) = (chipsoc_admin::pending(&desk).await?, chipsoc_admin::queue_history(&desk, 50).await?);
         let mut ids: Vec<&str> = pending.iter().map(|p| p.user.as_str()).collect();
         for p in &past {
             ids.extend([Some(p.user.as_str()), p.reviewed_by.as_deref()].into_iter().flatten());

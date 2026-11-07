@@ -138,7 +138,7 @@ async fn event_loop<R: Rest + Clone + 'static>(
             }
         };
         match cmd {
-            Some(Command::Discord(job)) => worker.spawn(job),
+            Some(Command::Discord(job)) => drop(worker.spawn(job)),
             Some(Command::Edit(path, line)) => {
                 // The editor needs the keyboard: stop reading it until we're back.
                 drop(events);

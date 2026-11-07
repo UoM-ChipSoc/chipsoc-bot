@@ -312,7 +312,7 @@ pub(crate) async fn delete<R: Rest + Clone + 'static>(
 ) -> Response {
     let f = Fields(f);
     if !f.confirmed() {
-        return said_back(HERE, Err("Press the “Yes” button to confirm.".into()));
+        return said_back(HERE, Err(crate::form::CONFIRM_FIRST.into()));
     }
     let id = f.get("id").to_owned();
     let done = async {

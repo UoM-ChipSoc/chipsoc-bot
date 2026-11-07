@@ -68,6 +68,13 @@ pub async fn noted<H: Host>(h: &H, role: &str, user: Snowflake) {
     }
 }
 
+/// Whether `ops` close a position, and so its window: its applicants are
+/// then listed at once (see [`post_closed`]), not when the bot next looks.
+pub fn closes_window(ops: &[chipsoc_config::ops::Op]) -> bool {
+    use chipsoc_config::ops::{Op, PositionField};
+    ops.iter().any(|o| matches!(o, Op::SetPosition { set: PositionField::Open(false), .. }))
+}
+
 /// Post a card for each position whose window has closed with applications
 /// waiting. Says how many cards it posted. Safe to call from anywhere, any
 /// number of times: each application is listed once. One that can't be

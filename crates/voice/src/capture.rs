@@ -357,8 +357,14 @@ impl Sink for Nothing {
 }
 
 enum Msg {
-    In(Input),
-    Finish { at: i64, why: String, done: mpsc::Sender<io::Result<Meta>> },
+    /// What was heard, and when it was sent: a stall on the recorder's
+    /// thread then doesn't read as silence.
+    In(Instant, Input),
+    Finish {
+        at: i64,
+        why: String,
+        done: mpsc::Sender<io::Result<Meta>>,
+    },
 }
 
 /// A recorder on its own thread, fed through [`Feed`]s.
@@ -376,7 +382,11 @@ pub struct Feed(mpsc::Sender<Msg>);
 
 impl Feed {
     pub fn send(&self, i: Input) {
-        let _ = self.0.send(Msg::In(i));
+        self.send_at(Instant::now(), i);
+    }
+
+    fn send_at(&self, at: Instant, i: Input) {
+        let _ = self.0.send(Msg::In(at, i));
     }
 }
 
@@ -439,16 +449,17 @@ fn run(mut rec: Recorder, rx: mpsc::Receiver<Msg>, full: &AtomicBool, failed: &A
             }
         };
         match msg {
-            Msg::In(i) => {
+            Msg::In(now, i) => {
                 if broken {
                     continue;
                 }
+                // Ticks missed (the call's audio stopped coming for a while)
+                // are written as silence, measured by when each was sent.
                 if matches!(i, Input::Tick(_)) {
-                    let now = Instant::now();
                     if let Some(t) = last_tick
-                        && now - t >= GAP
+                        && now.saturating_duration_since(t) >= GAP
                     {
-                        let missed = ((now - t).as_millis() as u64 / TICK_MS).saturating_sub(1);
+                        let missed = (now.saturating_duration_since(t).as_millis() as u64 / TICK_MS).saturating_sub(1);
                         for _ in 0..missed {
                             if rec.tick(Vec::new()).is_err() {
                                 break;
@@ -623,6 +634,30 @@ mod tests {
             assert!(ticks < 1000);
         }
         assert!(ticks > LAG);
+    }
+
+    #[test]
+    fn a_gap_is_timed_by_when_the_audio_came_not_when_it_was_written() {
+        let (_t, mem, rec) = recorder(u64::MAX);
+        let running = Running::start(rec);
+        let feed = running.feed();
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        feed.send_at(at(0), Input::Speaker { ssrc: 1, user: 7 });
+        // 10 ticks, 3 s with nothing, 10 more; all taken by the recorder at
+        // once, as after a stall.
+        for i in 0..10 {
+            feed.send_at(at(i * TICK_MS), Input::Tick(vec![(1, frame(100))]));
+        }
+        for i in 0..10 {
+            feed.send_at(at(3180 + i * TICK_MS), Input::Tick(vec![(1, frame(100))]));
+        }
+        running.finish(1, "stopped").unwrap();
+        let files = mem.0.lock().unwrap();
+        let mix = &files[MIX];
+        assert_eq!(mix.len(), 10 + 149 + 10, "3 s between the 10th tick and the 11th: 149 silent ones");
+        assert!(mix[10..159].iter().all(Option::is_none));
+        assert_eq!(mix[159], Some(frame(100)));
     }
 
     #[test]

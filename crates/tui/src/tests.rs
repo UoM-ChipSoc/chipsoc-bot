@@ -103,11 +103,12 @@ impl Harness {
 
     async fn run(&mut self, cmd: Command) {
         match cmd {
+            // As the TUI does, then wait for it and what it leads to.
             Command::Discord(job) => {
-                self.worker.run(job).await;
+                self.worker.spawn(job).await.unwrap();
                 while let Ok(msg) = self.rx.try_recv() {
                     if let Some(Command::Discord(job)) = self.app.on_msg(msg) {
-                        self.worker.run(job).await;
+                        self.worker.spawn(job).await.unwrap();
                     }
                 }
             }
@@ -178,6 +179,39 @@ fn has_key(app: &App, what: &str) -> bool {
 
 fn assert_shows(screen: &str, text: &str) {
     assert!(screen.contains(text), "expected {text:?} on screen:\n{screen}");
+}
+
+/// Discord that panics: a bug half way through a job.
+#[derive(Clone)]
+struct Panics;
+
+impl chipsoc_discord::Rest for Panics {
+    async fn call(
+        &self,
+        _: chipsoc_discord::Method,
+        path: &str,
+        _: Option<serde_json::Value>,
+    ) -> anyhow::Result<serde_json::Value> {
+        panic!("a bug, reading {path}")
+    }
+}
+
+/// A job that panics is reported failed, so the UI isn't left busy.
+#[tokio::test]
+async fn a_job_that_panics_doesnt_leave_the_ui_busy() {
+    let dir = fixture();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let worker = Worker::new(Panics, dir.path(), tx);
+    let mut app = App::new(dir.path().to_owned(), false);
+    let Command::Discord(job) = app.start(crate::worker::Job::Drift) else { unreachable!() };
+    let drifting = app.busy;
+    assert!(drifting.is_some());
+    worker.spawn(job).await.unwrap();
+    let msg = rx.try_recv().expect("told how it went");
+    assert!(matches!(&msg, Msg::Drifted(Err(e)) if e.contains("stopped unexpectedly")));
+    // Done with it (the tab shown may start loading next).
+    app.on_msg(msg);
+    assert_ne!(app.busy, drifting);
 }
 
 #[tokio::test]

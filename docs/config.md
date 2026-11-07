@@ -72,14 +72,14 @@ and unknown keys.
 
   Its text is edited part by part in place, and its title and tags follow
   the config (the bot deletes the "changed the post title" notice Discord
-  leaves when it renames one, as it does for project posts, and at start
-  any older ones of its own). lock.toml keeps it among the posts as
+  leaves when it renames one, as it does for project posts, and at start any
+  older ones of its own). lock.toml keeps it among the posts as
   `"<forum>/<key>"` (older versions of the bot pass it by). One Discord
-  archived for inactivity is opened again when it's edited. Taken out of the config, it's
-  archived and locked, never deleted (one the bot never made isn't touched,
-  and the plan says so); with lock.toml lost, it's found again by its title
-  and text. `check` errors on a missing title or one
-  over 100 characters, a tag the forum lacks, and the usual post problems.
+  archived for inactivity is opened again when it's edited. Taken out of the
+  config, it's archived and locked, never deleted (one the bot never made
+  isn't touched, and the plan says so); with lock.toml lost, it's found
+  again by its title and text. `check` errors on a missing title or one over
+  100 characters, a tag the forum lacks, and the usual post problems.
 - **Forum order:** `sort = "activity"` (latest activity first) or
   `"creation"` (newest post first) on a forum or media channel sets how
   Discord lists its posts; unset, it's left as Discord has it.
@@ -163,12 +163,12 @@ onboarding asks every question of everyone; this one branches.
   (rules) is unchanged.
 - `gate = true`: @everyone sees only `open_channels` (they must include the
   post with the button) and `access_role` sees the rest, as permissions: the
-  plan takes View Channel from @everyone, gives it to `access_role`, and lets
-  @everyone view each open channel; hidden categories stay hidden. Discord's
-  onboarding must be off (`enabled = false`). New members who haven't
-  finished after `remind_after_hours` (default 24, 0: never) get one
-  reminder DM, and `log.bot` lists them. `grandfather = true` gives `access_role` to members
-  who were here before the gate.
+  plan takes View Channel from @everyone, gives it to `access_role`, and
+  lets @everyone view each open channel; hidden categories stay hidden.
+  Discord's onboarding must be off (`enabled = false`). New members who
+  haven't finished after `remind_after_hours` (default 24, 0: never) get one
+  reminder DM, and `log.bot` lists them. `grandfather = true` gives
+  `access_role` to members who were here before the gate.
 - Nobody is DMed when the flow or the gate is turned on. Members already
   here hear about it from an announcement post (any post can have the
   button) and `/server join notify` (or `join notify`), once each.
@@ -338,9 +338,13 @@ who changed it since the last apply:
   git history). Without it, apply matches roles, categories and channels by
   name and the bot's posts and project threads by their text; a name several
   unknown things share is refused, and `--sweep` is refused while the lock
-  knows less than half the config.
+  knows less than half the config. A long post's parts are matched in order
+  up to the first one whose text changed since; that one and those after it
+  are posted again. In a forum post the bot's old ones are deleted; in a
+  channel they're left (the bot can't tell them from its other messages
+  there), so delete them by hand.
 - **Not managed:** emojis and stickers, scheduled events, invites, webhooks,
   the onboarding Server Guide, role icons, forum layout (beyond `sort`) and
-  default reactions, soundboard, vanity URL, widget, who holds roles not listed in
-  members.toml or as project leads (join-flow roles included), and Discord's
-  built-in AutoMod rules.
+  default reactions, soundboard, vanity URL, widget, who holds roles not
+  listed in members.toml or as project leads (join-flow roles included), and
+  Discord's built-in AutoMod rules.

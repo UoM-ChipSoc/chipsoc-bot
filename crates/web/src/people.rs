@@ -71,7 +71,7 @@ impl Spoken for String {
 
 impl Spoken for chipsoc_admin::Said {
     async fn spoken<H: Host>(self, h: &H) -> String {
-        self.named(h).await.plain(Some(&h.cfg()))
+        self.plain_named(h).await
     }
 }
 

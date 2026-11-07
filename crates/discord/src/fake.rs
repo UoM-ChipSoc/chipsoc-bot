@@ -26,6 +26,8 @@ pub struct State {
     pub dms: Vec<Value>,
     /// Every mutating call made, as "METHOD path".
     pub calls: Vec<String>,
+    /// Every read made: its path.
+    pub reads: Vec<String>,
     /// Every body sent, with its "METHOD path", as Discord would get it.
     pub bodies: Vec<(String, Value)>,
     /// Interaction replies, in order: `{ "token": …, "reply": the callback body }`
@@ -172,6 +174,14 @@ impl FakeDiscord {
         }
     }
 
+    /// A member's message in `channel` (as `user`), newer than any so far.
+    pub fn say(&self, channel: Snowflake, user: u64, content: &str) -> Snowflake {
+        let id = self.new_id();
+        let m = json!({ "id": id, "channel_id": channel.to_string(), "author": { "id": user.to_string() }, "content": content });
+        self.state().messages.push(m);
+        Snowflake(id.parse().unwrap_or_default())
+    }
+
     /// Archive a forum post, as Discord does after a week without activity.
     pub fn auto_archive(&self, thread: Snowflake) {
         let mut st = self.state();
@@ -205,7 +215,9 @@ impl FakeDiscord {
         let parts: Vec<&str> = path.split('?').next().unwrap_or_default().split('/').collect();
         let body = body.unwrap_or(Value::Null);
         let mut st = self.state();
-        if !matches!(method, Method::Get) {
+        if matches!(method, Method::Get) {
+            st.reads.push(path.to_owned());
+        } else {
             st.calls.push(format!("{method:?} {path}"));
         }
         if !body.is_null() {
@@ -452,10 +464,17 @@ impl FakeDiscord {
                 Ok(m)
             }
             (Method::Get, ["channels", cid, "messages"]) => {
-                let after: u64 = query(path, "after").unwrap_or(0);
-                let newer = |m: &&Value| m["id"].as_str().and_then(|i| i.parse::<u64>().ok()).unwrap_or(0) > after;
-                let newest_first = st.messages.iter().rev().filter(|m| m["channel_id"] == *cid).filter(newer);
-                Ok(Value::Array(newest_first.take(100).cloned().collect()))
+                // Like Discord: the newest 100, or with `after` the 100 right
+                // after it; newest first either way.
+                let after: Option<u64> = query(path, "after");
+                let newer =
+                    |m: &&Value| m["id"].as_str().and_then(|i| i.parse::<u64>().ok()).unwrap_or(0) > after.unwrap_or(0);
+                let here: Vec<&Value> = st.messages.iter().filter(|m| m["channel_id"] == *cid).filter(newer).collect();
+                let page = match after {
+                    Some(_) => &here[..here.len().min(100)],
+                    None => &here[here.len().saturating_sub(100)..],
+                };
+                Ok(Value::Array(page.iter().rev().map(|m| (*m).clone()).collect()))
             }
             (Method::Post, ["channels", cid, "messages", mid, "crosspost"]) => st
                 .messages

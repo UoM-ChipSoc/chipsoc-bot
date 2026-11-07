@@ -42,12 +42,12 @@ environment.
 `scripts/deploy.sh` runs one bot (and its web UI) for one config repo on a
 Linux server. The server needs systemd, root over ssh, git, sudo, `sqlite3`
 for backups while running, and Tailscale (installed and logged in) for the
-web UI. To build there (the default), also `cmake`, a C compiler, `make`,
-`curl`, `pkg-config` and OpenSSL's headers (`libssl-dev`); deploy.sh asks
-to install the ones it can name, and installs Rust for the build user
-itself. Your machine needs Rust (the tests run first; `SKIP_TESTS=1` skips
-them), ssh and, optionally, the GitHub CLI. How big a server: [Server
-size](#server-size).
+web UI. To build there (the default), also a C compiler, `make`, `curl`,
+`pkg-config`, OpenSSL's headers (`libssl-dev`) and either the Opus library's
+(`libopus-dev`) or `cmake`; deploy.sh asks to install the ones it can name,
+and installs Rust for the build user itself. Your machine needs Rust (the
+tests run first; `SKIP_TESTS=1` skips them), ssh and, optionally, the
+GitHub CLI. How big a server: [Server size](#server-size).
 
 1. Fill in `deploy.env` (copy `deploy.env.example`).
 2. `scripts/deploy.sh setup`, once: a sandboxed service user, a deploy key
@@ -62,12 +62,12 @@ size](#server-size).
    unprivileged user, or on your machine](#where-releases-are-built)),
    checks the new release loads the config (pulled first), and switches to
    it. It then waits `HEALTH_WAIT` seconds for the bot to log that it
-   connected and watches it stay up for `HEALTH_STABLE`; if not, it
-   switches back to the release before and fails. The five newest releases are kept. Once it's up, it
-   moves the git tag `deployed` (`DEPLOY_TAG`) to the commit it shipped and
-   pushes it (`DEPLOY_TAG_REMOTE`); `rollback` moves it back (a failed push
-   is a note, not a failed deploy). The config repo's CI checks the bot out
-   at that tag ([security.md](security.md#ci)).
+   connected and watches it stay up for `HEALTH_STABLE`; if not, it switches
+   back to the release before and fails. The five newest releases are kept.
+   Once it's up, it moves the git tag `deployed` (`DEPLOY_TAG`) to the
+   commit it shipped and pushes it (`DEPLOY_TAG_REMOTE`); `rollback` moves
+   it back (a failed push is a note, not a failed deploy). The config repo's
+   CI checks the bot out at that tag ([security.md](security.md#ci)).
 
 | Command | Does |
 |---|---|
@@ -252,29 +252,29 @@ The server keeps the newest two in `DIR/backup/bundles` (`BACKUP_KEEP` with
   signed, that you know is yours: it asks). Like backup-check, it refuses a
   bundle that isn't the one its file name says (its folder or `info.txt`
   names another): the signature covers the contents, not the name, so
-  whoever can write where the backups are kept could rename an old bundle
-  as the newest and roll the database back. If you renamed it yourself,
+  whoever can write where the backups are kept could rename an old bundle as
+  the newest and roll the database back. If you renamed it yourself,
   `--renamed` asks instead (no is the default; `ASSUME_YES` doesn't answer
   it without `--renamed`). It also shows how old the bundle is. It decrypts
   on your machine straight into ssh (the secrets aren't written to your
-  disk) and unpacks
-  on the server: only the files a bundle has, as plain root-owned files
-  (links and anything else refuse the whole restore). It checks the
-  database, and that the secrets have `DISCORD_TOKEN` and only settings the
-  bot uses, one plain `KEY=value` a line: the ones in *Settings*, the ones
-  in your `.env.server` and the server's current `.env`, those
-  `federation.toml` names, and any in `BACKUP_ENV_KEYS` (deploy.env). Never
-  ones that change how the bot, git or ssh run (`GIT_SSH_COMMAND`,
-  `LD_PRELOAD`, `PATH`…) or that the units set (`DATABASE_URL`…). It shows
-  what the backup holds and asks. Then it stops the bot and web UI, keeps
-  the current database (`/var/lib/<SERVICE>/backups/before-restore-*.db`)
-  and `.env` (`DIR/.env.before-restore-*`; the newest 3 of each), puts the
-  backup's in place (files 0600, the state folder 0700) and its recordings,
-  if it has them, beside the server's (as the bot's user), starts them and
-  runs the deploy health check. `--db-only` leaves the secrets alone; a
-  `.db` file (an older plain backup) restores the database alone. Config
-  commits the bot hadn't pushed are left in `DIR/config-unpushed-*.patch`
-  for you to `git am`.
+  disk) and unpacks on the server: only the files a bundle has, as plain
+  root-owned files (links and anything else refuse the whole restore). It
+  checks the database, and that the secrets have `DISCORD_TOKEN` and only
+  settings the bot uses, one plain `KEY=value` a line: the ones in
+  *Settings*, the ones in your `.env.server` and the server's current
+  `.env`, those `federation.toml` names, and any in `BACKUP_ENV_KEYS`
+  (deploy.env). Never ones that change how the bot, git or ssh run
+  (`GIT_SSH_COMMAND`, `LD_PRELOAD`, `PATH`…) or that the units set
+  (`DATABASE_URL`…). It shows what the backup holds and asks. Then it stops
+  the bot and web UI, keeps the current database
+  (`/var/lib/<SERVICE>/backups/before-restore-*.db`) and `.env`
+  (`DIR/.env.before-restore-*`; the newest 3 of each), puts the backup's in
+  place (files 0600, the state folder 0700) and its recordings, if it has
+  them, beside the server's (as the bot's user), starts them and runs the
+  deploy health check. `--db-only` leaves the secrets alone; a `.db` file
+  (an older plain backup) restores the database alone. Config commits the
+  bot hadn't pushed are left in `DIR/config-unpushed-*.patch` for you to
+  `git am`.
 
 ## Watching that it's up
 

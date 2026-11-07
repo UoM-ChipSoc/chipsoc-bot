@@ -404,6 +404,15 @@ pub fn event_from(guild: Snowflake, e: &Value) -> Option<Share> {
     Some(item)
 }
 
+/// Why nothing of `kind` can be shared: no partner takes it from us.
+pub fn nobody_takes(kind: ShareKind) -> String {
+    format!(
+        "No partner takes {} from us: list `{}` in a peer's `send` in federation.toml.",
+        kind.plural(),
+        kind.plural()
+    )
+}
+
 /// Share an announcement or event with the partners named (names or ids;
 /// none: every partner we send that kind to). Says whom it went to.
 pub async fn share_now<H: Host>(h: &H, pick: Pick, to: &[String], by: &Actor) -> Result<Vec<String>> {
@@ -411,11 +420,7 @@ pub async fn share_now<H: Host>(h: &H, pick: Pick, to: &[String], by: &Actor) ->
     let kind = pick.kind();
     let open = partners_for(&cfg, kind);
     if open.is_empty() {
-        bail!(crate::Refusal::from(format!(
-            "No partner takes {} from us: list `{}` in a peer's `send` in federation.toml.",
-            kind.plural(),
-            kind.plural()
-        )));
+        bail!(crate::Refusal::from(nobody_takes(kind)));
     }
     for n in to {
         match peer_named(&cfg, n) {
@@ -941,10 +946,26 @@ pub async fn redraw<H: Host>(h: &H, app: i64, note: &str) {
     }
 }
 
+/// A partner's item accepted: the post's link.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Accepted {
+    Posted(String),
+    /// An edit: the post was updated.
+    Updated(String),
+}
+
+impl Accepted {
+    pub fn link(&self) -> &str {
+        match self {
+            Self::Posted(l) | Self::Updated(l) => l,
+        }
+    }
+}
+
 /// An accepted entry: post it (or, for an edit, update the post), exactly
-/// as the entry shows it. What happened, whether it went, and the post's link.
-pub async fn accept<H: Host>(h: &H, app: &Application) -> (String, bool, Option<String>) {
-    let failed = |why: String| (format!(" ⚠️ {why}"), false, None);
+/// as the entry shows it. Else why it didn't go.
+pub async fn accept<H: Host>(h: &H, app: &Application) -> Result<Accepted, String> {
+    let failed = Err;
     let db = h.db();
     let fed = db.fed();
     let mut m = match fed.mirror_of_app(app.id).await {
@@ -1003,7 +1024,7 @@ pub async fn accept<H: Host>(h: &H, app: &Application) -> (String, bool, Option<
         if let Err(e) = fed.set_mirror(&m, now()).await {
             tracing::warn!("saving a partner's edit failed: {e:#}");
         }
-        return (format!(" Updated: {link}"), true, Some(link));
+        return Ok(Accepted::Updated(link));
     }
     match post(h, peer, &item).await {
         Ok((channel, message, link)) => {
@@ -1012,7 +1033,7 @@ pub async fn accept<H: Host>(h: &H, app: &Application) -> (String, bool, Option<
             if let Err(e) = fed.set_mirror(&m, now()).await {
                 tracing::warn!("saving where a partner's item went failed: {e:#}");
             }
-            (format!(" Posted: {link}"), true, Some(link))
+            Ok(Accepted::Posted(link))
         }
         Err(e) => {
             tracing::warn!("posting a partner's item failed: {e:#}");
