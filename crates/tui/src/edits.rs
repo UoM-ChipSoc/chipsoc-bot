@@ -499,7 +499,7 @@ impl App {
                 .map(|r| (r.key.clone(), r.name.clone()))
                 .collect();
             if roles.is_empty() {
-                self.error("Every role already has a position; add a role first (tab 2).");
+                self.error("Every role already has a position; add a role first (tab 9).");
                 return None;
             }
             let fields = vec![

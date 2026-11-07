@@ -205,14 +205,14 @@ async fn broken_files_are_explained_not_fatal() {
     write(d.path(), "roles.toml", "[[role]]\nkey = \"a\"\nnmae = \"typo\"\n");
     let mut h = Harness::on(d).await;
     assert_shows(&h.screen(), "roles.toml");
-    h.keys("2").await;
+    h.keys("9").await;
     assert_shows(&h.screen(), "Your files have a problem");
 }
 
 #[tokio::test]
 async fn channels_tab_shows_details_and_opens_definitions() {
     let mut h = Harness::new().await;
-    h.keys("3").await;
+    h.keys("8").await;
     h.key(KeyCode::Down).await;
     let s = h.screen();
     assert_shows(&s, "▶   # general");
@@ -304,7 +304,7 @@ async fn new_project_form_types_picks_and_saves() {
 #[tokio::test]
 async fn editing_a_role_writes_its_file_and_a_refused_edit_writes_nothing() {
     let mut h = Harness::new().await;
-    h.keys("2").await;
+    h.keys("9").await;
     h.key(KeyCode::Down).await;
     assert_shows(&h.screen(), "▶ ● Admin");
     h.key(KeyCode::Enter).await;
@@ -348,7 +348,7 @@ async fn editing_a_role_writes_its_file_and_a_refused_edit_writes_nothing() {
 #[tokio::test]
 async fn archiving_a_channel_asks_first_and_posts_are_edited_as_text() {
     let mut h = Harness::new().await;
-    h.keys("3").await;
+    h.keys("8").await;
     h.select("▶   # general").await;
     h.keys("x").await;
     assert_shows(&h.screen(), "Archive channel?");
@@ -408,7 +408,7 @@ async fn the_queue_rejects_with_a_reason_and_keeps_the_history() {
     let db = store.guild(&guild);
     db.add_application(chipsoc_store::AppKind::Project, "golem", "42", answers, false, 1).await.unwrap();
 
-    h.keys("6").await;
+    h.keys("2").await;
     let s = h.screen();
     assert_shows(&s, "ada — Golem");
     assert_shows(&s, "To help");
@@ -441,7 +441,7 @@ async fn feeds_pause_and_stopping_needs_a_yes() {
     let store = h.store().await;
     let guild = h.app.cfg.as_ref().unwrap().guild().unwrap().to_string();
     store.guild(&guild).add_feed("https://example.org/feed", "general", "9", 1).await.unwrap();
-    h.keys("8").await;
+    h.keys("6").await;
     assert_shows(&h.screen(), "https://example.org/feed");
     h.keys("p").await;
     assert_shows(&h.screen(), "paused");
@@ -465,7 +465,7 @@ async fn members_are_appointed_named_and_taken_away() {
     let mut h = Harness::on(d).await;
     h.keys("0fay").await;
     h.fake().join(42);
-    h.keys("7").await;
+    h.keys("3").await;
     assert_shows(&h.screen(), "▾ Admin");
     h.keys("n").await;
     h.key(KeyCode::Down).await;
@@ -495,9 +495,9 @@ async fn resources_are_shared_and_archived_after_a_yes() {
     let bot = fs::read_to_string(d.path().join("bot.toml")).unwrap();
     write(d.path(), "bot.toml", &format!("{bot}[resources]\nforum = \"projects\"\n"));
     let mut h = Harness::on(d).await;
-    h.keys("9").await;
+    h.keys("7").await;
     assert_shows(&h.screen(), "apply the config first");
-    h.keys("0fay9").await;
+    h.keys("0fay7").await;
     assert_shows(&h.screen(), "Golem — a CPU");
     h.keys("n").await;
     h.keys("Verilog guide").await;
@@ -578,7 +578,7 @@ async fn signed_in_it_works_through_the_web_server() {
     assert_shows(&h.screen(), "connected to http://127.0.0.1:");
 
     // The tabs show the server's copy, and edits go there.
-    h.keys("2").await;
+    h.keys("9").await;
     h.select("▶ ● Admin").await;
     h.key(KeyCode::Enter).await;
     h.key(KeyCode::Down).await;
@@ -600,7 +600,7 @@ async fn signed_in_it_works_through_the_web_server() {
     h.keys("f").await;
     assert_shows(&h.screen(), "Discord matches the config");
 
-    h.keys("6").await;
+    h.keys("2").await;
     assert_shows(&h.screen(), "The review queue is off");
 }
 
@@ -671,7 +671,7 @@ async fn help_explains_plan_then_apply() {
 #[tokio::test]
 async fn reordering_takes_shift_and_moving_takes_j_and_k() {
     let mut h = Harness::new().await;
-    h.keys("2j").await;
+    h.keys("9j").await;
     assert_shows(&h.screen(), "▶ ● Admin");
     h.keys("k").await;
     assert_shows(&h.screen(), "▶ ● Bot");
@@ -703,7 +703,7 @@ async fn long_details_scroll_and_long_notices_wrap() {
         .add_application(chipsoc_store::AppKind::Project, "golem", "42", &answers, false, 1)
         .await
         .unwrap();
-    h.keys("6").await;
+    h.keys("2").await;
     // The footer offers scrolling once the pane is drawn too long to fit.
     h.screen();
     let s = h.screen();
@@ -729,11 +729,11 @@ async fn long_details_scroll_and_long_notices_wrap() {
 async fn a_narrow_screen_keeps_the_demo_badge_and_the_current_tab() {
     let mut h = Harness::new().await;
     h.app.demo = true;
-    h.keys("6").await;
+    h.keys("2").await;
     let s = h.screen_at(80, 24);
     let top = s.lines().next().unwrap();
     assert!(top.starts_with(" DEMO "), "{top}");
-    assert!(top.contains("6 Queue") && top.contains(" 0 ") && !top.contains("Roles"), "{top}");
+    assert!(top.contains("2 Queue") && top.contains(" 0 ") && !top.contains("Roles"), "{top}");
     assert!(h.screen_at(80, 24).contains("q  quit"), "every key fits in the footer");
 }
 
@@ -764,7 +764,7 @@ async fn a_tab_opened_mid_job_loads_when_the_job_ends() {
         // Overview reloads the activity log: a job.
         panic!("r starts a job");
     };
-    h.keys("7").await;
+    h.keys("3").await;
     assert_shows(&h.screen(), "Loading…");
     h.run(Command::Discord(job)).await;
     assert!(!h.screen().contains("Loading…"), "{}", h.screen());

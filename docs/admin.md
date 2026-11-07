@@ -268,7 +268,9 @@ Every command takes `--config <dir>`. Commands that edit files keep comments.
 | `share announcement\|event <link or id> [--to a,b]` | Share with partners (default: every partner we send it to); the bot sends it within a minute. Also `POST /api/v1/share`. |
 | `login [--server <url>] [--paste]`, `logout` | Signs in to the bot's web server with Discord (default: bot.toml's `[web] url`), or out. |
 
-**Terminal UI keys:** ↑↓ or j/k move, Tab or 1–9, 0 switch tabs, `?` help,
+**Terminal UI keys:** ↑↓ or j/k move, Tab or the number keys switch tabs
+(in the dashboard's order: 1 Overview, 2 Queue, 3 Members, 4 Projects,
+5 Positions, 6 Feeds, 7 Resources, 8 Channels, 9 Roles, 0 Apply), `?` help,
 `q` quit. On the Queue: `a` accept, `x` reject, `h` history, then `l` make
 lead. On Apply: `f` plan, `a` apply, `p` pull. The footer lists the rest;
 Enter in a form names what it does ("Enter  reject", "appoint", …).

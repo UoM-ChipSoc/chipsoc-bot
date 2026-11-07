@@ -116,7 +116,7 @@ fn summary(app: &App) -> Vec<Line<'_>> {
     // The count is 0 when the bot's data can't be read; the activity log says which.
     let unreadable = matches!(app.activity, Loaded::Failed(_)) || matches!(app.queue, Loaded::Failed(_));
     let queue = match &app.status {
-        Loaded::Got(s) if s.queue > 0 => format!("{} waiting for Accept or Reject (press 6)", s.queue),
+        Loaded::Got(s) if s.queue > 0 => format!("{} waiting for Accept or Reject (press 2)", s.queue),
         Loaded::Got(_) if unreadable => "unknown (can't reach the bot's data)".into(),
         Loaded::Got(_) => "none waiting".into(),
         Loaded::Failed(_) | Loaded::No => "unknown".into(),
@@ -203,7 +203,7 @@ pub fn roles(f: &mut Frame, area: Rect, app: &App) {
             field("Key", r.key.clone()).italic(),
         ];
         if let Some(people) = s.holders.get(&r.key) {
-            details.push(field("Held by", format!("{} (see tab 7)", people.len())));
+            details.push(field("Held by", format!("{} (see tab 3)", people.len())));
         }
         if r.managed {
             details.push(Line::from("Made by Discord for a bot; it can't be changed here.").italic());
@@ -370,7 +370,7 @@ pub fn positions(f: &mut Frame, area: Rect, app: &App) {
             Line::from(format!("  {}. {}{extra}", i + 1, q.ask))
         }));
         let held = s.holders.get(&p.role).map_or(0, Vec::len);
-        details.push(field("Held by", format!("{held} (see tab 7)")));
+        details.push(field("Held by", format!("{held} (see tab 3)")));
     }
     list_and_details(f, area, app, ("Positions", labels, app.sel()), ("Details", details));
 }
