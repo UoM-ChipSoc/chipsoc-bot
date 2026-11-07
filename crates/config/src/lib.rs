@@ -9,7 +9,7 @@
 
 pub mod authoring;
 pub mod bot;
-pub mod git;
+pub mod files;
 pub mod join;
 mod lockfile;
 pub mod ops;
@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 pub use bot::BotConfig;
+pub use files::{FileLock, WriteLock, blocking};
 pub use join::Join;
 pub use lockfile::{LOCK_BACKUP, fuller_backup, merge_lock};
 pub use schema::*;
@@ -186,7 +187,7 @@ impl Config {
     /// [`Config::save_lock`] off the async runtime's threads (it may wait for the write lock).
     pub async fn save_lock_async(&self, lock: &Lock) -> Result<()> {
         let (dir, lock) = (self.dir.clone(), lock.clone());
-        git::blocking(move || lockfile::save(&dir, &lock)).await
+        blocking(move || lockfile::save(&dir, &lock)).await
     }
 }
 
@@ -488,7 +489,7 @@ pub fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     f.write_all(bytes).with_context(|| format!("writing {}", tmp.display()))?;
     drop(f);
     fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
-    git::wrote(path);
+    files::wrote(path);
     Ok(())
 }
 

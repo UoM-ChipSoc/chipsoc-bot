@@ -103,9 +103,9 @@ impl chipsoc_admin::Host for Ctx {
     async fn undo(
         &self,
         commit: &str,
-        how: chipsoc_config::git::Undo,
+        how: chipsoc_engine::git::Undo,
         by: &By,
-    ) -> Result<Option<chipsoc_config::git::Undid>> {
+    ) -> Result<Option<chipsoc_engine::git::Undid>> {
         let mut c = begin(self).await?;
         let r = c.engine.undo(commit, how, by).await;
         c.end().await;

@@ -53,7 +53,8 @@ impl Pending {
 }
 
 async fn pending(ctx: &Ctx, dir: &Path) -> Result<Pending> {
-    let mut cfg = Config::load(dir)?;
+    let d = dir.to_owned();
+    let mut cfg = chipsoc_config::blocking(move || Config::load(&d)).await?;
     let t = kept::load(&ctx.store, &kept::scope(dir)).await?;
     let v = t.vet(&mut cfg);
     Ok(Pending {
@@ -79,7 +80,7 @@ async fn authors(ctx: &Ctx, dir: &Path) -> Authors {
     let scope = kept::scope(dir);
     let since = kept::approved_at(&ctx.store, &scope).await.ok().flatten();
     let (d, files) = (dir.to_owned(), FILES);
-    let changed = chipsoc_config::git::blocking(move || Ok(chipsoc_config::git::changed(&d, since.as_deref(), files)))
+    let changed = chipsoc_config::blocking(move || Ok(chipsoc_engine::git::changed(&d, since.as_deref(), files)))
         .await
         .unwrap_or_default();
     let mut who = Authors::default();
@@ -148,8 +149,8 @@ fn text(cfg: &Config, p: &Pending, authors: &Authors, owner: Option<chipsoc_mode
 /// Where the last approval card went: `channel/message`.
 const CARD_AT: &str = "prompted_at";
 
-/// After the config loads, and on every sync: say in the bot log what's
-/// held back, once per change. A card is remembered only once it's posted,
+/// After the config loads, and every 2 minutes (see [`reload::watch`]): say
+/// in the bot log what's held back, once per change. A card is remembered only once it's posted,
 /// so one that couldn't be (or was deleted since) is posted again.
 pub async fn review(ctx: &Ctx, dir: &Path) {
     let p = match pending(ctx, dir).await {
@@ -204,7 +205,7 @@ async fn post_card(ctx: &Ctx, dir: &Path, p: &Pending) -> bool {
     let posted = match sent.await {
         Ok(m) => m,
         Err(e) => {
-            tracing::warn!("posting an approval card failed (tried again on the next sync): {e:#}");
+            tracing::warn!("posting an approval card failed (tried again in 2 minutes): {e:#}");
             return false;
         }
     };
@@ -294,7 +295,7 @@ pub async fn button(ctx: &Ctx, i: &Interaction, approve: bool, hash: &str) {
     let scope = kept::scope(&dir);
     let saved = async {
         if let Some(new) = &p.new {
-            kept::approve(&ctx.store, &scope, new, chipsoc_config::git::head_full(&dir).as_deref()).await?;
+            kept::approve(&ctx.store, &scope, new, chipsoc_engine::git::head_full(&dir).as_deref()).await?;
         }
         if !p.unlinks.is_empty()
             && let Some(mut lock) = kept::load(&ctx.store, &scope).await?.lock

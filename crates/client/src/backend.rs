@@ -8,11 +8,11 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use chipsoc_admin::{Actor, Decided, Done, Drift, Entry, FeedInfo, Host, NewResource, Past, Pending, Post, Roster};
-use chipsoc_config::git::{Undid, Undo};
 use chipsoc_config::ops::{self, Change, Op, Schema};
 use chipsoc_config::template::{self, Rendered};
 use chipsoc_config::{Config, Snowflake, authoring};
 use chipsoc_discord::Rest;
+use chipsoc_engine::git::{Undid, Undo};
 use chipsoc_engine::{Engine, Options, Progress, Pulled};
 use chipsoc_store::Store;
 use tokio::sync::OnceCell;
@@ -101,8 +101,12 @@ impl<R: Rest + Clone> Local<R> {
             return Ok(change);
         }
         // The bot or web UI may share this checkout: don't write while they do.
-        let _held = chipsoc_config::git::WriteLock::take(&self.dir)?;
-        ops::apply_ops(&self.dir, list)
+        let (dir, list) = (self.dir.clone(), list.to_vec());
+        chipsoc_config::blocking(move || {
+            let _held = chipsoc_config::WriteLock::take(&dir)?;
+            ops::apply_ops(&dir, &list)
+        })
+        .await
     }
 
     /// The config directory this works on.

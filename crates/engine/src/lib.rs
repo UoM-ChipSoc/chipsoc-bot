@@ -4,13 +4,13 @@
 //! off the async runtime's threads.
 
 mod adopt;
+pub mod git;
 mod owner;
 
 pub use owner::{Ask, By, OWNER_UNKNOWN, OwnerOnly, check as owner_check, owner_of, owner_only};
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
-use std::fs::File;
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
@@ -19,15 +19,16 @@ use std::sync::{Arc, OnceLock};
 use anyhow::{Result, bail};
 use chipsoc_config::authoring;
 pub use chipsoc_config::authoring::Problems;
-use chipsoc_config::git::{self, Upstream, WriteLock, blocking};
 use chipsoc_config::ops::{self, Change, Op};
 use chipsoc_config::schema::*;
 use chipsoc_config::trust::{Trusted, Vetted};
 use chipsoc_config::{Config, write_snapshot};
+use chipsoc_config::{FileLock, WriteLock, blocking};
 pub use chipsoc_diff::Options;
 use chipsoc_discord::exec::{self, Report};
 use chipsoc_discord::{Method, Rest, export};
 use chipsoc_model::{Action, ObjectKind, Plan, Warning};
+use git::Upstream;
 
 #[cfg(test)]
 mod tests;
@@ -67,6 +68,16 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub trait Baseline: Send + Sync {
     fn load(&self) -> BoxFuture<'_, Result<Trusted>>;
     fn save_lock<'a>(&'a self, lock: &'a Lock) -> BoxFuture<'a, Result<()>>;
+
+    /// Changes whenever what [`Baseline::load`] gives does (by this program or
+    /// another), so a copy can be checked without loading it all. By
+    /// default, a hash of it all.
+    fn revision(&self) -> BoxFuture<'_, Result<String>> {
+        Box::pin(async {
+            let t = self.load().await?;
+            Ok(chipsoc_model::stable_hash(serde_json::to_string(&(&t.lock, &t.approved))?))
+        })
+    }
     /// Project `from` in server `guild` is now `to`, its keys moved as `keys`
     /// (see [`Op::RenameProject`]): what's kept by slug or role key follows.
     fn renamed<'a>(
@@ -122,26 +133,21 @@ impl std::fmt::Display for Refused {
 impl std::error::Error for Refused {}
 
 /// Held while applying, so two applies (CLI, bot, web) never interleave.
-pub struct Lease(#[allow(dead_code)] File);
+pub struct Lease(#[allow(dead_code)] FileLock);
 
 impl Lease {
     pub fn take(dir: &Path) -> Result<Self> {
-        let f = File::options().create(true).truncate(false).write(true).open(dir.join(".apply.lock"))?;
-        match f.try_lock() {
-            Ok(()) => Ok(Self(f)),
-            Err(_) => Err(Refused::Busy.into()),
+        match FileLock::try_take(&dir.join(".apply.lock"))? {
+            Some(l) => Ok(Self(l)),
+            None => Err(Refused::Busy.into()),
         }
     }
 
     /// Whether an apply holds the lease now (here or in another program): a
-    /// hint, out of date as soon as it's said. Looking takes a shared lock
-    /// for an instant, which never stops another look, and an apply starting
-    /// in that instant waits it out (see [`Lease::take_soon`]).
+    /// hint, out of date as soon as it's said (see [`FileLock::held`]). An
+    /// apply starting in the instant it looks waits it out (see [`Lease::take_soon`]).
     pub fn busy(dir: &Path) -> bool {
-        let Ok(f) = File::options().create(true).truncate(false).write(true).open(dir.join(".apply.lock")) else {
-            return false;
-        };
-        f.try_lock_shared().is_err()
+        FileLock::held(&dir.join(".apply.lock"))
     }
 
     /// [`Lease::take`], trying again for a moment first: a lease just let go
@@ -225,6 +231,23 @@ impl<R: Rest> Engine<R> {
     /// so a front end can start even while a file has a mistake in it.
     pub fn unloaded(rest: R, dir: &Path) -> Self {
         Self::with(rest, Config { dir: dir.to_owned(), ..Default::default() })
+    }
+
+    /// A copy of this engine to plan with, on the config as loaded now, so
+    /// a plan (a whole export) needn't hold this one: edits and applies can
+    /// go ahead meanwhile (an apply checks its plan afresh anyway).
+    pub fn planner(&self) -> Self
+    where
+        R: Clone,
+    {
+        Self {
+            rest: self.rest.clone(),
+            cfg: self.cfg.clone(),
+            autosave: self.autosave,
+            me: self.me.clone(),
+            trust: self.trust.clone(),
+            vetted: self.vetted.clone(),
+        }
     }
 
     fn with(rest: R, cfg: Config) -> Self {
@@ -614,10 +637,9 @@ impl<R: Rest> Engine<R> {
         }
         let cfg = self.cfg.clone();
         let mut saver = Saver { cfg: &cfg, trust: self.baseline(), progress };
+        let before = lock.clone();
         let mut report = exec::execute(&self.rest, &cfg, &checked, Some(&live), &mut lock, &mut saver).await;
-        // Objects made during this run were hashed before they existed; record
-        // what everything in sync looks like now.
-        if let Err(e) = self.record_applied(g, &mut lock).await {
+        if let Err(e) = self.record_applied(g, &mut lock, &before).await {
             tracing::warn!("recording applied state failed: {e:#}");
         }
         if let Err(e) = self.trust_lock(&lock).await {
@@ -663,11 +685,19 @@ impl<R: Rest> Engine<R> {
         b.save_lock(lock).await
     }
 
-    /// Record in `lock` what's in step after an apply (the caller saves it).
-    async fn record_applied(&mut self, g: Snowflake, lock: &mut Lock) -> Result<()> {
+    /// Record in `lock` what's in step after an apply (the caller saves it);
+    /// `before` is the lock it started from.
+    async fn record_applied(&mut self, g: Snowflake, lock: &mut Lock, before: &Lock) -> Result<()> {
         let mut cfg = (*self.cfg).clone();
         cfg.desired.lock = lock.clone();
         self.cfg = Arc::new(cfg);
+        // Objects made during this run were hashed before they existed (or
+        // what they point at did), so plan again to hash them as they are.
+        // With no new ids or posts, the plan's hashes (kept as it ran) are those.
+        let ids = |l: &Lock| Lock { applied: Default::default(), ..l.clone() };
+        if ids(lock) == ids(before) {
+            return Ok(());
+        }
         let (after, _) = self.plan_at(g, Options::default()).await?;
         let pending: BTreeSet<String> = after.actions.iter().filter_map(Action::object).collect();
         for (obj, h) in after.hashes {
@@ -939,7 +969,7 @@ pub fn plan_lines(p: &Plan) -> Vec<String> {
 /// this config (see [`Engine::autosave`]): [`autosave_on`] and it's a synced
 /// git checkout. Runs git; ask once.
 pub fn autosaves(dir: &Path) -> bool {
-    autosave_on() && chipsoc_config::git::is_synced(dir)
+    autosave_on() && git::is_synced(dir)
 }
 
 /// Whether `CONFIG_AUTOSAVE` asks for changes to be committed and pushed.
@@ -981,6 +1011,6 @@ pub async fn export_to(rest: &impl Rest, guild: Snowflake, dir: &Path) -> Result
     }
     std::fs::create_dir_all(dir)?;
     let snap = export::export(rest, guild, &Lock::default()).await?;
-    write_snapshot(dir, &snap)?;
-    Ok(snap)
+    let dir = dir.to_owned();
+    blocking(move || write_snapshot(&dir, &snap).map(|()| snap)).await
 }

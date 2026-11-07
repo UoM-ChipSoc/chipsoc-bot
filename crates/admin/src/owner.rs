@@ -3,9 +3,9 @@
 
 use anyhow::Result;
 use chipsoc_config::Snowflake;
-use chipsoc_config::git::{self, Undid, Undo};
 use chipsoc_discord::{Method, Rest};
 use chipsoc_engine::Ask;
+use chipsoc_engine::git::{self, Undid, Undo};
 use serde::{Deserialize, Serialize};
 
 use crate::{Actor, Host, Refusal, fmt};
@@ -127,7 +127,7 @@ pub const WEEK: i64 = 7 * 24 * 60 * 60;
 pub async fn config_history<H: Host>(h: &H, user: Option<Snowflake>, limit: usize) -> Result<Vec<Done>> {
     let since = crate::now() - WEEK;
     let dir = h.cfg().dir.clone();
-    let commits = git::blocking(move || Ok(git::log(&dir, 200))).await?;
+    let commits = chipsoc_config::blocking(move || Ok(git::log(&dir, 200))).await?;
     let from_commit = |c: git::Commit| Done {
         at: c.at,
         who: c.who,
