@@ -882,7 +882,7 @@ async fn api_runs_the_review_queue_feeds_resources_and_activity() {
 
 #[tokio::test]
 async fn the_remote_client_reaches_every_endpoint() {
-    use crate::remote::{Client, Login};
+    use chipsoc_client::remote::{Client, Login};
     use chipsoc_config::Snowflake;
     use chipsoc_config::ops::{Op, RoleField};
 
@@ -1498,7 +1498,7 @@ async fn the_shared_code_signs_as_shared_token() {
 #[tokio::test]
 async fn an_attacker_started_cli_sign_in_lands_on_the_admins_own_machine() {
     let mut b = Browser::discord();
-    let attacker = crate::remote::Verifier::new();
+    let attacker = chipsoc_client::remote::Verifier::new();
     let start =
         format!("/auth/cli?port=4567&state={CLI_STATE}&challenge={}&device=evil%20%60box%60", attacker.challenge);
     let page = b.cli_discord(&start, "code-ada").await;
@@ -1830,7 +1830,7 @@ async fn the_history_names_who_and_only_the_owner_reverts() {
         &[
             "commit",
             "-qam",
-            &format!("Project golem: status past by ada\n\n{}: {ADMIN}", chipsoc_config::git::BY_TRAILER),
+            &format!("Project golem: status past by ada\n\n{}: {ADMIN}", chipsoc_engine::git::BY_TRAILER),
         ],
     );
     assert!(b.projects_toml().contains("status = \"past\""));
@@ -1853,7 +1853,7 @@ async fn the_history_names_who_and_only_the_owner_reverts() {
     assert!(b.projects_toml().contains("status = \"active\""), "back as it was");
     let last = git_in(&dir, &["log", "-1", "--format=%s%n%b"]);
     assert!(
-        last.contains("by olive") && last.contains(&format!("{}: {OWNER}", chipsoc_config::git::BY_TRAILER)),
+        last.contains("by olive") && last.contains(&format!("{}: {OWNER}", chipsoc_engine::git::BY_TRAILER)),
         "{last}"
     );
 

@@ -4,13 +4,13 @@
 //! off the async runtime's threads.
 
 mod adopt;
+pub mod git;
 mod owner;
 
 pub use owner::{Ask, By, OWNER_UNKNOWN, OwnerOnly, check as owner_check, owner_of, owner_only};
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
-use std::fs::File;
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
@@ -19,15 +19,16 @@ use std::sync::{Arc, OnceLock};
 use anyhow::{Result, bail};
 use chipsoc_config::authoring;
 pub use chipsoc_config::authoring::Problems;
-use chipsoc_config::git::{self, Upstream, WriteLock, blocking};
 use chipsoc_config::ops::{self, Change, Op};
 use chipsoc_config::schema::*;
 use chipsoc_config::trust::{Trusted, Vetted};
 use chipsoc_config::{Config, write_snapshot};
+use chipsoc_config::{FileLock, WriteLock, blocking};
 pub use chipsoc_diff::Options;
 use chipsoc_discord::exec::{self, Report};
 use chipsoc_discord::{Method, Rest, export};
 use chipsoc_model::{Action, ObjectKind, Plan, Warning};
+use git::Upstream;
 
 #[cfg(test)]
 mod tests;
@@ -122,26 +123,21 @@ impl std::fmt::Display for Refused {
 impl std::error::Error for Refused {}
 
 /// Held while applying, so two applies (CLI, bot, web) never interleave.
-pub struct Lease(#[allow(dead_code)] File);
+pub struct Lease(#[allow(dead_code)] FileLock);
 
 impl Lease {
     pub fn take(dir: &Path) -> Result<Self> {
-        let f = File::options().create(true).truncate(false).write(true).open(dir.join(".apply.lock"))?;
-        match f.try_lock() {
-            Ok(()) => Ok(Self(f)),
-            Err(_) => Err(Refused::Busy.into()),
+        match FileLock::try_take(&dir.join(".apply.lock"))? {
+            Some(l) => Ok(Self(l)),
+            None => Err(Refused::Busy.into()),
         }
     }
 
     /// Whether an apply holds the lease now (here or in another program): a
-    /// hint, out of date as soon as it's said. Looking takes a shared lock
-    /// for an instant, which never stops another look, and an apply starting
-    /// in that instant waits it out (see [`Lease::take_soon`]).
+    /// hint, out of date as soon as it's said (see [`FileLock::held`]). An
+    /// apply starting in the instant it looks waits it out (see [`Lease::take_soon`]).
     pub fn busy(dir: &Path) -> bool {
-        let Ok(f) = File::options().create(true).truncate(false).write(true).open(dir.join(".apply.lock")) else {
-            return false;
-        };
-        f.try_lock_shared().is_err()
+        FileLock::held(&dir.join(".apply.lock"))
     }
 
     /// [`Lease::take`], trying again for a moment first: a lease just let go
@@ -939,7 +935,7 @@ pub fn plan_lines(p: &Plan) -> Vec<String> {
 /// this config (see [`Engine::autosave`]): [`autosave_on`] and it's a synced
 /// git checkout. Runs git; ask once.
 pub fn autosaves(dir: &Path) -> bool {
-    autosave_on() && chipsoc_config::git::is_synced(dir)
+    autosave_on() && git::is_synced(dir)
 }
 
 /// Whether `CONFIG_AUTOSAVE` asks for changes to be committed and pushed.

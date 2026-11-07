@@ -195,7 +195,7 @@ pub async fn export(c: &Client, dir: &Path) -> Result<()> {
 }
 
 fn random_state() -> String {
-    chipsoc_client::remote::random_hex(16)
+    chipsoc_model::random_hex(16)
 }
 
 /// `logout`: revoke the token on the server and forget it here.

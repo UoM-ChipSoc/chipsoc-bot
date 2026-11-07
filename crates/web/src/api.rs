@@ -204,7 +204,7 @@ pub(crate) async fn pull<R: Rest + 'static>(
 pub(crate) async fn check<R: Rest + 'static>(State(app): State<Arc<App<R>>>) -> Reply<Checked> {
     let dir = app.dir.clone();
     // A file that doesn't load is a problem to report, not a failure.
-    let r = chipsoc_config::git::blocking(move || authoring::check(&dir)).await?;
+    let r = chipsoc_config::blocking(move || authoring::check(&dir)).await?;
     Ok(Json(Checked { errors: r.errors, warnings: r.warnings }))
 }
 

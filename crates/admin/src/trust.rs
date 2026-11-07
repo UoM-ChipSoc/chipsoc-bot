@@ -109,7 +109,7 @@ pub async fn approved_at(store: &Store, scope: &str) -> Result<Option<String>> {
     Ok(store.trusted(scope, APPROVED_AT).await?.filter(|c| !c.is_empty()))
 }
 
-/// What a config commit's maker is kept under (see [`chipsoc_config::git::fingerprint`]).
+/// What a config commit's maker is kept under (see [`chipsoc_engine::git::fingerprint`]).
 fn made_key(fingerprint: &str) -> String {
     format!("made:{fingerprint}")
 }
@@ -162,7 +162,7 @@ pub async fn vet<R: Rest>(store: &Store, rest: &R, dir: &Path, cfg: &mut Config)
             tracing::warn!("first run: the config's admins aren't who Discord says; its settings wait for the owner");
             held_at_first(&s)
         };
-        approve(store, &scope, &first, chipsoc_config::git::head_full(dir).as_deref()).await?;
+        approve(store, &scope, &first, chipsoc_engine::git::head_full(dir).as_deref()).await?;
         t.approved = Some(first);
     }
     Ok(t.vet(cfg))

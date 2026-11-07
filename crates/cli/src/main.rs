@@ -693,7 +693,7 @@ fn write_secret(path: &Path, body: &str) -> Result<()> {
     refuse_symlink(path)?;
     let mut tag = [0u8; 8];
     getrandom::fill(&mut tag).map_err(|e| anyhow::anyhow!("no randomness: {e}"))?;
-    let tag: String = tag.iter().map(|b| format!("{b:02x}")).collect();
+    let tag = chipsoc_model::hex(&tag);
     let name = path.file_name().context("no file name")?.to_string_lossy();
     let tmp = path.with_file_name(format!(".{name}.{tag}.tmp"));
     let mut open = std::fs::OpenOptions::new();

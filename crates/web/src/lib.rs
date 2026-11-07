@@ -2,7 +2,8 @@
 //! projects, and send the config to Discord. Pages are rendered on the server
 //! with Dioxus SSR and every action is a plain HTML form, so it needs no
 //! JavaScript and deploys with one `cargo build`. The CLI and TUI use the same
-//! things through a JSON API (`chipsoc_client` is their client).
+//! things through a JSON API (its wire types are `chipsoc_api`'s, and
+//! `chipsoc_client` is their client).
 
 mod activity;
 mod api;
@@ -28,8 +29,8 @@ mod roles;
 mod theme;
 mod view;
 
-/// The JSON API's wire types live with their client.
-pub use chipsoc_client::remote;
+/// The JSON API's wire types, shared with its client.
+use chipsoc_api as remote;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
@@ -41,7 +42,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use chipsoc_config::Snowflake;
-use chipsoc_config::git::blocking;
+use chipsoc_config::blocking;
 
 use anyhow::{Context, Result, bail};
 use axum::Router;

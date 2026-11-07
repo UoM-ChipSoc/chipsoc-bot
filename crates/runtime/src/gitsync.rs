@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use chipsoc_config::git;
+use chipsoc_engine::git;
 
 use chipsoc_admin::fmt;
 
@@ -80,7 +80,7 @@ pub fn stuck(e: &anyhow::Error) -> String {
 async fn pull(ctx: &Ctx, dir: &Path) -> Result<Option<String>> {
     let _one = ctx.changing.lock().await;
     let dir = dir.to_owned();
-    git::blocking(move || sync(&dir)).await
+    chipsoc_config::blocking(move || sync(&dir)).await
 }
 
 /// Pull (and, where the bot saves its changes, push). The new commit, if any

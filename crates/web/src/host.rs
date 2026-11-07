@@ -71,9 +71,9 @@ impl<R: Rest + Clone> Host for Desk<'_, R> {
     async fn undo(
         &self,
         commit: &str,
-        how: chipsoc_config::git::Undo,
+        how: chipsoc_engine::git::Undo,
         by: &chipsoc_engine::By,
-    ) -> Result<Option<chipsoc_config::git::Undid>> {
+    ) -> Result<Option<chipsoc_engine::git::Undid>> {
         let mut e = self.app.engine.lock().await;
         let r = e.undo(commit, how, by).await;
         self.app.forget_config();

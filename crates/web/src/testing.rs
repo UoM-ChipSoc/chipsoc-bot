@@ -188,10 +188,10 @@ pub async fn browse(link: &str, code: &str) -> Result<String> {
 
 /// An API token for `code`'s user, as `login --paste` gets one.
 pub async fn token(server: &str, code: &str) -> Result<String> {
-    let verifier = crate::remote::Verifier::new();
+    let verifier = chipsoc_client::remote::Verifier::new();
     let link = format!("{server}/auth/cli?state=0123456789abcdef&challenge={}", verifier.challenge);
     let page = browse(&link, code).await?;
     let once = page.split("<code>").nth(1).and_then(|s| s.split("</code>").next());
     let once = once.with_context(|| format!("no code on {page}"))?;
-    crate::remote::trade(server, once, &verifier).await
+    chipsoc_client::remote::trade(server, once, &verifier).await
 }

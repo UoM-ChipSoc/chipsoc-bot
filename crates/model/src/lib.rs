@@ -458,14 +458,26 @@ impl Plan {
 /// 64 bits would be too few.
 pub fn sha256_hex(data: impl AsRef<[u8]>) -> String {
     use sha2::{Digest, Sha256};
-    Sha256::digest(data.as_ref()).iter().map(|b| format!("{b:02x}")).collect()
+    hex(&Sha256::digest(data.as_ref()))
 }
 
 /// Short content hash that is stable across Rust versions and platforms
 /// (unlike `DefaultHasher`), so it is safe to commit.
 pub fn stable_hash(data: impl AsRef<[u8]>) -> String {
     use sha2::{Digest, Sha256};
-    Sha256::digest(data.as_ref())[..8].iter().map(|b| format!("{b:02x}")).collect()
+    hex(&Sha256::digest(data.as_ref())[..8])
+}
+
+/// `bytes` as lower-case hex.
+pub fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// `bytes` random bytes from the OS, as hex: for tokens, states and secrets.
+pub fn random_hex(bytes: usize) -> String {
+    let mut buf = vec![0u8; bytes];
+    getrandom::fill(&mut buf).expect("the OS random number generator failed");
+    hex(&buf)
 }
 
 /// Things kept under an id until used or `ttl` old, at most `max` at once:

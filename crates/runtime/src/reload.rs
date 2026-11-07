@@ -53,19 +53,19 @@ pub fn applying(ctx: &Ctx, dir: &Path) -> bool {
 async fn changed(dir: &Path) -> (u64, u64) {
     let dir = dir.to_owned();
     let both = move || Ok((fingerprint(&dir), chipsoc_config::edits_fingerprint(&dir)));
-    chipsoc_config::git::blocking(both).await.unwrap_or_default()
+    chipsoc_config::blocking(both).await.unwrap_or_default()
 }
 
 /// The newest commit, as "abc1234 its message", if the config is a git checkout.
 pub(crate) async fn last_commit(dir: &Path) -> Option<String> {
     let dir = dir.to_owned();
-    chipsoc_config::git::blocking(move || Ok(chipsoc_config::git::last_commit(&dir))).await.ok().flatten()
+    chipsoc_config::blocking(move || Ok(chipsoc_engine::git::last_commit(&dir))).await.ok().flatten()
 }
 
 /// Load the config again and use it. False (and said in the bot log) if it doesn't load.
 pub async fn reload(ctx: &Ctx, dir: &Path) -> bool {
     let path = dir.to_owned();
-    let mut cfg = match chipsoc_config::git::blocking(move || Config::load(&path)).await {
+    let mut cfg = match chipsoc_config::blocking(move || Config::load(&path)).await {
         Ok(c) => c,
         Err(e) => {
             ctx.log_bot(&doesnt_load(&e)).await;

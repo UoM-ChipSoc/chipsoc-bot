@@ -456,7 +456,7 @@ impl Shared {
     /// finds, isn't used, as when the files don't load.
     async fn load(&self, dir: &Path) -> Result<(Config, Id<GuildMarker>)> {
         let d = dir.to_owned();
-        let (mut cfg, guild) = chipsoc_config::git::blocking(move || load_server(&d)).await?;
+        let (mut cfg, guild) = chipsoc_config::blocking(move || load_server(&d)).await?;
         chipsoc_admin::trust::vet(&self.store, &self.http, dir, &mut cfg)
             .await
             .with_context(|| format!("reading what the bot trusts about {}", dir.display()))?;
@@ -470,7 +470,7 @@ impl Shared {
     /// Start serving a server (its config from [`Shared::load`]): its commands and background jobs.
     async fn start(&self, dir: &Path, cfg: Config, guild: Id<GuildMarker>) -> Arc<Ctx> {
         let d = dir.to_owned();
-        let autosave = chipsoc_config::git::blocking(move || Ok(chipsoc_engine::autosaves(&d))).await.unwrap_or(false);
+        let autosave = chipsoc_config::blocking(move || Ok(chipsoc_engine::autosaves(&d))).await.unwrap_or(false);
         let ctx = Arc::new(Ctx {
             autosave,
             rest: Discord {
@@ -544,7 +544,7 @@ pub async fn run(dirs: &[PathBuf]) -> Result<()> {
     let mut waiting = 0;
     for dir in dirs {
         // A rebase an older version left stuck would leave lock.toml unreadable.
-        if let Err(e) = chipsoc_config::git::recover(dir) {
+        if let Err(e) = chipsoc_engine::git::recover(dir) {
             tracing::warn!(dir = %dir.display(), "checking the config checkout failed: {e:#}");
         }
         let (cfg, guild) = match shared.load(dir).await {

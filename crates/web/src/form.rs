@@ -511,7 +511,7 @@ impl<R: Rest> App<R> {
     /// The config as its files say it (what `Op`s edit).
     pub(crate) async fn schema(&self) -> Result<chipsoc_config::ops::Schema> {
         let dir = self.dir.clone();
-        chipsoc_config::git::blocking(move || chipsoc_config::ops::schema(&dir)).await
+        chipsoc_config::blocking(move || chipsoc_config::ops::schema(&dir)).await
     }
 }
 
