@@ -1392,6 +1392,119 @@ async fn only_the_bots_own_old_parts_are_deleted() {
     assert_converged(&e).await;
 }
 
+/// A part's edit failing half way stops there: the lockfile keeps the parts
+/// from it on as they were, and the next apply finishes the job.
+#[tokio::test]
+async fn a_long_post_edit_failing_half_way_keeps_the_rest() {
+    let d = fixture();
+    let p = d.path();
+    write(p, "content/welcome.md", &parts_post(5, 0));
+    let mut e = engine(p);
+    apply_all(&mut e).await;
+    let ch = e.cfg.desired.lock.channel("general").unwrap();
+    let before = e.cfg.desired.lock.posts["general"].clone();
+    assert_eq!(before.parts.len(), 4);
+
+    let all_edited = (1..=5).map(|i| format!("Part {i}, new.")).collect::<Vec<_>>().join("\n<!-- part -->\n");
+    write(p, "content/welcome.md", &format!("{all_edited}\n\n{{button:profile|Set up your profile}}\n"));
+    e.reload().unwrap();
+    // Part 3 of 5 is the second later part.
+    e.rest.fail(&format!("PATCH channels/{ch}/messages/{}", before.parts[1]), 500, false);
+    let plan = e.plan(Options::default()).await.unwrap();
+    let report = e.apply(&plan, &mut |_: &Action, _: &Result<(), String>| {}).await.unwrap();
+    assert_eq!(report.failed().count(), 1);
+    assert_eq!(e.cfg.desired.lock.posts["general"], before, "the same messages, none lost or posted again");
+    let texts: Vec<String> = messages_in(&e, ch).into_iter().map(|(_, t, _)| t).collect();
+    assert_eq!(texts, ["Part 1, new.", "Part 2, new.", "Part 3.", "Part 4.", "Part 5."]);
+
+    e.rest.take_calls();
+    apply_all(&mut e).await;
+    let edits: Vec<String> = before.parts[1..].iter().map(|m| format!("Patch channels/{ch}/messages/{m}")).collect();
+    assert_eq!(e.rest.take_calls(), edits, "only the parts left are sent");
+    assert_eq!(e.cfg.desired.lock.posts["general"], before);
+    assert_converged(&e).await;
+}
+
+/// A post's later parts are read in one go, and found further on when the
+/// channel is busy.
+#[tokio::test]
+async fn a_long_posts_parts_are_read_together_even_far_apart() {
+    let d = fixture();
+    let p = d.path();
+    write(p, "content/welcome.md", &parts_post(3, 0));
+    let mut e = engine(p);
+    apply_all(&mut e).await;
+    let ch = e.cfg.desired.lock.channel("general").unwrap();
+    e.rest.state.lock().unwrap().reads.clear();
+    assert_converged(&e).await;
+    let reads = std::mem::take(&mut e.rest.state.lock().unwrap().reads);
+    let of_parts: Vec<&String> = reads.iter().filter(|r| r.starts_with(&format!("channels/{ch}/messages"))).collect();
+    let first = e.cfg.desired.lock.posts["general"].message;
+    assert_eq!(
+        of_parts,
+        [&format!("channels/{ch}/messages/{first}"), &format!("channels/{ch}/messages?after={first}&limit=100")]
+    );
+
+    // 150 replies, then a fourth part after them.
+    for i in 0..150 {
+        e.rest.say(ch, 7, &format!("reply {i}"));
+    }
+    write(p, "content/welcome.md", &parts_post(4, 0));
+    e.reload().unwrap();
+    apply_all(&mut e).await;
+    assert_converged(&e).await;
+    let fourth = e.cfg.desired.lock.posts["general"].parts[2];
+    e.rest.state.lock().unwrap().messages.retain(|m| m["id"] != fourth.to_string());
+    let plan = e.plan(Options::default()).await.unwrap();
+    assert!(lines(&plan).contains("part 4 changed: (nothing)"), "{}", lines(&plan));
+}
+
+/// A part no longer needed that Discord won't let the bot delete is edited
+/// to say "(moved up)", and no longer counted as the post's.
+#[tokio::test]
+async fn a_part_that_cant_be_deleted_says_it_moved_up() {
+    let d = fixture();
+    let p = d.path();
+    write(p, "content/welcome.md", &parts_post(3, 0));
+    let mut e = engine(p);
+    apply_all(&mut e).await;
+    let ch = e.cfg.desired.lock.channel("general").unwrap();
+    let last = e.cfg.desired.lock.posts["general"].parts[1];
+    write(p, "content/welcome.md", &parts_post(2, 0));
+    e.reload().unwrap();
+    e.rest.fail(&format!("DELETE channels/{ch}/messages/{last}"), 403, false);
+    apply_all(&mut e).await;
+    let msgs = messages_in(&e, ch);
+    assert_eq!(msgs.iter().map(|(_, t, _)| t.as_str()).collect::<Vec<_>>(), ["Part 1.", "Part 2.", "(moved up)"]);
+    assert!(msgs[1].2 && !msgs[2].2, "the buttons moved up too");
+    assert_eq!(e.cfg.desired.lock.posts["general"].parts.len(), 1);
+    assert_converged(&e).await;
+}
+
+/// A forum post found again after lock.toml was lost: its old parts that
+/// changed meanwhile are taken away, not left above the ones posted again.
+#[tokio::test]
+async fn a_lost_forum_posts_old_parts_are_taken_away() {
+    let d = fixture();
+    let p = d.path();
+    let projects = fs::read_to_string(p.join("projects.toml")).unwrap();
+    write(p, "projects.toml", &projects.replace("kind = \"cpu\"\n", "kind = \"cpu\"\nbrief = \"content/golem.md\"\n"));
+    write(p, "content/golem.md", "About it.\n<!-- part -->\nThe plan.\n<!-- part -->\nThe team.\n");
+    let mut e = engine(p);
+    apply_all(&mut e).await;
+    let golem = e.cfg.desired.lock.project_posts["golem"].clone();
+
+    fs::remove_file(p.join(LOCK)).unwrap();
+    let _ = fs::remove_file(p.join(chipsoc_config::LOCK_BACKUP));
+    write(p, "content/golem.md", "About it.\n<!-- part -->\nThe new plan.\n<!-- part -->\nThe team.\n");
+    e.reload().unwrap();
+    apply_all(&mut e).await;
+    let texts: Vec<String> = messages_in(&e, golem.thread).into_iter().skip(1).map(|(_, t, _)| t).collect();
+    assert_eq!(texts, ["The new plan.", "The team."], "the old two taken away");
+    assert_eq!(e.cfg.desired.lock.project_posts["golem"].thread, golem.thread, "the same post");
+    assert_converged(&e).await;
+}
+
 /// The fixture's projects forum, with `extra` after its tags (more fields, `[[channel.thread]]`s).
 fn forum_with(p: &Path, extra: &str) {
     let cat = fs::read_to_string(p.join("categories/10-main.toml")).unwrap();
@@ -1523,6 +1636,10 @@ async fn the_pinned_project_moves_its_pin() {
     assert!(thread_of(&e, robot)["flags"].as_u64().unwrap_or(0) & 2 == 0);
     assert_eq!(tags_of(&e, &thread_of(&e, robot)), ["active", "cpu"], "its own tags, and its status");
 
+    // Both archived by Discord meanwhile: one apply opens both, unpins one
+    // and pins the other (Discord refuses a second pin, so in that order).
+    e.rest.auto_archive(golem);
+    e.rest.auto_archive(robot);
     write(p, "bot.toml", &format!("{bot}pinned = \"robot\"\n"));
     e.reload().unwrap();
     let plan = e.plan(Options::default()).await.unwrap();
@@ -1530,9 +1647,19 @@ async fn the_pinned_project_moves_its_pin() {
     assert!(said.contains("pinned: pinned → not pinned") && said.contains("pinned: not pinned → pinned"), "{said}");
     let (unpin, pin) = (said.find("project post golem").unwrap(), said.find("project post robot").unwrap());
     assert!(unpin < pin, "unpinned first: {said}");
+    e.rest.state.lock().unwrap().reads.clear();
     apply_all(&mut e).await;
     assert_eq!(thread_of(&e, golem)["flags"], json!(0));
     assert_eq!(thread_of(&e, robot)["flags"], json!(2));
+    for t in [golem, robot] {
+        assert_eq!(thread_of(&e, t)["thread_metadata"]["archived"], json!(false));
+    }
+    let reads = std::mem::take(&mut e.rest.state.lock().unwrap().reads);
+    let read = |path: String| reads.iter().filter(|r| **r == path).count();
+    let exports = read("guilds/1000/channels".into());
+    assert_eq!(read(format!("channels/{robot}")), exports, "the thread read only to plan: {reads:?}");
+    let forum = e.cfg.desired.lock.channel("projects").unwrap();
+    assert_eq!(read(format!("channels/{forum}")), 0, "its tags as the plan read them: {reads:?}");
     assert_converged(&e).await;
 
     // Pinned in Discord by hand: drift, put back.

@@ -335,7 +335,11 @@ who changed it since the last apply:
   git history). Without it, apply matches roles, categories and channels by
   name and the bot's posts and project threads by their text; a name several
   unknown things share is refused, and `--sweep` is refused while the lock
-  knows less than half the config.
+  knows less than half the config. A long post's parts are matched in order
+  up to the first one whose text changed since; that one and those after it
+  are posted again. In a forum post the bot's old ones are deleted; in a
+  channel they're left (the bot can't tell them from its other messages
+  there), so delete them by hand.
 - **Not managed:** emojis and stickers, scheduled events, invites, webhooks,
   the onboarding Server Guide, role icons, forum layout (beyond `sort`) and default
   reactions, soundboard, vanity URL, widget, who holds roles not listed in

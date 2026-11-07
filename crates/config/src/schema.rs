@@ -1114,6 +1114,10 @@ pub struct Snapshot {
     /// Live only: what Discord wouldn't let this token read, so plans leave it out.
     #[serde(skip_serializing_if = "Unreadable::is_empty")]
     pub unreadable: Unreadable,
+    /// Live only: forums and the bot's forum posts (threads) as Discord sent
+    /// them, by id, so applying right after doesn't read them again.
+    #[serde(skip)]
+    pub forums_read: BTreeMap<Snowflake, serde_json::Value>,
 }
 
 /// Parts of a live server the token couldn't read (403). A read-only bot

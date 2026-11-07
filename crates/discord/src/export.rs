@@ -260,8 +260,15 @@ async fn export_raw(rest: &impl Rest, guild: Snowflake, known: &Lock) -> Result<
 
     let mut unreadable = Unreadable::default();
     let settings = settings(rest, guild, &g, known, &mut lock, &mut unreadable).await?;
-    let (posts, project_posts) = posts(rest, known, &mut lock, &channels, &mut unreadable).await?;
-    let threads = threads(rest, known, &mut lock, &channels, &mut unreadable).await?;
+    let mut forums_read: BTreeMap<Snowflake, Value> = channels
+        .iter()
+        .filter(|c| {
+            c["type"].as_u64().and_then(|t| ChannelKind::from_discord(t as u8)).is_some_and(ChannelKind::has_tags)
+        })
+        .filter_map(|c| Some((id(&c["id"])?, c.clone())))
+        .collect();
+    let (posts, project_posts) = posts(rest, known, &mut lock, &channels, &mut unreadable, &mut forums_read).await?;
+    let threads = threads(rest, known, &mut lock, &channels, &mut unreadable, &mut forums_read).await?;
 
     let snap = Snapshot {
         server,
@@ -275,6 +282,7 @@ async fn export_raw(rest: &impl Rest, guild: Snowflake, known: &Lock) -> Result<
         assets,
         lock,
         unreadable,
+        forums_read,
         ..Default::default()
     };
     Ok((snap, g))
@@ -331,13 +339,15 @@ async fn settings(
 
 type Posts = (BTreeMap<String, String>, BTreeMap<String, String>);
 
-/// The text of every managed post the lockfile knows, as signatures to compare.
+/// The text of every managed post the lockfile knows, as signatures to
+/// compare. The forum posts read go into `forums`.
 async fn posts(
     rest: &impl Rest,
     known: &Lock,
     lock: &mut Lock,
     channels: &[Value],
     unreadable: &mut Unreadable,
+    forums: &mut BTreeMap<Snowflake, Value>,
 ) -> Result<Posts> {
     let mut posts = BTreeMap::new();
     let me = if known.posts.is_empty() && known.project_posts.is_empty() { None } else { Some(me(rest).await?) };
@@ -351,7 +361,7 @@ async fn posts(
         // A forum's post must be a thread in that forum.
         if forum {
             match get_read(rest, &format!("channels/{at}")).await? {
-                Read::Found(t) if id(&t["parent_id"]) == Some(ch) => {}
+                Read::Found(t) if id(&t["parent_id"]) == Some(ch) => drop(forums.insert(at, t)),
                 Read::Found(_) | Read::Absent => continue,
                 Read::Forbidden => {
                     unreadable.posts.insert(key.clone());
@@ -363,7 +373,7 @@ async fn posts(
         match get_read(rest, &format!("channels/{at}/messages/{}", p.message)).await? {
             // Only the bot's own message is its post (one it can edit).
             Read::Found(m) if id(&m["author"]["id"]) != me => {}
-            Read::Found(m) => match later_parts(rest, at, &p.parts).await? {
+            Read::Found(m) => match later_parts(rest, at, p.message, &p.parts).await? {
                 Some(later) => {
                     let all: Vec<Rendered> = std::iter::once(wire::rendered_from(&m)).chain(later).collect();
                     posts.insert(key.clone(), template::signature(&all));
@@ -386,6 +396,9 @@ async fn posts(
         let Some((thread, sig)) = forum_post(rest, t, channels, None, me).await? else {
             continue;
         };
+        if thread.is_object() {
+            forums.insert(t.thread, thread.clone());
+        }
         let sig = match sig {
             Some(sig) => projects::pinned(sig, thread["flags"].as_u64().unwrap_or(0) & PINNED_THREAD != 0),
             None => {
@@ -404,13 +417,14 @@ async fn posts(
 pub const PINNED_THREAD: u64 = 1 << 1;
 
 /// The `[[channel.thread]]` posts the lockfile knows (`[posts]` entries keyed
-/// `forum/key`), as signatures to compare.
+/// `forum/key`), as signatures to compare. Each one read goes into `forums`.
 async fn threads(
     rest: &impl Rest,
     known: &Lock,
     lock: &mut Lock,
     channels: &[Value],
     unreadable: &mut Unreadable,
+    forums: &mut BTreeMap<Snowflake, Value>,
 ) -> Result<BTreeMap<String, String>> {
     let mut out = BTreeMap::new();
     let mut bot = None;
@@ -427,7 +441,8 @@ async fn threads(
                 unreadable.posts.insert(key.clone());
                 lock.posts.insert(key.clone(), p.clone());
             }
-            Some((_, Some(sig))) => {
+            Some((thread, Some(sig))) => {
+                forums.insert(p.message, thread);
                 out.insert(key.clone(), sig);
                 lock.posts.insert(key.clone(), p.clone());
             }
@@ -467,7 +482,7 @@ async fn forum_post(
     {
         return Ok(None);
     }
-    let Some(later) = later_parts(rest, t.thread, &t.parts).await? else {
+    let Some(later) = later_parts(rest, t.thread, t.message, &t.parts).await? else {
         return Ok(Some((thread, None)));
     };
     let forum = id(&thread["parent_id"]).and_then(|p| channels.iter().find(|c| id(&c["id"]) == Some(p)));
@@ -488,15 +503,41 @@ async fn forum_post(
     Ok(Some((thread, Some(sig))))
 }
 
-/// A long post's later parts in `ch`, as Discord has them: one deleted reads
-/// as empty, so the plan sends it again. None if the token can't read them.
-async fn later_parts(rest: &impl Rest, ch: Snowflake, parts: &[Snowflake]) -> Result<Option<Vec<Rendered>>> {
+/// A long post's later parts in `ch` (the messages after `first`), as
+/// Discord has them: one deleted reads as empty, so the plan sends it again.
+/// None if the token can't read them. One read for all of them, unless
+/// the channel is busy enough that some aren't among the 100 after `first`.
+async fn later_parts(
+    rest: &impl Rest,
+    ch: Snowflake,
+    first: Snowflake,
+    parts: &[Snowflake],
+) -> Result<Option<Vec<Rendered>>> {
+    if parts.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    let after = match get_read(rest, &format!("channels/{ch}/messages?after={first}&limit=100")).await? {
+        Read::Found(v) => into_array(v),
+        Read::Absent => Vec::new(),
+        Read::Forbidden => return Ok(None),
+    };
+    // Newest first; the newest read says how far it went.
+    let all_read = after.len() < 100;
+    let newest = after.iter().filter_map(|m| id(&m["id"])).max();
+    let by_id: HashMap<Snowflake, &Value> = after.iter().filter_map(|m| Some((id(&m["id"])?, m))).collect();
+    let gone = || Rendered { content: String::new(), buttons: Vec::new() };
     let mut out = Vec::new();
     for m in parts {
-        match get_read(rest, &format!("channels/{ch}/messages/{m}")).await? {
-            Read::Found(m) => out.push(wire::rendered_from(&m)),
-            Read::Absent => out.push(Rendered { content: String::new(), buttons: Vec::new() }),
-            Read::Forbidden => return Ok(None),
+        if let Some(found) = by_id.get(m) {
+            out.push(wire::rendered_from(found));
+        } else if all_read || newest.is_some_and(|n| *m < n) {
+            out.push(gone());
+        } else {
+            match get_read(rest, &format!("channels/{ch}/messages/{m}")).await? {
+                Read::Found(m) => out.push(wire::rendered_from(&m)),
+                Read::Absent => out.push(gone()),
+                Read::Forbidden => return Ok(None),
+            }
         }
     }
     Ok(Some(out))
