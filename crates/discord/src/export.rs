@@ -7,6 +7,7 @@ use anyhow::Result;
 use chipsoc_config::projects;
 use chipsoc_config::schema::*;
 use chipsoc_config::slug;
+use chipsoc_config::template::{self, Rendered};
 use chipsoc_model::{ObjectKind, perms};
 use serde_json::Value;
 
@@ -343,13 +344,20 @@ async fn posts(
         });
         let at = if forum { p.message } else { ch };
         match get_read(rest, &format!("channels/{at}/messages/{}", p.message)).await? {
-            Read::Found(m) => {
-                posts.insert(key.clone(), wire::rendered_from(&m).signature());
-                lock.posts.insert(key.clone(), *p);
-            }
+            Read::Found(m) => match later_parts(rest, at, &p.parts).await? {
+                Some(later) => {
+                    let all: Vec<Rendered> = std::iter::once(wire::rendered_from(&m)).chain(later).collect();
+                    posts.insert(key.clone(), template::signature(&all));
+                    lock.posts.insert(key.clone(), p.clone());
+                }
+                None => {
+                    unreadable.posts.insert(key.clone());
+                    lock.posts.insert(key.clone(), p.clone());
+                }
+            },
             Read::Forbidden => {
                 unreadable.posts.insert(key.clone());
-                lock.posts.insert(key.clone(), *p);
+                lock.posts.insert(key.clone(), p.clone());
             }
             Read::Absent => {}
         }
@@ -364,10 +372,15 @@ async fn posts(
             (Read::Found(thread), Read::Found(m)) => (thread, m),
             (Read::Forbidden, _) | (_, Read::Forbidden) => {
                 unreadable.project_posts.insert(slug.clone());
-                lock.project_posts.insert(slug.clone(), *t);
+                lock.project_posts.insert(slug.clone(), t.clone());
                 continue;
             }
             _ => continue,
+        };
+        let Some(later) = later_parts(rest, t.thread, &t.parts).await? else {
+            unreadable.project_posts.insert(slug.clone());
+            lock.project_posts.insert(slug.clone(), t.clone());
+            continue;
         };
         let forum = id(&thread["parent_id"]).and_then(|p| channels.iter().find(|c| id(&c["id"]) == Some(p)));
         let applied = wire::ids(&thread["applied_tags"]);
@@ -382,9 +395,24 @@ async fn posts(
                     .collect()
             })
             .unwrap_or_default();
-        let sig = projects::signature(&s(&thread["name"]), &tags, &wire::rendered_from(&m));
+        let all: Vec<Rendered> = std::iter::once(wire::rendered_from(&m)).chain(later).collect();
+        let sig = projects::signature(&s(&thread["name"]), &tags, &all);
         project_posts.insert(slug.clone(), sig);
-        lock.project_posts.insert(slug.clone(), *t);
+        lock.project_posts.insert(slug.clone(), t.clone());
     }
     Ok((posts, project_posts))
+}
+
+/// A long post's later parts in `ch`, as Discord has them: one deleted reads
+/// as empty, so the plan sends it again. None if the token can't read them.
+async fn later_parts(rest: &impl Rest, ch: Snowflake, parts: &[Snowflake]) -> Result<Option<Vec<Rendered>>> {
+    let mut out = Vec::new();
+    for m in parts {
+        match get_read(rest, &format!("channels/{ch}/messages/{m}")).await? {
+            Read::Found(m) => out.push(wire::rendered_from(&m)),
+            Read::Absent => out.push(Rendered { content: String::new(), buttons: Vec::new() }),
+            Read::Forbidden => return Ok(None),
+        }
+    }
+    Ok(Some(out))
 }

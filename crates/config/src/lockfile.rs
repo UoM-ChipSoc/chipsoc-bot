@@ -134,6 +134,33 @@ mod tests {
     use crate::Snowflake;
 
     #[test]
+    fn long_posts_parts_read_in_old_and_new_versions() {
+        // A lock.toml from before parts reads as one-part posts.
+        let old = "[posts.rules]\nmessage = \"5\"\n\n[project_posts.golem]\nthread = \"6\"\nmessage = \"6\"\n";
+        let lock: Lock = toml::from_str(old).unwrap();
+        assert!(lock.posts["rules"].parts.is_empty() && lock.project_posts["golem"].parts.is_empty());
+        assert!(!toml::to_string_pretty(&lock).unwrap().contains("parts"), "and is written as before");
+
+        // One with parts still reads in an older bot, as these were: `parts` is ignored.
+        #[derive(serde::Deserialize)]
+        struct OldLock {
+            posts: BTreeMap<String, OldPost>,
+        }
+        #[derive(serde::Deserialize)]
+        struct OldPost {
+            message: Snowflake,
+        }
+        let mut lock = Lock::default();
+        let part = |n| crate::PostRef { message: Snowflake(n), parts: vec![Snowflake(n + 1), Snowflake(n + 2)] };
+        lock.posts.insert("rules".into(), part(5));
+        let body = toml::to_string_pretty(&lock).unwrap();
+        assert!(body.contains("parts = ["), "{body}");
+        let older: OldLock = toml::from_str(&body).unwrap();
+        assert_eq!(older.posts["rules"].message, Snowflake(5));
+        assert_eq!(toml::from_str::<Lock>(&body).unwrap(), lock);
+    }
+
+    #[test]
     fn merges_key_by_key() {
         let base = "guild = \"1\"\n[roles]\na = \"10\"\nb = \"11\"\nc = \"12\"\n[applied]\n\"role:a\" = \"h1\"\n";
         // Here: made d, archived c, re-made b. There: made e, edited a's hash, made d too.

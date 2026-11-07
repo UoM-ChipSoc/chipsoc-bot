@@ -5,7 +5,9 @@
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine;
 use chipsoc_config::schema::*;
-use chipsoc_config::template::{FORUM_POST_TITLE, render};
+use std::collections::BTreeSet;
+
+use chipsoc_config::template::{self, FORUM_POST_TITLE, Rendered};
 use chipsoc_config::{Config, projects, resolved_onboarding};
 use chipsoc_model::{Action, Change, Field, ObjectKind, OrderScope, Plan};
 use serde_json::{Map, Value, json};
@@ -15,6 +17,21 @@ use crate::{ApiError, Method, Rest};
 
 /// Discord's channel flag for a forum post pinned at the top.
 const PINNED_THREAD: u64 = 1 << 1;
+
+/// What a long post's part no longer needed says, if the bot can't delete it.
+const MOVED_UP: &str = "(moved up)";
+
+/// Which post's lockfile entry: a channel's (by key) or a project's (by slug).
+#[derive(Clone, Copy)]
+enum Entry<'k> {
+    Post(&'k str),
+    Project(&'k str),
+}
+
+/// Each part's signature.
+fn signatures(parts: &[Rendered]) -> Vec<String> {
+    parts.iter().map(Rendered::signature).collect()
+}
 
 /// What happened to one step.
 #[derive(Debug)]
@@ -359,7 +376,7 @@ impl<R: Rest> Exec<'_, R> {
             ObjectKind::Server => self.server(g, changes).await?,
             ObjectKind::Post => self.post(key, Some(oid)).await?,
             ObjectKind::ProjectPost => {
-                let existing = self.lock.project_posts.get(key).copied();
+                let existing = self.lock.project_posts.get(key).cloned();
                 self.project_post(key, existing).await?;
             }
             ObjectKind::Onboarding => {
@@ -448,12 +465,23 @@ impl<R: Rest> Exec<'_, R> {
         id(&self.call(Method::Get, "users/@me".into(), None).await?["id"]).context("no id for the bot")
     }
 
+    /// Every message and thread the lockfile holds for posts, every part.
+    fn claimed(&self) -> BTreeSet<Snowflake> {
+        let posts = self.lock.posts.values().flat_map(|p| std::iter::once(p.message).chain(p.parts.iter().copied()));
+        let projects = self
+            .lock
+            .project_posts
+            .values()
+            .flat_map(|t| [t.thread, t.message].into_iter().chain(t.parts.iter().copied()));
+        posts.chain(projects).collect()
+    }
+
     /// A message the bot posted in `ch` that says exactly `want`: the managed
     /// post, when the lockfile lost track of it.
-    async fn find_post(&self, ch: Snowflake, want: &chipsoc_config::template::Rendered) -> Result<Option<Snowflake>> {
+    async fn find_post(&self, ch: Snowflake, want: &Rendered) -> Result<Option<Snowflake>> {
         let me = self.me().await?;
         let recent = self.call(Method::Get, format!("channels/{ch}/messages?limit=100"), None).await?;
-        let claimed: std::collections::BTreeSet<Snowflake> = self.lock.posts.values().map(|p| p.message).collect();
+        let claimed = self.claimed();
         Ok(recent
             .as_array()
             .into_iter()
@@ -463,67 +491,246 @@ impl<R: Rest> Exec<'_, R> {
             .find(|m| !claimed.contains(m)))
     }
 
+    /// The bot's messages in `ch` after `first` that say `want`, in order: a
+    /// long post's later parts, when the lockfile lost track of them. Stops
+    /// at the first part not found (it and the rest are posted again).
+    async fn find_later(&self, ch: Snowflake, first: Snowflake, want: &[Rendered]) -> Result<Vec<Snowflake>> {
+        if want.is_empty() {
+            return Ok(Vec::new());
+        }
+        let me = self.me().await?;
+        let claimed = self.claimed();
+        let after = self.call(Method::Get, format!("channels/{ch}/messages?after={first}&limit=100"), None).await?;
+        let mut mine: Vec<(Snowflake, Rendered)> = after
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|m| id(&m["author"]["id"]) == Some(me))
+            .filter_map(|m| Some((id(&m["id"])?, wire::rendered_from(m))))
+            .filter(|(m, _)| !claimed.contains(m) && *m > first)
+            .collect();
+        mine.sort_by_key(|(m, _)| *m);
+        let mut ids = Vec::new();
+        let mut from = 0;
+        for w in want {
+            let Some(j) = mine[from..].iter().position(|(_, r)| r == w) else { break };
+            ids.push(mine[from + j].0);
+            from += j + 1;
+        }
+        Ok(ids)
+    }
+
+    /// What Discord had in each part of a post when this plan was made (as
+    /// signatures), if it was read with the message ids the lockfile has now.
+    fn have(&self, post: Entry) -> Vec<String> {
+        let Some(live) = self.live else { return Vec::new() };
+        let (sig, same) = match post {
+            Entry::Post(k) => (live.posts.get(k), live.lock.posts.get(k) == self.lock.posts.get(k)),
+            Entry::Project(s) => {
+                (live.project_posts.get(s), live.lock.project_posts.get(s) == self.lock.project_posts.get(s))
+            }
+        };
+        match sig {
+            Some(sig) if same => template::signature_parts(sig).into_iter().map(str::to_owned).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// A post's later parts as the lockfile has them.
+    fn parts_of(&self, post: Entry) -> Vec<Snowflake> {
+        match post {
+            Entry::Post(k) => self.lock.posts.get(k).map(|p| p.parts.clone()),
+            Entry::Project(s) => self.lock.project_posts.get(s).map(|t| t.parts.clone()),
+        }
+        .unwrap_or_default()
+    }
+
+    /// Bring a post's later parts (the bot's messages in `ch` after the
+    /// first) in line with `want`, and keep their ids in the lockfile.
+    /// `old` are the ones there; `have`, what each said, when known.
+    async fn finish(
+        &mut self,
+        post: Entry<'_>,
+        ch: Snowflake,
+        old: &[Snowflake],
+        want: &[Rendered],
+        have: &[String],
+    ) -> Result<()> {
+        let (ids, result) = self.later(ch, old, want, have).await;
+        match post {
+            Entry::Post(k) => self.lock.posts.get_mut(k).map(|p| p.parts = ids),
+            Entry::Project(s) => self.lock.project_posts.get_mut(s).map(|t| t.parts = ids),
+        };
+        result
+    }
+
+    /// Edit the later parts there in place (those unchanged left alone), post
+    /// the ones missing after them, and take away the ones no longer needed.
+    /// One found deleted is posted again with those after it, to keep the
+    /// order. Returns the ids now in use, with what stopped it, if anything.
+    async fn later(
+        &self,
+        ch: Snowflake,
+        old: &[Snowflake],
+        want: &[Rendered],
+        have: &[String],
+    ) -> (Vec<Snowflake>, Result<()>) {
+        let mut ids = Vec::new();
+        for (i, (m, w)) in old.iter().zip(want).enumerate() {
+            if have.get(i) == Some(&w.signature()) {
+                ids.push(*m);
+                continue;
+            }
+            let path = format!("channels/{ch}/messages/{m}");
+            match self.call(Method::Patch, path, Some(wire::message_json(w))).await {
+                Ok(_) => ids.push(*m),
+                Err(e) if ApiError::status_of(&e) == Some(404) => break,
+                Err(e) => return ([ids, old[i..].to_vec()].concat(), Err(e)),
+            }
+        }
+        let kept = ids.len();
+        for (i, m) in old.iter().enumerate().skip(kept) {
+            if let Err(e) = self.take_away(ch, *m).await {
+                let left = old[i..].to_vec();
+                return ([ids, left].concat(), Err(e.context(format!("taking away part {} of the post", i + 2))));
+            }
+        }
+        for w in &want[kept..] {
+            let made = self.call(Method::Post, format!("channels/{ch}/messages"), Some(wire::message_json(w))).await;
+            match made.and_then(|m| id(&m["id"]).context("no id in reply")) {
+                Ok(m) => ids.push(m),
+                Err(e) => return (ids, Err(e)),
+            }
+        }
+        (ids, Ok(()))
+    }
+
+    /// Take away a later part no longer needed: deleted if the bot wrote it
+    /// (a message it didn't is only forgotten), or failing that, edited to
+    /// say so.
+    async fn take_away(&self, ch: Snowflake, m: Snowflake) -> Result<()> {
+        let path = format!("channels/{ch}/messages/{m}");
+        let msg = match self.call(Method::Get, path.clone(), None).await {
+            Ok(msg) => msg,
+            Err(e) if ApiError::status_of(&e) == Some(404) => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        if id(&msg["author"]["id"]) != Some(self.me().await?) {
+            return Ok(());
+        }
+        match self.call(Method::Delete, path.clone(), None).await {
+            Ok(_) => Ok(()),
+            Err(e) if ApiError::status_of(&e) == Some(404) => Ok(()),
+            Err(e) => {
+                let moved = Rendered { content: MOVED_UP.into(), buttons: Vec::new() };
+                self.call(Method::Patch, path, Some(wire::message_json(&moved))).await.map(|_| ()).map_err(|_| e)
+            }
+        }
+    }
+
+    /// Take away all of a post's old later parts before posting it again from
+    /// the start (they'd come before it). Best effort: the first error, if any.
+    async fn clear(&self, ch: Snowflake, old: &[Snowflake]) -> Option<anyhow::Error> {
+        let mut first = None;
+        for m in old {
+            if let Err(e) = self.take_away(ch, *m).await {
+                first.get_or_insert(e);
+            }
+        }
+        first
+    }
+
     /// Create or update a channel's managed post (re-posting if it was deleted).
     async fn post(&mut self, key: &str, existing: Option<Snowflake>) -> Result<()> {
         let src = self.cfg.desired.posts.get(key).context("no post for this channel in config")?;
         let ch = self.lock.channel(key).with_context(|| format!("channel `{key}` doesn't exist yet"))?;
-        let rendered = render(src, self.lock);
+        let parts = template::render_parts(src, self.lock);
+        let (first, later) = parts.split_first().context("the post has no text")?;
         if self.cfg.desired.channel(key).is_some_and(|c| c.kind.has_tags()) {
-            return self.forum_post(key, ch, &rendered, existing).await;
+            return self.forum_post(key, ch, first, later, existing).await;
         }
-        let body = wire::message_json(&rendered);
+        let entry = Entry::Post(key);
+        let (have, old) = (self.have(entry), self.parts_of(entry));
         // Looking is best effort: without message history, post as before.
         if existing.is_none()
-            && let Ok(Some(m)) = self.find_post(ch, &rendered).await
+            && let Ok(Some(m)) = self.find_post(ch, first).await
         {
-            self.lock.posts.insert(key.to_owned(), PostRef { message: m });
-            return Ok(());
+            let found = self.find_later(ch, m, later).await.unwrap_or_default();
+            let have = signatures(&later[..found.len()]);
+            self.lock.posts.insert(key.to_owned(), PostRef { message: m, parts: found.clone() });
+            return self.finish(entry, ch, &found, later, &have).await;
         }
         if let Some(m) = existing {
-            match self.call(Method::Patch, format!("channels/{ch}/messages/{m}"), Some(body.clone())).await {
-                Ok(_) => return Ok(()),
+            let edited = if have.first() == Some(&first.signature()) {
+                Ok(Value::Null)
+            } else {
+                let body = wire::message_json(first);
+                self.call(Method::Patch, format!("channels/{ch}/messages/{m}"), Some(body)).await
+            };
+            match edited {
+                Ok(_) => return self.finish(entry, ch, &old, later, have.get(1..).unwrap_or_default()).await,
                 Err(e) if ApiError::status_of(&e) == Some(404) => {} // deleted in Discord: post again
                 Err(e) => return Err(e),
             }
         }
-        let made = self.call(Method::Post, format!("channels/{ch}/messages"), Some(body)).await?;
-        self.lock.posts.insert(key.to_owned(), PostRef { message: id(&made["id"]).context("no id in reply")? });
-        Ok(())
+        let cleared = self.clear(ch, &old).await;
+        let made = self.call(Method::Post, format!("channels/{ch}/messages"), Some(wire::message_json(first))).await?;
+        let message = id(&made["id"]).context("no id in reply")?;
+        self.lock.posts.insert(key.to_owned(), PostRef { message, parts: Vec::new() });
+        self.finish(entry, ch, &[], later, &[]).await?;
+        cleared.map_or(Ok(()), |e| Err(e.context("posted again, but the old parts are still there")))
     }
 
     /// A forum's managed post: a pinned thread titled [`FORUM_POST_TITLE`],
-    /// kept by its id, which is also its first message's.
+    /// kept by its id, which is also its first message's; later parts follow
+    /// in the thread.
     async fn forum_post(
         &mut self,
         key: &str,
         forum: Snowflake,
-        rendered: &chipsoc_config::template::Rendered,
+        first: &Rendered,
+        later: &[Rendered],
         existing: Option<Snowflake>,
     ) -> Result<()> {
-        let message = wire::message_json(rendered);
+        let entry = Entry::Post(key);
+        let (have, old) = (self.have(entry), self.parts_of(entry));
+        let message = wire::message_json(first);
         if existing.is_none() {
-            let claimed = self.lock.posts.values().map(|p| p.message).collect();
-            if let Ok(Some(t)) = self.find_thread(forum, FORUM_POST_TITLE, rendered, claimed).await {
-                self.lock.posts.insert(key.to_owned(), PostRef { message: t.thread });
-                return Ok(());
+            let claimed = self.claimed();
+            if let Ok(Some(t)) = self.find_thread(forum, FORUM_POST_TITLE, first, claimed).await {
+                let found = self.find_later(t.thread, t.thread, later).await.unwrap_or_default();
+                let have = signatures(&later[..found.len()]);
+                self.lock.posts.insert(key.to_owned(), PostRef { message: t.thread, parts: found.clone() });
+                return self.finish(entry, t.thread, &found, later, &have).await;
             }
         }
         if let Some(t) = existing {
-            match self.call(Method::Patch, format!("channels/{t}/messages/{t}"), Some(message.clone())).await {
-                Ok(_) => return Ok(()),
+            let edited = if have.first() == Some(&first.signature()) {
+                Ok(Value::Null)
+            } else {
+                self.call(Method::Patch, format!("channels/{t}/messages/{t}"), Some(message.clone())).await
+            };
+            match edited {
+                Ok(_) => return self.finish(entry, t, &old, later, have.get(1..).unwrap_or_default()).await,
                 Err(e) if ApiError::status_of(&e) == Some(404) => {} // deleted in Discord: post again
                 Err(e) => return Err(e),
             }
         }
+        let cleared = match self.lock.posts.get(key).map(|p| p.message) {
+            Some(old_thread) => self.clear(old_thread, &old).await,
+            None => None,
+        };
         let body = json!({ "name": FORUM_POST_TITLE, "message": message });
         let made = self.call(Method::Post, format!("channels/{forum}/threads"), Some(body)).await?;
         let thread = id(&made["id"]).context("no id in reply")?;
-        self.lock.posts.insert(key.to_owned(), PostRef { message: thread });
+        self.lock.posts.insert(key.to_owned(), PostRef { message: thread, parts: Vec::new() });
+        let rest = self.finish(entry, thread, &[], later, &[]).await;
         let pin = json!({ "flags": PINNED_THREAD });
         self.call(Method::Patch, format!("channels/{thread}"), Some(pin))
             .await
             .context("posted, but couldn't pin it (the bot needs Manage Threads there)")?;
-        Ok(())
+        rest?;
+        cleared.map_or(Ok(()), |e| Err(e.context("posted again, but the old parts are still there")))
     }
 
     async fn project_post(&mut self, slug: &str, existing: Option<ThreadRef>) -> Result<()> {
@@ -531,6 +738,9 @@ impl<R: Rest> Exec<'_, R> {
         let forum_key = &self.cfg.bot.projects.as_ref().context("no [projects] in bot.toml")?.forum;
         let forum = self.lock.channel(forum_key).with_context(|| format!("forum `{forum_key}` doesn't exist yet"))?;
         let post = projects::post(p, self.lock, self.cfg.desired.project_posts.get(slug).map(String::as_str));
+        let (first, later) = post.parts.split_first().context("the post has no text")?;
+        let entry = Entry::Project(slug);
+        let mut have = self.have(entry);
         let available = self.call(Method::Get, format!("channels/{forum}"), None).await?["available_tags"].clone();
         let wanted: Vec<String> = post.tags.iter().map(|t| t.to_lowercase()).collect();
         let tag_ids: Vec<String> = available
@@ -542,18 +752,25 @@ impl<R: Rest> Exec<'_, R> {
             .take(5)
             .collect();
         let title: String = post.title.chars().take(100).collect();
-        let message = wire::message_json(&post.body);
-        let claimed = self.lock.project_posts.values().map(|t| t.thread).collect();
+        let message = wire::message_json(first);
+        let claimed = self.claimed();
         let found = if existing.is_none() {
-            self.find_thread(forum, &title, &post.body, claimed).await.ok().flatten()
+            self.find_thread(forum, &title, first, claimed).await.ok().flatten()
         } else {
             None
         };
-        if let Some(t) = found {
-            self.lock.project_posts.insert(slug.to_owned(), t);
-        }
-        let existing = existing.or(found);
-        if let Some(t) = existing {
+        let found = match found {
+            Some(mut t) => {
+                t.parts = self.find_later(t.thread, t.message, later).await.unwrap_or_default();
+                // The first part is sent again below with the title and tags.
+                have = [vec![String::new()], signatures(&later[..t.parts.len()])].concat();
+                self.lock.project_posts.insert(slug.to_owned(), t.clone());
+                Some(t)
+            }
+            None => None,
+        };
+        let old = self.lock.project_posts.get(slug).cloned();
+        if let Some(t) = existing.or(found) {
             let thread = self
                 .call(
                     Method::Patch,
@@ -565,17 +782,24 @@ impl<R: Rest> Exec<'_, R> {
                 .call(Method::Patch, format!("channels/{}/messages/{}", t.thread, t.message), Some(message.clone()))
                 .await;
             match (thread, msg) {
-                (Ok(_), Ok(_)) => return Ok(()),
+                (Ok(_), Ok(_)) => {
+                    return self.finish(entry, t.thread, &t.parts, later, have.get(1..).unwrap_or_default()).await;
+                }
                 (Err(e), _) | (_, Err(e)) if ApiError::status_of(&e) != Some(404) => return Err(e),
                 _ => {} // deleted in Discord: post again
             }
         }
+        let cleared = match old {
+            Some(t) => self.clear(t.thread, &t.parts).await,
+            None => None,
+        };
         let body = json!({ "name": title, "applied_tags": tag_ids, "message": message });
         let made = self.call(Method::Post, format!("channels/{forum}/threads"), Some(body)).await?;
         let thread = id(&made["id"]).context("no id in reply")?;
         let message = id(&made["message"]["id"]).unwrap_or(thread);
-        self.lock.project_posts.insert(slug.to_owned(), ThreadRef { thread, message });
-        Ok(())
+        self.lock.project_posts.insert(slug.to_owned(), ThreadRef { thread, message, parts: Vec::new() });
+        self.finish(entry, thread, &[], later, &[]).await?;
+        cleared.map_or(Ok(()), |e| Err(e.context("posted again, but the old parts are still there")))
     }
 
     /// A forum post the bot started in `forum` with this title and first
@@ -584,8 +808,8 @@ impl<R: Rest> Exec<'_, R> {
         &self,
         forum: Snowflake,
         title: &str,
-        want: &chipsoc_config::template::Rendered,
-        claimed: std::collections::BTreeSet<Snowflake>,
+        want: &Rendered,
+        claimed: BTreeSet<Snowflake>,
     ) -> Result<Option<ThreadRef>> {
         let me = self.me().await?;
         let g = guild(self.lock)?;
@@ -604,7 +828,7 @@ impl<R: Rest> Exec<'_, R> {
                 continue;
             };
             if wire::rendered_from(&first) == *want {
-                return Ok(Some(ThreadRef { thread, message: thread }));
+                return Ok(Some(ThreadRef { thread, message: thread, parts: Vec::new() }));
             }
         }
         Ok(None)

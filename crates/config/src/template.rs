@@ -106,6 +106,148 @@ pub fn render(src: &str, lock: &Lock) -> Rendered {
     Rendered { content, buttons }
 }
 
+/// A line holding only this starts the next part of a long post: each part is
+/// its own message, as Discord takes at most [`MAX_MESSAGE`] characters in one.
+pub const PART_BREAK: &str = "<!-- part -->";
+/// Discord's limit on one message's text.
+pub const MAX_MESSAGE: usize = 2000;
+/// Most messages one post may take.
+pub const MAX_PARTS: usize = 10;
+/// Between parts' signatures in one post's signature. No part holds it: a
+/// part-break line always splits.
+const SIGNATURE_BREAK: &str = "\n<!-- part -->\n";
+
+/// A post's source as one source per message: split at each [`PART_BREAK`]
+/// line, and where a part is still too long, at the last heading or blank line
+/// that keeps it within the limit (each mention counted at its longest). Its
+/// buttons go under the last part. A part with nowhere to split stays too long
+/// ([`too_long`] says which).
+pub fn split(src: &str) -> Vec<String> {
+    let mut buttons = Vec::new();
+    let mut explicit: Vec<Vec<&str>> = vec![Vec::new()];
+    for line in src.lines() {
+        if line.trim() == PART_BREAK {
+            explicit.push(Vec::new());
+        } else if parse_button(line.trim()).is_some() {
+            buttons.push(line);
+        } else if let Some(part) = explicit.last_mut() {
+            part.push(line);
+        }
+    }
+    let mut parts: Vec<String> =
+        explicit.iter().flat_map(|lines| fit(lines)).filter(|p| !p.trim().is_empty()).collect();
+    if parts.is_empty() {
+        parts.push(String::new());
+    }
+    if let Some(last) = parts.last_mut() {
+        for b in buttons {
+            last.push('\n');
+            last.push_str(b);
+        }
+    }
+    parts
+}
+
+/// [`render`] each of a post's parts.
+pub fn render_parts(src: &str, lock: &Lock) -> Vec<Rendered> {
+    split(src).iter().map(|p| render(p, lock)).collect()
+}
+
+/// Which parts (from 1) of [`split`]'s are longer than a message can be.
+pub fn too_long(parts: &[String]) -> Vec<usize> {
+    parts.iter().enumerate().filter(|(_, p)| longest(p) > MAX_MESSAGE).map(|(i, _)| i + 1).collect()
+}
+
+/// Button actions written in a part other than the last (they go under the last).
+pub fn early_buttons(src: &str) -> Vec<String> {
+    // Each explicit part: its buttons, and whether it has any text.
+    let mut parts: Vec<(Vec<String>, bool)> = vec![(Vec::new(), false)];
+    for line in src.lines().map(str::trim) {
+        let Some(part) = parts.last_mut() else { continue };
+        match parse_button(line) {
+            _ if line == PART_BREAK => parts.push((Vec::new(), false)),
+            Some(b) => part.0.push(b.action),
+            None => part.1 |= !line.is_empty(),
+        }
+    }
+    let Some(last_text) = parts.iter().rposition(|(_, text)| *text) else { return Vec::new() };
+    parts.into_iter().take(last_text).flat_map(|(buttons, _)| buttons).collect()
+}
+
+/// One string for a post of several parts, to compare with Discord.
+pub fn signature(parts: &[Rendered]) -> String {
+    parts.iter().map(Rendered::signature).collect::<Vec<_>>().join(SIGNATURE_BREAK)
+}
+
+/// A [`signature`]'s parts.
+pub fn signature_parts(sig: &str) -> Vec<&str> {
+    sig.split(SIGNATURE_BREAK).collect()
+}
+
+/// A rendered text's length with every mention as long as a Discord id can
+/// make it (`<#id>`, `<@&id>` with a 20-digit id), so it fits whatever ids
+/// things get. Button lines don't count.
+pub fn longest(src: &str) -> usize {
+    let text: Vec<&str> = src.lines().filter(|l| parse_button(l.trim()).is_none()).collect();
+    let text = text.join("\n");
+    let text = text.trim();
+    let mut n = text.chars().count() as isize;
+    for (sigil, mention) in [('#', 23), ('@', 24)] {
+        for k in refs(text, sigil) {
+            n += mention - (k.chars().count() as isize + 3);
+        }
+    }
+    n.max(0) as usize
+}
+
+/// One explicit part as messages that fit, cut before headings or at blank
+/// lines (never inside a ``` code block).
+fn fit(lines: &[&str]) -> Vec<String> {
+    let mut fence = false;
+    let in_code: Vec<bool> = lines
+        .iter()
+        .map(|l| {
+            let inside = fence;
+            if l.trim_start().starts_with("```") {
+                fence = !fence;
+            }
+            inside
+        })
+        .collect();
+    let heading = |l: &str| {
+        let t = l.trim_start();
+        let rest = t.trim_start_matches('#');
+        (1..=6).contains(&(t.len() - rest.len())) && rest.starts_with(' ')
+    };
+    let mut out = Vec::new();
+    let mut start = 0;
+    loop {
+        let rest = &lines[start..];
+        if longest(&rest.join("\n")) <= MAX_MESSAGE {
+            out.push(rest.join("\n"));
+            return out;
+        }
+        let at = |i: usize| {
+            let l = rest[i];
+            !in_code[start + i] && (l.trim().is_empty() || heading(l) || rest[i - 1].trim().is_empty())
+        };
+        let cut = (1..rest.len()).rev().filter(|&i| at(i)).find(|&i| {
+            let piece = rest[..i].join("\n");
+            !piece.trim().is_empty() && longest(&piece) <= MAX_MESSAGE
+        });
+        match cut {
+            Some(i) => {
+                out.push(rest[..i].join("\n"));
+                start += i;
+            }
+            None => {
+                out.push(rest.join("\n"));
+                return out;
+            }
+        }
+    }
+}
+
 fn parse_button(line: &str) -> Option<Button> {
     let inner = line.strip_prefix("{button:")?.strip_suffix('}')?;
     let (action, label) = inner.split_once('|')?;
@@ -246,5 +388,38 @@ mod tests {
     fn drops_chosen_buttons() {
         let src = "Hi\n{button:apply:a|Join A}\n{button:volunteer|Help}\n";
         assert_eq!(without_buttons(src, |a| a == "apply:a"), "Hi\n{button:volunteer|Help}\n");
+    }
+
+    #[test]
+    fn long_posts_split_into_parts() {
+        let src = "One.\n{button:volunteer|Help}\n<!-- part -->\nTwo.\n  <!-- part -->  \n\nThree.\n<!-- part -->\n";
+        assert_eq!(
+            split(src),
+            ["One.", "Two.", "\nThree.\n{button:volunteer|Help}"],
+            "buttons go last; empty parts dropped"
+        );
+        assert_eq!(early_buttons(src), ["volunteer"]);
+        assert_eq!(early_buttons("One.\n<!-- part -->\nTwo.\n{button:volunteer|Help}\n"), Vec::<String>::new());
+        let parts = render_parts(src, &Lock::default());
+        assert!(parts[..2].iter().all(|p| p.buttons.is_empty()) && parts[2].buttons.len() == 1);
+        assert_eq!(signature_parts(&signature(&parts)).len(), 3);
+        assert_eq!(signature(&parts[..1]), parts[0].signature(), "one part signs as before");
+        assert_eq!(split("Short.\n"), ["Short."]);
+        assert_eq!(split(""), [""]);
+
+        // Too long: cut at the last heading or blank line that fits.
+        let para = "word ".repeat(150); // 750 characters
+        let src = format!("# Top\n{para}\n\n{para}\n## Next\n{para}\n{para}\n");
+        let parts = split(&src);
+        assert_eq!(parts.len(), 2, "{parts:?}");
+        assert!(parts[1].starts_with("## Next"), "{:?}", parts[1]);
+        assert!(too_long(&parts).is_empty());
+        // Mentions count at their longest.
+        let mentions = "{#a} ".repeat(400); // 2000 written, 9600 at worst
+        assert!(longest(&mentions) > MAX_MESSAGE && mentions.trim().chars().count() <= MAX_MESSAGE);
+        assert_eq!(too_long(&split(&mentions)), [1], "nowhere to split");
+        // Never inside a code block.
+        let code = format!("Intro\n\n```\n{para}\n\n{para}\n\n{para}\n```\n");
+        assert_eq!(too_long(&split(&code)), [2], "{:?}", split(&code));
     }
 }

@@ -35,7 +35,7 @@ keys.
   `/server project rename` (see *Projects*), not in projects.toml.
 - **Overwrites:** a channel's own entry replaces its category's entry for the
   same role; `inherit = false` drops the category's.
-- **Posts:** `post = "content/x.md"` on a channel keeps one bot message there,
+- **Posts:** `post = "content/x.md"` on a channel keeps a bot message there,
   edited in place. `{#key}` and `{@key}` become mentions. A line
   `{button:action|Label}` adds a button; the actions are `volunteer`,
   `apply:<slug>`, `idea` (or `propose-project`), `resource` (or
@@ -48,6 +48,16 @@ keys.
   denies @everyone Send Messages should have a post with the button of the
   form that posts there; `check` warns otherwise, and errors if the bot's own
   role couldn't post there.
+- **Long posts:** a post or project brief longer than Discord's 2000
+  characters is sent as several messages (at most 10): a line holding only
+  `<!-- part -->` starts the next one, and a part still too long is split at
+  its last heading or blank line that fits (never inside a ``` block;
+  mentions counted at their longest). The first part is the post (on a forum,
+  the thread's first message), the rest follow it in order, and buttons go
+  under the last. `check` names a part with nowhere to split, and errors on a
+  button written before the last part. Each part is edited in place; one
+  added is posted after the last (after any replies), and ones no longer
+  needed are deleted. lock.toml keeps the later parts' ids as `parts`.
 - **Lists:** `{positions}` becomes a bullet per position open in
   `/volunteer` ("- **Label**: first line of its intro", plus "applications
   close <date>" for one with `closes`) and `{projects:open}` one per

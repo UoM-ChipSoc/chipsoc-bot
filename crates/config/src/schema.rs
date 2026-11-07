@@ -315,20 +315,29 @@ pub struct Overwrite {
     pub deny: Vec<String>,
 }
 
+// `parts` is new: these two take no `deny_unknown_fields`, so a lock.toml
+// with it still reads in older versions of the bot (they ignore it).
+
 /// A bot-managed message.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PostRef {
-    /// The message's id.
+    /// The message's id (in a forum, its thread's).
     pub message: Snowflake,
+    /// A long post's later parts, in order: the bot's messages after the first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<Snowflake>,
 }
 
 /// A project's front-page forum post.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThreadRef {
     /// The post's thread id.
     pub thread: Snowflake,
     /// Its first message, which the bot edits.
     pub message: Snowflake,
+    /// A long post's later parts, in order: the bot's messages in the thread after the first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<Snowflake>,
 }
 
 /// An uploaded image: the file's hash, and Discord's hash for what we uploaded.

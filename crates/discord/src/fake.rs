@@ -426,6 +426,15 @@ impl FakeDiscord {
                 }
                 Ok(m.clone())
             }
+            (Method::Delete, ["channels", cid, "messages", mid]) => {
+                let at = st
+                    .messages
+                    .iter()
+                    .position(|m| m["id"] == *mid && m["channel_id"] == *cid)
+                    .ok_or_else(|| err(404, "Unknown Message"))?;
+                st.messages.remove(at);
+                Ok(Value::Null)
+            }
             (Method::Post, ["interactions", _, token, "callback"]) => {
                 st.replies.push(json!({ "token": token, "reply": body }));
                 Ok(Value::Null)

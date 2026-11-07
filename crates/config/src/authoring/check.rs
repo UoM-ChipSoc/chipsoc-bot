@@ -15,7 +15,7 @@ fn now() -> i64 {
 }
 
 /// Discord's limits that matter here.
-const MAX_MESSAGE: usize = 2000;
+const MAX_MESSAGE: usize = template::MAX_MESSAGE;
 const MAX_TAGS: usize = 20;
 const MIN_ONBOARDING_DEFAULTS: usize = 7;
 const MAX_APPLICATION_QUESTIONS: usize = 3;
@@ -273,27 +273,30 @@ fn posts(r: &mut Report, c: &Config, keys: &Keys) {
                 ));
             }
         }
-        if longest(body, &c.desired.lock) > MAX_MESSAGE {
+        parts(r, &file, body, &template::split(body));
+        for a in template::early_buttons(body) {
             r.err(format!(
-                "{file}: longer than Discord's {MAX_MESSAGE}-character limit (counting each mention at its longest)"
+                "{file}: the `{a}` button is in a part before the last; buttons go under the last part, so write it after the last `{}` line",
+                template::PART_BREAK
             ));
         }
     }
 }
 
-/// A post's length with every mention as long as a Discord id can make it, so
-/// it fits whatever ids things get.
-fn longest(body: &str, lock: &crate::Lock) -> usize {
-    let biggest = crate::Snowflake(u64::MAX);
-    let mut worst = lock.clone();
-    worst.guild = Some(biggest);
-    for k in template::refs(body, '#') {
-        worst.channels.insert(k, biggest);
+/// A long post's parts: not too many, and each fits in a message.
+fn parts(r: &mut Report, file: &str, body: &str, parts: &[String]) {
+    if parts.len() > template::MAX_PARTS {
+        r.err(format!("{file}: {} parts, but a post takes at most {}", parts.len(), template::MAX_PARTS));
     }
-    for k in template::refs(body, '@') {
-        worst.roles.insert(k, biggest);
+    let breaks = body.lines().any(|l| l.trim() == template::PART_BREAK);
+    for n in template::too_long(parts) {
+        let which = if parts.len() > 1 || breaks { format!("part {n} is") } else { "it's".to_owned() };
+        r.err(format!(
+            "{file}: {which} longer than Discord's {MAX_MESSAGE}-character limit (counting each mention at its longest) \
+             with no blank line or heading to split it at; add one, or a `{}` line",
+            template::PART_BREAK
+        ));
     }
-    template::render(body, &worst).content.chars().count()
 }
 
 fn onboarding(r: &mut Report, c: &Config, keys: &Keys) {
@@ -590,6 +593,14 @@ fn projects(r: &mut Report, c: &Config) {
         }
         if p.application.questions.len() > MAX_APPLICATION_QUESTIONS {
             r.err(format!("project `{}`: at most {MAX_APPLICATION_QUESTIONS} application questions", p.slug));
+        }
+        if let (Some(file), Some(brief)) = (&p.brief, c.desired.project_posts.get(&p.slug)) {
+            // Channel mentions in the post's header at their longest too.
+            let mut worst = c.desired.lock.clone();
+            for ch in &p.channels {
+                worst.channels.insert(p.channel_key(ch), crate::Snowflake(u64::MAX));
+            }
+            parts(r, file, brief, &crate::projects::parts(p, &worst, Some(brief)));
         }
     }
     if !c.projects.is_empty() && c.bot.projects.is_none() {
@@ -1334,6 +1345,50 @@ mod tests {
         )
         .unwrap();
         assert!(errors(&d).contains("2000-character limit"), "{}", errors(&d));
+    }
+
+    #[test]
+    fn long_posts_and_briefs_split_into_parts_that_fit() {
+        let d = dir();
+        let p = d.path();
+        fs::create_dir_all(p.join("content")).unwrap();
+        fs::write(
+            p.join("categories/10-a.toml"),
+            "[category]\nkey = \"a\"\nname = \"A\"\n\n[[channel]]\nkey = \"general\"\nname = \"general\"\npost = \"content/hi.md\"\n",
+        )
+        .unwrap();
+        let para = "word ".repeat(300); // 1500 characters
+        // Paragraphs split at blank lines: fine.
+        fs::write(p.join("content/hi.md"), format!("{para}\n\n{para}\n\n{para}\n")).unwrap();
+        assert_eq!(errors(&d), "");
+        // One part with nowhere to split is named.
+        fs::write(p.join("content/hi.md"), format!("{para}\n<!-- part -->\n{para}{para}\n")).unwrap();
+        assert!(
+            errors(&d).contains("content/hi.md: part 2 is longer than Discord's 2000-character limit"),
+            "{}",
+            errors(&d)
+        );
+        // Too many parts.
+        fs::write(p.join("content/hi.md"), "x\n<!-- part -->\n".repeat(11)).unwrap();
+        assert!(errors(&d).contains("11 parts, but a post takes at most 10"), "{}", errors(&d));
+        // Buttons only under the last part.
+        fs::write(p.join("content/hi.md"), "One\n{button:profile|Profile}\n<!-- part -->\nTwo\n").unwrap();
+        assert!(errors(&d).contains("the `profile` button is in a part before the last"), "{}", errors(&d));
+        fs::write(p.join("content/hi.md"), "One\n<!-- part -->\nTwo\n{button:profile|Profile}\n").unwrap();
+        assert_eq!(errors(&d), "");
+
+        // A project's brief: the same, with the post's header counted in part 1.
+        fs::write(p.join("bot.toml"), "name = \"T\"\n[projects]\nforum = \"general\"\n").unwrap();
+        fs::write(p.join("content/hi.md"), "Hi\n").unwrap();
+        fs::write(
+            p.join("projects.toml"),
+            "[[project]]\nslug = \"golem\"\nname = \"Golem\"\nstatus = \"proposed\"\nbrief = \"content/golem.md\"\n",
+        )
+        .unwrap();
+        fs::write(p.join("content/golem.md"), format!("{para}\n\n{para}\n")).unwrap();
+        assert!(!errors(&d).contains("golem.md"), "{}", errors(&d));
+        fs::write(p.join("content/golem.md"), format!("{para}{para}\n")).unwrap();
+        assert!(errors(&d).contains("content/golem.md: part 2 is longer than"), "{}", errors(&d));
     }
 
     #[test]

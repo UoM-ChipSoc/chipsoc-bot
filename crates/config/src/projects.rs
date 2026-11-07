@@ -10,7 +10,7 @@
 //! - proposed projects (ideas) get a post only.
 
 use crate::schema::{Category, CategoryFile, Channel, ChannelKind, Lock, Project, ProjectStatus, Role, Snapshot};
-use crate::template::{Button, Rendered};
+use crate::template::{self, Button, Rendered};
 use crate::{BotConfig, slug};
 
 /// What moving a project from `from` to `to` does, for every front end to
@@ -108,23 +108,50 @@ fn title_case(s: &str) -> String {
     c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
 
-/// The project's forum post: title, text, buttons and tags.
+/// The project's forum post: title, text (one message per part), buttons and tags.
 pub struct Post {
     pub title: String,
-    pub body: Rendered,
+    /// Its messages: the first starts the thread; buttons go under the last.
+    pub parts: Vec<Rendered>,
     /// Forum tag names to apply (matched case-insensitively).
     pub tags: Vec<String>,
 }
 
 /// One string for comparing a project post with Discord: title, tags, text, buttons.
-pub fn signature(title: &str, tags: &[String], body: &Rendered) -> String {
+pub fn signature(title: &str, tags: &[String], parts: &[Rendered]) -> String {
     let mut tags: Vec<String> = tags.iter().map(|t| t.to_lowercase()).collect();
     tags.sort();
     tags.dedup();
-    format!("{title}\n[{}]\n{}", tags.join(", "), body.signature())
+    format!("{title}\n[{}]\n{}", tags.join(", "), template::signature(parts))
 }
 
 pub fn post(p: &Project, lock: &Lock, brief: Option<&str>) -> Post {
+    let (text, buttons) = text(p, lock, brief);
+    let mut parts: Vec<Rendered> = template::split(&text)
+        .iter()
+        .map(|part| {
+            let r = template::render(part, lock);
+            Rendered { content: truncate(&r.content, template::MAX_MESSAGE), buttons: Vec::new() }
+        })
+        .collect();
+    if let Some(last) = parts.last_mut() {
+        last.buttons = buttons;
+    }
+    let mut tags: Vec<String> = p.tags.clone();
+    tags.push(p.status.as_str().into());
+    if !p.kind.is_empty() {
+        tags.push(p.kind.clone());
+    }
+    Post { title: p.display(), parts, tags }
+}
+
+/// The post's source, one per message (see [`template::split`]), for `check`.
+pub fn parts(p: &Project, lock: &Lock, brief: Option<&str>) -> Vec<String> {
+    template::split(&text(p, lock, brief).0)
+}
+
+/// The post's text, as a template, and its buttons.
+fn text(p: &Project, lock: &Lock, brief: Option<&str>) -> (String, Vec<Button>) {
     let status = match p.status {
         ProjectStatus::Proposed => "💡 Proposed",
         ProjectStatus::Active => "🟢 Active",
@@ -146,7 +173,8 @@ pub fn post(p: &Project, lock: &Lock, brief: Option<&str>) -> Post {
         s.push_str(&format!("\n**Channels:** {}", chans.join(" ")));
     }
     if let Some(brief) = brief {
-        s.push_str(&format!("\n\n{}", crate::template::render(brief, lock).content));
+        // The brief's own button lines aren't used: the post's buttons are its own.
+        s.push_str(&format!("\n\n{}", template::without_buttons(brief, |_| true).trim()));
     }
     let mut buttons = Vec::new();
     if p.application.open && p.is_live() {
@@ -154,12 +182,7 @@ pub fn post(p: &Project, lock: &Lock, brief: Option<&str>) -> Post {
     } else if p.is_live() {
         s.push_str("\n\n_Not taking applications right now; ask in the channels above if you'd like to help._");
     }
-    let mut tags: Vec<String> = p.tags.clone();
-    tags.push(p.status.as_str().into());
-    if !p.kind.is_empty() {
-        tags.push(p.kind.clone());
-    }
-    Post { title: p.display(), body: Rendered { content: truncate(&s, 2000), buttons }, tags }
+    (s, buttons)
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -229,7 +252,7 @@ mod tests {
         let mut p = project("golem", ProjectStatus::Active);
         p.application.open = true;
         let post = post(&p, &Lock::default(), None);
-        assert_eq!(post.body.buttons[0].action, "apply:golem");
+        assert_eq!(post.parts[0].buttons[0].action, "apply:golem");
         assert!(post.tags.contains(&"active".to_owned()));
     }
 }

@@ -931,7 +931,7 @@ async fn renaming_a_project_keeps_its_roles_channels_and_post() {
     apply_all(&mut e).await;
     let (team, cat) =
         (e.cfg.desired.lock.roles["proj-golem-team"].to_string(), e.cfg.desired.lock.category("proj-golem").unwrap());
-    let post = e.cfg.desired.lock.project_posts["golem"];
+    let post = e.cfg.desired.lock.project_posts["golem"].clone();
     let (roles, channels) = {
         let st = e.rest.state.lock().unwrap();
         (st.roles.len(), st.channels.len())
@@ -1176,4 +1176,218 @@ async fn only_the_owner_applies_deletes_and_sweeps() {
         assert!(err.to_string().starts_with("Only the server owner can"), "{err}");
         e.apply_by(&plan, &owner, &mut |_: &Action, _: &Result<(), String>| {}).await.unwrap();
     }
+}
+
+/// The bot's messages in channel `ch`, oldest first: (id, text, has buttons).
+fn messages_in(e: &Engine<FakeDiscord>, ch: Snowflake) -> Vec<(String, String, bool)> {
+    let st = e.rest.state.lock().unwrap();
+    st.messages
+        .iter()
+        .filter(|m| m["channel_id"] == ch.to_string())
+        .map(|m| {
+            let buttons = m["components"].as_array().is_some_and(|c| !c.is_empty());
+            (m["id"].as_str().unwrap().to_owned(), m["content"].as_str().unwrap_or_default().to_owned(), buttons)
+        })
+        .collect()
+}
+
+/// A post of `n` parts, the `edited` one (from 1) worded differently, with a button.
+fn parts_post(n: usize, edited: usize) -> String {
+    let parts: Vec<String> =
+        (1..=n).map(|i| if i == edited { format!("Part {i}, edited.") } else { format!("Part {i}.") }).collect();
+    format!("{}\n\n{{button:profile|Set up your profile}}\n", parts.join("\n<!-- part -->\n"))
+}
+
+/// A long post is several messages: edited part by part, grown and shrunk in
+/// place, found again when lock.toml is lost, and put back when one is edited
+/// or deleted in Discord.
+#[tokio::test]
+async fn a_long_post_is_several_messages_kept_in_step() {
+    let d = fixture();
+    let p = d.path();
+    write(p, "content/welcome.md", &parts_post(3, 0));
+    let mut e = engine(p);
+    apply_all(&mut e).await;
+    assert_converged(&e).await;
+    let ch = e.cfg.desired.lock.channel("general").unwrap();
+    let texts = |e: &Engine<FakeDiscord>| -> Vec<(String, bool)> {
+        messages_in(e, ch).into_iter().map(|(_, t, b)| (t, b)).collect()
+    };
+    let owned = |v: &[(&str, bool)]| -> Vec<(String, bool)> { v.iter().map(|(t, b)| ((*t).to_owned(), *b)).collect() };
+    assert_eq!(texts(&e), owned(&[("Part 1.", false), ("Part 2.", false), ("Part 3.", true)]), "buttons on the last");
+    let post = e.cfg.desired.lock.posts["general"].clone();
+    assert_eq!(post.parts.len(), 2);
+
+    // Editing part 2 edits only its message.
+    write(p, "content/welcome.md", &parts_post(3, 2));
+    e.reload().unwrap();
+    let plan = e.plan(Options::default()).await.unwrap();
+    assert!(lines(&plan).contains("part 2 changed: \"Part 2.\" → \"Part 2, edited.\""), "{}", lines(&plan));
+    e.rest.take_calls();
+    apply_all(&mut e).await;
+    assert_eq!(e.rest.take_calls(), [format!("Patch channels/{ch}/messages/{}", post.parts[0])]);
+    assert_converged(&e).await;
+
+    // A fourth part: the third loses its buttons, the fourth is posted after it.
+    write(p, "content/welcome.md", &parts_post(4, 2));
+    e.reload().unwrap();
+    e.rest.take_calls();
+    apply_all(&mut e).await;
+    let calls = e.rest.take_calls();
+    assert_eq!(
+        calls,
+        [format!("Patch channels/{ch}/messages/{}", post.parts[1]), format!("Post channels/{ch}/messages")]
+    );
+    assert_eq!(texts(&e).last(), Some(&("Part 4.".to_owned(), true)));
+    assert_eq!(e.cfg.desired.lock.posts["general"].parts.len(), 3);
+    assert_converged(&e).await;
+
+    // Deleted in Discord: it and those after it are posted again, in order.
+    let second = e.cfg.desired.lock.posts["general"].parts[0];
+    e.rest.state.lock().unwrap().messages.retain(|m| m["id"] != second.to_string());
+    let plan = e.plan(Options::default()).await.unwrap();
+    assert!(lines(&plan).contains("part 2 changed: (nothing)"), "{}", lines(&plan));
+    apply_all(&mut e).await;
+    let want = [("Part 1.", false), ("Part 2, edited.", false), ("Part 3.", false), ("Part 4.", true)];
+    assert_eq!(texts(&e), owned(&want));
+    assert_converged(&e).await;
+
+    // Edited in Discord: drift, put back.
+    let third = e.cfg.desired.lock.posts["general"].parts[1];
+    {
+        let mut st = e.rest.state.lock().unwrap();
+        let m = st.messages.iter_mut().find(|m| m["id"] == third.to_string()).unwrap();
+        m["content"] = json!("Changed by hand.");
+    }
+    let plan = e.plan(Options::default()).await.unwrap();
+    assert!(lines(&plan).contains("part 3 changed"), "{}", lines(&plan));
+    apply_all(&mut e).await;
+    assert_converged(&e).await;
+
+    // Down to two: the extra messages are deleted, the buttons move up.
+    write(p, "content/welcome.md", &parts_post(2, 2));
+    e.reload().unwrap();
+    let plan = e.plan(Options::default()).await.unwrap();
+    assert!(lines(&plan).contains("4 parts → 2 parts"), "{}", lines(&plan));
+    e.rest.take_calls();
+    apply_all(&mut e).await;
+    let calls = e.rest.take_calls();
+    assert_eq!(calls.iter().filter(|c| c.starts_with("Delete")).count(), 2, "{calls:?}");
+    assert_eq!(texts(&e), owned(&[("Part 1.", false), ("Part 2, edited.", true)]));
+    assert_converged(&e).await;
+
+    // A member's reply in between doesn't stop a third part being added after it.
+    let member = json!({ "id": "9000000", "channel_id": ch.to_string(), "author": { "id": "7" }, "content": "hi" });
+    e.rest.state.lock().unwrap().messages.push(member);
+    write(p, "content/welcome.md", &parts_post(3, 2));
+    e.reload().unwrap();
+    apply_all(&mut e).await;
+    assert_converged(&e).await;
+
+    // lock.toml lost: every part is found again, nothing posted twice.
+    let before = e.cfg.desired.lock.posts["general"].clone();
+    fs::remove_file(p.join(LOCK)).unwrap();
+    let _ = fs::remove_file(p.join(chipsoc_config::LOCK_BACKUP));
+    e.reload().unwrap();
+    e.rest.take_calls();
+    apply_all(&mut e).await;
+    assert_eq!(posts_made(&e), Vec::<String>::new(), "found again, not posted twice");
+    assert_eq!(e.cfg.desired.lock.posts["general"], before);
+    assert_converged(&e).await;
+}
+
+/// A forum's "How to post here" thread and a project's brief: later parts
+/// follow in the thread.
+#[tokio::test]
+async fn long_forum_posts_and_briefs_continue_in_their_thread() {
+    let d = fixture();
+    let p = d.path();
+    let cat = fs::read_to_string(p.join("categories/10-main.toml")).unwrap();
+    let cat = cat.replace(
+        "tags = [\"active\", \"past\", \"cpu\"]\n",
+        "tags = [\"active\", \"past\", \"cpu\"]\npost = \"content/how.md\"\n",
+    );
+    write(p, "categories/10-main.toml", &cat);
+    write(p, "content/how.md", &parts_post(2, 0));
+    let projects = fs::read_to_string(p.join("projects.toml")).unwrap();
+    write(p, "projects.toml", &projects.replace("kind = \"cpu\"\n", "kind = \"cpu\"\nbrief = \"content/golem.md\"\n"));
+    write(p, "content/golem.md", "About it.\n<!-- part -->\nThe plan.\n<!-- part -->\nThe team.\n");
+    let mut e = engine(p);
+    apply_all(&mut e).await;
+    assert_converged(&e).await;
+
+    let how = e.cfg.desired.lock.posts["projects"].clone();
+    let texts: Vec<String> = messages_in(&e, how.message).into_iter().map(|(_, t, _)| t).collect();
+    assert_eq!(texts, ["Part 1.", "Part 2."]);
+    let golem = e.cfg.desired.lock.project_posts["golem"].clone();
+    let msgs = messages_in(&e, golem.thread);
+    assert_eq!(msgs.len(), 3);
+    assert!(msgs[0].1.starts_with("# Golem") && msgs[0].1.ends_with("About it."), "{:?}", msgs[0]);
+    assert_eq!((msgs[1].1.as_str(), msgs[1].2), ("The plan.", false));
+    assert_eq!((msgs[2].1.as_str(), msgs[2].2), ("The team.", true), "the apply button under the last");
+    assert_eq!(golem.parts.len(), 2);
+
+    // Edit the brief's part 2: that message changes (the thread and its first are always sent).
+    write(p, "content/golem.md", "About it.\n<!-- part -->\nThe new plan.\n<!-- part -->\nThe team.\n");
+    e.reload().unwrap();
+    let plan = e.plan(Options::default()).await.unwrap();
+    assert!(lines(&plan).contains("part 2 changed"), "{}", lines(&plan));
+    e.rest.take_calls();
+    apply_all(&mut e).await;
+    let calls = e.rest.take_calls();
+    assert!(calls.contains(&format!("Patch channels/{}/messages/{}", golem.thread, golem.parts[0])), "{calls:?}");
+    assert!(!calls.iter().any(|c| c.contains(&golem.parts[1].to_string()) || c.starts_with("Post")), "{calls:?}");
+    assert_converged(&e).await;
+
+    // Shrink the brief, grow the forum's post.
+    write(p, "content/golem.md", "About it, all of it.\n");
+    write(p, "content/how.md", &parts_post(3, 0));
+    e.reload().unwrap();
+    apply_all(&mut e).await;
+    assert_converged(&e).await;
+    assert_eq!(messages_in(&e, golem.thread).len(), 1);
+    assert!(e.cfg.desired.lock.project_posts["golem"].parts.is_empty());
+    let texts: Vec<String> = messages_in(&e, how.message).into_iter().map(|(_, t, _)| t).collect();
+    assert_eq!(texts, ["Part 1.", "Part 2.", "Part 3."]);
+
+    // Grow the brief again, then lose lock.toml: both found again, part by part.
+    write(p, "content/golem.md", "About it.\n<!-- part -->\nThe plan.\n");
+    e.reload().unwrap();
+    apply_all(&mut e).await;
+    let (how, golem) =
+        (e.cfg.desired.lock.posts["projects"].clone(), e.cfg.desired.lock.project_posts["golem"].clone());
+    assert_eq!((how.parts.len(), golem.parts.len()), (2, 1));
+    fs::remove_file(p.join(LOCK)).unwrap();
+    let _ = fs::remove_file(p.join(chipsoc_config::LOCK_BACKUP));
+    e.reload().unwrap();
+    e.rest.take_calls();
+    apply_all(&mut e).await;
+    assert_eq!(posts_made(&e), Vec::<String>::new(), "found again, not posted twice");
+    assert_eq!(e.cfg.desired.lock.posts["projects"], how);
+    assert_eq!(e.cfg.desired.lock.project_posts["golem"], golem);
+    assert_converged(&e).await;
+}
+
+/// Parts that lock.toml says are the post's, but someone else wrote, are
+/// never deleted: a lock.toml from the repo can't make the bot delete members' messages.
+#[tokio::test]
+async fn only_the_bots_own_old_parts_are_deleted() {
+    let d = fixture();
+    let p = d.path();
+    write(p, "content/welcome.md", &parts_post(2, 0));
+    let mut e = engine(p);
+    apply_all(&mut e).await;
+    let ch = e.cfg.desired.lock.channel("general").unwrap();
+    let member = json!({ "id": "9000000", "channel_id": ch.to_string(), "author": { "id": "7" }, "content": "mine" });
+    e.rest.state.lock().unwrap().messages.push(member);
+    let mut lock = e.cfg.desired.lock.clone();
+    lock.posts.get_mut("general").unwrap().parts.push(Snowflake(9000000));
+    e.cfg.save_lock(&lock).unwrap();
+    e.reload().unwrap();
+    write(p, "content/welcome.md", "Just one part now.\n");
+    e.reload().unwrap();
+    apply_all(&mut e).await;
+    assert!(messages_in(&e, ch).iter().any(|(id, t, _)| id == "9000000" && t == "mine"), "kept");
+    assert!(e.cfg.desired.lock.posts["general"].parts.is_empty(), "and no longer counted as the post's");
+    assert_converged(&e).await;
 }

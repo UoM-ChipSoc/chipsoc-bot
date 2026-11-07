@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use chipsoc_config::schema::*;
-use chipsoc_config::template::render;
+use chipsoc_config::template;
 use chipsoc_config::{Config, projects, resolved_onboarding};
 use chipsoc_model::{
     Action, Cause, Change, Field, ObjectKind, OrderScope, Plan, Snowflake, Warning, object_key, perms, stable_hash,
@@ -129,6 +129,28 @@ fn first_difference(old: &str, new: &str) -> (String, String) {
             (None, None) => return ("…".into(), "…".into()),
         }
     }
+}
+
+/// What differs between two posts, by their signatures: the first line that
+/// differs, part by part when either has more than one.
+fn part_changes(have: &str, want: &str) -> Vec<Change> {
+    let (h, w) = (template::signature_parts(have), template::signature_parts(want));
+    if h.len() == 1 && w.len() == 1 {
+        let (from, to) = first_difference(have, want);
+        return vec![ch(Field::Content, from, to)];
+    }
+    let mut changes = Vec::new();
+    if h.len() != w.len() {
+        changes.push(ch(Field::Content, format!("{} parts", h.len()), format!("{} parts", w.len())));
+    }
+    for i in 0..h.len().max(w.len()) {
+        let (a, b) = (h.get(i).copied().unwrap_or_default(), w.get(i).copied().unwrap_or_default());
+        if a != b {
+            let (from, to) = first_difference(a, b);
+            changes.push(ch(Field::Content, format!("part {} changed: {from}", i + 1), to));
+        }
+    }
+    changes
 }
 
 /// Who moved: compare both sides with what was last applied.
@@ -658,22 +680,22 @@ impl Diff<'_> {
             if self.live.unreadable.posts.contains(key) {
                 continue;
             }
-            let want = render(src, &self.want.lock).signature();
+            let want = template::signature(&template::render_parts(src, &self.want.lock));
             let want_state = stable_hash(&want);
             self.wanted(ObjectKind::Post, key, &want_state);
-            let mentions_new = ['@', '#'].into_iter().any(|sigil| {
-                chipsoc_config::template::refs(src, sigil).into_iter().any(|k| creating.contains(&(sigil, k)))
-            });
+            let mentions_new = ['@', '#']
+                .into_iter()
+                .any(|sigil| template::refs(src, sigil).into_iter().any(|k| creating.contains(&(sigil, k))));
             match (self.want.lock.posts.get(key), self.live.posts.get(key)) {
                 (Some(p), Some(have)) => {
                     if *have != want || mentions_new {
-                        let (from, to) = if *have == want {
-                            ("mentions things this run makes".to_owned(), "sent again once they exist".to_owned())
+                        let changes = if *have == want {
+                            let (from, to) = ("mentions things this run makes", "sent again once they exist");
+                            vec![ch(Field::Content, from, to)]
                         } else {
-                            first_difference(have, &want)
+                            part_changes(have, &want)
                         };
                         let have_state = stable_hash(have);
-                        let changes = vec![ch(Field::Content, from, to)];
                         self.edit(ObjectKind::Post, key, p.message, changes, &want_state, &have_state);
                     }
                 }
@@ -697,14 +719,13 @@ impl Diff<'_> {
             let post = projects::post(p, &self.want.lock, self.want.project_posts.get(&p.slug).map(String::as_str));
             let tags: Vec<String> =
                 post.tags.iter().filter(|t| forum_tags.contains(&t.to_lowercase())).cloned().collect();
-            let want = projects::signature(&post.title, &tags, &post.body);
+            let want = projects::signature(&post.title, &tags, &post.parts);
             let want_state = stable_hash(&want);
             self.wanted(ObjectKind::ProjectPost, &p.slug, &want_state);
             match (self.want.lock.project_posts.get(&p.slug), self.live.project_posts.get(&p.slug)) {
                 (Some(t), Some(have)) => {
                     if *have != want {
-                        let (from, to) = first_difference(have, &want);
-                        let changes = vec![ch(Field::Content, from, to)];
+                        let changes = part_changes(have, &want);
                         self.edit(ObjectKind::ProjectPost, &p.slug, t.thread, changes, &want_state, &stable_hash(have));
                     }
                 }
