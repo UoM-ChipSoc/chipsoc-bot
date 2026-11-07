@@ -58,7 +58,7 @@ fn write(dir: &Path, file: &str, body: &str) {
 
 /// A config with an open position whose holders members.toml lists, applied
 /// to the fake, in a checkout of a bare origin (so the bot commits and pushes).
-async fn server() -> (tempfile::TempDir, Arc<FakeDiscord>, Ctx) {
+pub(crate) async fn server() -> (tempfile::TempDir, Arc<FakeDiscord>, Ctx) {
     server_with("", "").await
 }
 
@@ -552,6 +552,117 @@ async fn an_apply_from_the_web_closes_the_bot_logs_plans() {
     crate::control::close_applied(&ctx, &mut seen).await;
     assert_eq!(ctx.db().plan_posts().await.unwrap().len(), 1, "left for the bot's own apply to close");
     assert!(ctx.own_applies.lock().unwrap().is_empty(), "handled once");
+}
+
+/// The same person applying from Discord and from the web at about the same
+/// time: the bot's apply is skipped as its own, the web's still closes the
+/// plans made before it.
+#[tokio::test]
+async fn an_apply_from_the_web_by_whoever_just_applied_here_still_closes_plans() {
+    let (_root, fake, ctx) = server().await;
+    let dir = ctx.cfg().dir.clone();
+    let log = ctx.cfg().desired.lock.channel("log").unwrap().to_string();
+    let mut seen = ctx.db().last_audit_id().await.unwrap();
+    let rev = chipsoc_engine::By::person(chipsoc_model::Snowflake(REVIEWER), "rev");
+
+    retopic(&dir, "one");
+    assert!(crate::control::announce(&ctx, "📥 **Config changed**").await);
+    let (first, plan) = plan_posts(&fake, &log)[0].clone();
+    let fresh = ctx.plans.take(&plan).unwrap();
+    let own = crate::control::apply_as(&ctx, &fresh, &rev).await.unwrap().audit_id.unwrap();
+
+    // Before the reload watch looks, they apply again from the web.
+    retopic(&dir, "two");
+    let baseline = chipsoc_admin::trust::StoreBaseline::new(ctx.store.clone(), &dir);
+    let mut web = chipsoc_engine::Engine::unloaded(fake.clone(), &dir).trusting(baseline).await.unwrap();
+    let p = web.plan(chipsoc_engine::Options::default()).await.unwrap();
+    let theirs = web.apply_by(&p, &rev, &mut crate::control::noop).await.unwrap().audit_id.unwrap();
+    assert!(theirs > own);
+
+    crate::control::close_applied(&ctx, &mut seen).await;
+    assert_eq!(seen, theirs, "both read");
+    assert!(ctx.own_applies.lock().unwrap().is_empty(), "the bot's own one skipped, once");
+    let closed = posted(&fake, &first);
+    assert_eq!(closed["content"], format!("✅ Applied by <@{REVIEWER}> (from the CLI/web)."), "{closed}");
+    assert!(ctx.db().plan_posts().await.unwrap().is_empty());
+}
+
+/// Everything in a modal against Discord's limits (it refuses the whole
+/// form over any one of them): what's too long, as "where: length > limit".
+fn over_discord_limits(modal: &Value) -> Vec<String> {
+    fn len(v: &Value) -> usize {
+        v.as_str().map_or(0, |s| s.chars().count())
+    }
+    fn walk(v: &Value, at: &str, out: &mut Vec<String>) {
+        let mut check = |field: &str, max: usize| {
+            if len(&v[field]) > max {
+                out.push(format!("{at}.{field}: {} > {max}", len(&v[field])));
+            }
+        };
+        check("custom_id", 100);
+        match v["type"].as_u64() {
+            // Text input; a label around one; a select menu and its options.
+            Some(4) => (check("label", 45), check("placeholder", 100), check("value", 4000)).1,
+            Some(18) => (check("label", 45), check("description", 100)).1,
+            Some(10) => check("content", 4000),
+            Some(3) => {
+                check("placeholder", 150);
+                for (n, o) in v["options"].as_array().into_iter().flatten().enumerate() {
+                    for (f, max) in [("label", 100), ("value", 100), ("description", 100)] {
+                        if len(&o[f]) > max {
+                            out.push(format!("{at}.options[{n}].{f}: {} > {max}", len(&o[f])));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        for key in ["components", "component"] {
+            match &v[key] {
+                Value::Array(list) => {
+                    for (n, c) in list.iter().enumerate() {
+                        walk(c, &format!("{at}.{key}[{n}]"), out);
+                    }
+                }
+                c @ Value::Object(_) => walk(c, &format!("{at}.{key}"), out),
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if len(&modal["title"]) > 45 {
+        out.push(format!("title: {} > 45", len(&modal["title"])));
+    }
+    if modal["components"].as_array().map_or(0, Vec::len) > 5 {
+        out.push("more than 5 rows".into());
+    }
+    walk(modal, "modal", &mut out);
+    out
+}
+
+/// A position with a long name, intro, questions and hints still opens a
+/// form Discord takes.
+#[tokio::test]
+async fn a_long_winded_position_still_opens_a_form_discord_takes() {
+    let (_root, fake, ctx) = server().await;
+    let mut cfg = (*ctx.cfg()).clone();
+    let p = &mut cfg.bot.positions[0];
+    p.label = Some("Secretary and Keeper of the Records, Minutes and Everything Else Besides".into());
+    p.intro = Some("All about it. ".repeat(400));
+    p.questions = (0..4)
+        .map(|n| chipsoc_config::bot::Question {
+            ask: format!("Question {n}: {}", "why would you like to do this, at length? ".repeat(3)),
+            long: n % 2 == 0,
+            optional: false,
+            hint: Some("A hint that goes on and on. ".repeat(10)),
+        })
+        .collect();
+    ctx.set_cfg(Arc::new(cfg));
+    let press = interaction(ADA, "tok-long", 3, false, None);
+    crate::apps::volunteer(&ctx, &press, None).await;
+    let reply = &fake.replies_to("tok-long")[0]["reply"];
+    assert_eq!(reply["type"], 9, "a form: {reply}");
+    assert_eq!(over_discord_limits(&reply["data"]), Vec::<String>::new(), "{reply}");
 }
 
 /// With one position open, `/volunteer` opens its form: nothing to choose.
