@@ -19,9 +19,13 @@ pub use chipsoc_config::fingerprint;
 /// there's anything to apply.
 pub async fn watch(ctx: Arc<Ctx>, dir: PathBuf) {
     let mut seen = changed(&dir).await;
+    // Plan posts from before now were closed at start (see `control::close_stale_posts`).
+    let mut applied = ctx.db().last_audit_id().await.unwrap_or_default();
     let mut tick = tokio::time::interval(EVERY);
     loop {
         tick.tick().await;
+        // Applied by the web UI or the CLI: the bot log's plans are moot.
+        control::close_applied(&ctx, &mut applied).await;
         let now = changed(&dir).await;
         if now.0 != seen.0 && reload(&ctx, &dir).await && now.1 != seen.1 {
             let intro = crate::gitsync::headline(&last_commit(&dir).await.unwrap_or_default());

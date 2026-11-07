@@ -103,7 +103,11 @@ commit's git author.
 Removing, archiving, taking a role away, changing a project's status and
 applying ask first in every front end (`--yes` skips it in the CLI). An
 **Apply** button under a posted plan applies exactly that plan; it lasts 24
-hours or until the bot restarts, and an old one offers a fresh plan.
+hours or until the bot restarts, and an old one offers a fresh plan. Once
+anything is applied, from Discord, the dashboard, the API or the CLI, the
+bot log's open plans lose their buttons and say who applied ("✅ Applied by
+… (from the CLI/web)" within half a minute for an apply outside Discord); a
+newer plan replaces the one before it ("↪️ Replaced by a newer plan").
 
 ## In Discord
 

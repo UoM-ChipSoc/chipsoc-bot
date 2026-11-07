@@ -496,6 +496,45 @@ async fn dismiss_says_who_and_closes_the_plan() {
     assert!(ctx.plans.take(&plan).is_none(), "its plan is gone");
 }
 
+/// An apply by another program sharing the bot's database (the web server,
+/// so the CLI signed in to it too) closes the bot log's plan posts made
+/// before it, saying who; the bot's own applies are left to it.
+#[tokio::test]
+async fn an_apply_from_the_web_closes_the_bot_logs_plans() {
+    let (_root, fake, ctx) = server().await;
+    let dir = ctx.cfg().dir.clone();
+    let log = ctx.cfg().desired.lock.channel("log").unwrap().to_string();
+    let mut seen = ctx.db().last_audit_id().await.unwrap();
+    retopic(&dir, "one");
+    assert!(crate::control::announce(&ctx, "📥 **Config changed**").await);
+    let (post, plan) = plan_posts(&fake, &log)[0].clone();
+
+    // The web server's engine: its own process, the same database and files.
+    let baseline = chipsoc_admin::trust::StoreBaseline::new(ctx.store.clone(), &dir);
+    let mut web = chipsoc_engine::Engine::unloaded(fake.clone(), &dir).trusting(baseline).await.unwrap();
+    let p = web.plan(chipsoc_engine::Options::default()).await.unwrap();
+    let ada = chipsoc_engine::By::person(chipsoc_model::Snowflake(ADA), "ada");
+    web.apply_by(&p, &ada, &mut crate::control::noop).await.unwrap();
+
+    crate::control::close_applied(&ctx, &mut seen).await;
+    let closed = posted(&fake, &post);
+    assert_eq!(closed["content"], "✅ Applied by <@7> (from the CLI/web).", "{closed}");
+    assert_eq!(closed["components"], json!([]));
+    assert!(ctx.db().plan_posts().await.unwrap().is_empty());
+    assert!(ctx.plans.take(&plan).is_none(), "its plan is gone");
+
+    // A plan posted after that apply stays open; the bot's own apply is its own business.
+    retopic(&dir, "two");
+    assert!(crate::control::announce(&ctx, "📥 **Config changed**").await);
+    let (_, later) = plan_posts(&fake, &log)[0].clone();
+    let fresh = ctx.plans.take(&later).unwrap();
+    let me = chipsoc_engine::By::person(chipsoc_model::Snowflake(REVIEWER), "rev");
+    crate::control::apply_as(&ctx, &fresh, &me).await.unwrap();
+    crate::control::close_applied(&ctx, &mut seen).await;
+    assert_eq!(ctx.db().plan_posts().await.unwrap().len(), 1, "left for the bot's own apply to close");
+    assert!(ctx.own_applies.lock().unwrap().is_empty(), "handled once");
+}
+
 /// With one position open, `/volunteer` opens its form: nothing to choose.
 #[tokio::test]
 async fn one_open_position_skips_the_menu() {

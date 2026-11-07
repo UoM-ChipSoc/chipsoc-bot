@@ -135,6 +135,9 @@ pub(crate) struct Ctx {
     /// The fingerprint of the last plan posted in the bot log for a config
     /// change, so each change is announced once.
     pub announced: tokio::sync::Mutex<Option<String>>,
+    /// The bot's own applies in the audit log: it closes plan posts for those
+    /// itself, so [`control::close_applied`] skips them.
+    pub own_applies: std::sync::Mutex<std::collections::BTreeSet<i64>>,
     /// How often each member may send forms.
     pub limits: limits::Limits,
     /// The resources forum's posts, kept between members' submits.
@@ -366,6 +369,7 @@ impl Ctx {
             drift: Default::default(),
             changing: Default::default(),
             announced: Default::default(),
+            own_applies: Default::default(),
             limits: Default::default(),
             seen_posts: Default::default(),
             autosave,
@@ -467,6 +471,7 @@ impl Shared {
             drift: Default::default(),
             changing: Default::default(),
             announced: Default::default(),
+            own_applies: Default::default(),
             limits: Default::default(),
             seen_posts: Default::default(),
             admins: Default::default(),

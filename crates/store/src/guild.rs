@@ -372,6 +372,14 @@ pub struct JoinRecord {
     pub ts: i64,
 }
 
+/// An apply in the audit log: who applied, and when.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct Applied {
+    pub id: i64,
+    pub ts: i64,
+    pub actor: Option<String>,
+}
+
 /// A plan posted with live Apply buttons.
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct PlanPost {
@@ -1112,6 +1120,43 @@ impl Guild<'_> {
         .await?)
     }
 
+    /// Plans posted no later than `ts` whose buttons are still live, oldest first.
+    pub async fn plan_posts_until(&self, ts: i64) -> Result<Vec<PlanPost>> {
+        Ok(sqlx::query_as(
+            "SELECT channel_id, message_id, plan_id FROM plan_posts WHERE guild_id = ? AND ts <= ? ORDER BY ts, rowid",
+        )
+        .bind(self.guild)
+        .bind(ts)
+        .fetch_all(self.pool)
+        .await?)
+    }
+
+    /// Applies in the audit log after entry `after` (by any program sharing
+    /// this database: the bot, the web server, the CLI), oldest first.
+    pub async fn applies_after(&self, after: i64) -> Result<Vec<Applied>> {
+        Ok(sqlx::query_as(
+            "SELECT id, ts, actor FROM audit_log WHERE guild_id = ? AND action = 'apply' AND id > ? ORDER BY id",
+        )
+        .bind(self.guild)
+        .bind(after)
+        .fetch_all(self.pool)
+        .await?)
+    }
+
+    /// The newest audit-log entry's id (0 if there's none), to read [`Guild::applies_after`] from.
+    pub async fn last_audit_id(&self) -> Result<i64> {
+        Ok(sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM audit_log").fetch_one(self.pool).await?)
+    }
+
+    /// The newest apply `actor` made, if any.
+    pub async fn last_apply_by(&self, actor: &str) -> Result<Option<i64>> {
+        Ok(sqlx::query_scalar("SELECT MAX(id) FROM audit_log WHERE guild_id = ? AND action = 'apply' AND actor = ?")
+            .bind(self.guild)
+            .bind(actor)
+            .fetch_one(self.pool)
+            .await?)
+    }
+
     /// Its buttons are gone (used, dismissed or replaced).
     pub async fn close_plan_post(&self, message: &str) -> Result<()> {
         sqlx::query("DELETE FROM plan_posts WHERE guild_id = ? AND message_id = ?")
@@ -1189,6 +1234,31 @@ mod tests {
         assert!(s.guild("g2").plan_posts().await.unwrap().is_empty(), "scoped by guild");
         g.close_plan_post("11").await.unwrap();
         assert_eq!(g.plan_posts().await.unwrap(), [post("12")]);
+    }
+
+    #[tokio::test]
+    async fn applies_are_read_from_the_audit_log_in_order() {
+        let s = Store::open("sqlite::memory:").await.unwrap();
+        let g = s.guild("g1");
+        let start = g.last_audit_id().await.unwrap();
+        g.audit(5, Some("7"), "apply", None, Some("1 change(s)")).await.unwrap();
+        g.audit(6, Some("7"), "appoint", None, None).await.unwrap();
+        s.guild("g2").audit(7, Some("8"), "apply", None, None).await.unwrap();
+        g.audit(8, Some("ada"), "apply", None, None).await.unwrap();
+        let all = g.applies_after(start).await.unwrap();
+        let who: Vec<_> = all.iter().map(|a| (a.ts, a.actor.as_deref().unwrap())).collect();
+        assert_eq!(who, [(5, "7"), (8, "ada")], "applies only, this guild's, oldest first");
+        assert!(g.applies_after(all[1].id).await.unwrap().is_empty());
+        assert_eq!(g.last_apply_by("7").await.unwrap(), Some(all[0].id));
+        assert_eq!(g.last_apply_by("nobody").await.unwrap(), None);
+        g.add_plan_post(&PlanPost { channel_id: "5".into(), message_id: "1".into(), plan_id: "a".into() }, 5)
+            .await
+            .unwrap();
+        g.add_plan_post(&PlanPost { channel_id: "5".into(), message_id: "2".into(), plan_id: "b".into() }, 9)
+            .await
+            .unwrap();
+        let until: Vec<_> = g.plan_posts_until(8).await.unwrap().into_iter().map(|p| p.message_id).collect();
+        assert_eq!(until, ["1"], "posted after the apply: left open");
     }
 
     #[tokio::test]

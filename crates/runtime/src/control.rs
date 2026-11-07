@@ -127,8 +127,41 @@ pub async fn apply(ctx: &Ctx, plan: &Plan) -> Result<Report> {
 pub async fn apply_as(ctx: &Ctx, plan: &Plan, by: &By) -> Result<Report> {
     let mut c = begin(ctx).await?;
     let r = c.engine.apply_by(plan, by, &mut noop).await;
+    // Noted while still changing, so the reload watch can't take it for another program's.
+    if r.is_ok()
+        && let Some(who) = by.key()
+        && let Ok(Some(id)) = ctx.db().last_apply_by(&who).await
+    {
+        ctx.own_applies.lock().unwrap_or_else(|e| e.into_inner()).insert(id);
+    }
     c.end().await;
     r
+}
+
+/// Close the bot log's plan posts made before each apply in the audit log
+/// after entry `seen` that another program (the web UI, the API and so the
+/// CLI signed in to it, the CLI on the bot's machine) made: Discord has moved
+/// on, so their buttons would only find a stale plan. `seen` moves on past
+/// what's handled. Waits (does nothing) while the bot is changing things.
+pub async fn close_applied(ctx: &Ctx, seen: &mut i64) {
+    let Ok(_one) = ctx.changing.try_lock() else { return };
+    let applies = match ctx.db().applies_after(*seen).await {
+        Ok(a) => a,
+        Err(e) => return tracing::warn!("reading the audit log for applies failed: {e:#}"),
+    };
+    for a in applies {
+        *seen = a.id;
+        if ctx.own_applies.lock().unwrap_or_else(|e| e.into_inner()).remove(&a.id) {
+            continue;
+        }
+        let posts = ctx.db().plan_posts_until(a.ts).await.unwrap_or_default();
+        let who = match a.actor.as_deref() {
+            Some(id) if !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()) => format!("<@{id}>"),
+            Some(name) if !name.is_empty() => name.to_owned(),
+            _ => "someone".to_owned(),
+        };
+        close_posts(ctx, posts, &format!("✅ Applied by {who} (from the CLI/web).")).await;
+    }
 }
 
 /// Who pressed or typed `i`, as the engine knows them.
@@ -205,23 +238,28 @@ async fn close_others(ctx: &Ctx, keep: Option<&str>, posts: bool, why: &str) {
     use chipsoc_discord::{Method, Rest as _};
     let body = Some(serde_json::json!({ "content": why, "components": [] }));
     if posts {
-        for p in ctx.db().plan_posts().await.unwrap_or_default() {
-            if Some(p.plan_id.as_str()) == keep {
-                continue;
-            }
-            ctx.plans.take(&p.plan_id);
-            let path = format!("channels/{}/messages/{}", p.channel_id, p.message_id);
-            if let Err(e) = ctx.rest.call(Method::Patch, &path, body.clone()).await {
-                tracing::info!("closing an old plan post failed: {e:#}");
-            }
-            ctx.log_err(ctx.db().close_plan_post(&p.message_id).await, "forgetting a plan post");
-        }
+        let all = ctx.db().plan_posts().await.unwrap_or_default();
+        close_posts(ctx, all.into_iter().filter(|p| Some(p.plan_id.as_str()) != keep).collect(), why).await;
     }
     for (_, token) in ctx.plans.close_replies(keep) {
         let path = format!("webhooks/{}/{token}/messages/@original", ctx.app);
         if let Err(e) = ctx.rest.call(Method::Patch, &path, body.clone()).await {
             tracing::info!("closing an old plan reply failed: {e:#}");
         }
+    }
+}
+
+/// Take the buttons off `posts` and say `why` instead; their plans are dropped.
+async fn close_posts(ctx: &Ctx, posts: Vec<chipsoc_store::PlanPost>, why: &str) {
+    use chipsoc_discord::{Method, Rest as _};
+    let body = Some(serde_json::json!({ "content": why, "components": [] }));
+    for p in posts {
+        ctx.plans.take(&p.plan_id);
+        let path = format!("channels/{}/messages/{}", p.channel_id, p.message_id);
+        if let Err(e) = ctx.rest.call(Method::Patch, &path, body.clone()).await {
+            tracing::info!("closing an old plan post failed: {e:#}");
+        }
+        ctx.log_err(ctx.db().close_plan_post(&p.message_id).await, "forgetting a plan post");
     }
 }
 
