@@ -1643,10 +1643,19 @@ async fn the_pinned_project_moves_its_pin() {
     write(p, "bot.toml", &format!("{bot}pinned = \"robot\"\n"));
     e.reload().unwrap();
     let plan = e.plan(Options::default()).await.unwrap();
-    let said = lines(&plan);
-    assert!(said.contains("pinned: pinned → not pinned") && said.contains("pinned: not pinned → pinned"), "{said}");
-    let (unpin, pin) = (said.find("project post golem").unwrap(), said.find("project post robot").unwrap());
-    assert!(unpin < pin, "unpinned first: {said}");
+    // Each post's pin change, and where it comes in the plan.
+    let pins: Vec<(&str, bool)> = plan
+        .actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::Edit { kind: ObjectKind::ProjectPost, key, changes, .. } => {
+                let pin = changes.iter().find(|c| c.field == chipsoc_model::Field::Pinned)?;
+                Some((key.as_str(), pin.to == "pinned"))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(pins, [("golem", false), ("robot", true)], "unpinned first: {}", lines(&plan));
     e.rest.state.lock().unwrap().reads.clear();
     apply_all(&mut e).await;
     assert_eq!(thread_of(&e, golem)["flags"], json!(0));
