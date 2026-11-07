@@ -125,6 +125,22 @@ pub fn signature(title: &str, tags: &[String], parts: &[Rendered]) -> String {
     format!("{title}\n[{}]\n{}", tags.join(", "), template::signature(parts))
 }
 
+/// What a pinned post's [`signature`] starts with.
+const PINNED: &str = "📌\n";
+
+/// `sig` (a [`signature`]) for a post that's pinned, if it is.
+pub fn pinned(sig: String, pinned: bool) -> String {
+    if pinned { format!("{PINNED}{sig}") } else { sig }
+}
+
+/// Whether a [`pinned`] signature is pinned, and the signature without it.
+pub fn unpinned(sig: &str) -> (bool, &str) {
+    match sig.strip_prefix(PINNED) {
+        Some(rest) => (true, rest),
+        None => (false, sig),
+    }
+}
+
 pub fn post(p: &Project, lock: &Lock, brief: Option<&str>) -> Post {
     let (text, buttons) = text(p, lock, brief);
     let mut parts: Vec<Rendered> = template::split(&text)

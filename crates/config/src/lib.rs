@@ -133,6 +133,15 @@ impl Config {
             }
             desired.posts.insert(key, template::without_buttons(&body, |a| closed.iter().any(|c| c == a)));
         }
+        let thread_files: Vec<(String, String)> = desired
+            .channels()
+            .flat_map(|(ch, _)| ch.threads.iter().map(|t| (schema::thread_key(&ch.key, &t.key), t.post.clone())))
+            .collect();
+        for (key, path) in thread_files {
+            let body = read_text(&inside(dir, &path)?)?.with_context(|| format!("post file {path} not found"))?;
+            let body = template::lists(&body, &open_positions, &open_projects);
+            desired.threads.insert(key, template::without_buttons(&body, |a| closed.iter().any(|c| c == a)));
+        }
         for p in &projects {
             if let Some(brief) = &p.brief {
                 let body = read_text(&inside(dir, brief)?)?.with_context(|| format!("brief {brief} not found"))?;

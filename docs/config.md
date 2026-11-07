@@ -48,6 +48,27 @@ keys.
   denies @everyone Send Messages should have a post with the button of the
   form that posts there; `check` warns otherwise, and errors if the bot's own
   role couldn't post there.
+- **Forum posts in config:** on a forum (or media) channel, each
+  `[[channel.thread]]` is a post the bot starts and keeps in step, alongside
+  the pinned "How to post here" post (it isn't pinned itself):
+
+  ```toml
+  [[channel.thread]]
+  key = "toolchain"                 # unique in this forum
+  title = "Toolchain: HDL, FPGA and ASIC flows"   # at most 100 characters
+  post = "content/toolchain.md"     # its text, in parts like any post
+  tags = ["tools"]                  # optional; each one of the forum's tags, at most 5
+  ```
+
+  Its text is edited part by part in place, and its title and tags follow
+  the config. lock.toml keeps it among the posts as `"<forum>/<key>"`
+  (older versions of the bot pass it by). Taken out of the config, it's
+  archived and locked, never deleted; with lock.toml lost, it's found
+  again by its title and text. `check` errors on a missing title or one
+  over 100 characters, a tag the forum lacks, and the usual post problems.
+- **Forum order:** `sort = "activity"` (latest activity first) or
+  `"creation"` (newest post first) on a forum or media channel sets how
+  Discord lists its posts; unset, it's left as Discord has it.
 - **Long posts:** a post or project brief longer than Discord's 2000
   characters is sent as several messages (at most 10): a line holding only
   `<!-- part -->` starts the next one, and a part still too long is split at
@@ -79,7 +100,7 @@ feature on; leave it out to turn it off.
 | `[feeds]` | `channel` for feed posts (feeds are checked every 15 minutes). |
 | `[ideas]` | `forum` where accepted `/propose-project` ideas are posted (needs `[review]`); `needs_lead_tag` marks ideas nobody leads yet; `questions` and `post` make the form and the post your own (see *Project ideas*). |
 | `[help]` | `forum` for `/solved`; `solved_tag` (default `solved`). |
-| `[projects]` | `forum` for project posts; `areas` suggested in `project new`; `default_channels` for new projects. |
+| `[projects]` | `forum` for project posts; `areas` suggested in `project new`; `default_channels` for new projects; `pinned = "<slug>"` pins that project's post at the top of the forum (Discord pins one post per forum, so the forum can't have its own `post` too; changing it unpins the old one). |
 | `[resources]` | `forum` for shared links: `/share-resource` from members (needs `[review]`), and straight from admins (`/server resource add`, web, CLI, API). The same link can't be shared twice; tags must be the forum's. |
 | `[profile]` | `/profile` and a DM after onboarding (with `join.toml`, the join flow does both): the nickname is their name, plus the start of their surname only if someone else has the same name ("Ada L."); invisible characters are dropped and a name nobody can be told apart from is refused. Members with `company_roles` are also asked `company_question`. |
 | `[web]` | `url`: the dashboard address shown in DMs and CLI hints (the web server itself uses `WEB_URL`); `share_device`: the Tailscale machine shared with new admins. |
@@ -145,6 +166,9 @@ says who stops seeing what), post the announcement, and run
 | `active` | `<Name> Team` and `<Name> Lead` roles, its own category of channels, and applications if `application.open`. |
 | `past` | Roles kept as a record (renamed "· Contributor", "· Lead (past)"); channels archived. |
 
+- A project's post gets its `tags`, its status (`active`, `past`, …) and
+  its `kind` as forum tags, where the forum has a tag of that name (any
+  case); `check` warns about a project tag the forum lacks.
 - Leads (`leads`) hold the Lead role while active and keep it, renamed, once
   past. Accepted applicants get the Team role; those who said they'd like to
   lead get a **Make lead** button too (anyone else: `/server project lead`,
@@ -285,7 +309,7 @@ who changed it since the last apply:
   unknown things share is refused, and `--sweep` is refused while the lock
   knows less than half the config.
 - **Not managed:** emojis and stickers, scheduled events, invites, webhooks,
-  the onboarding Server Guide, role icons, forum layout and default
+  the onboarding Server Guide, role icons, forum layout (beyond `sort`) and default
   reactions, soundboard, vanity URL, widget, who holds roles not listed in
   members.toml or as project leads (join-flow roles included), and Discord's
   built-in AutoMod rules.

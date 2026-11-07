@@ -397,6 +397,16 @@ impl<'a> Names<'a> {
             ObjectKind::Category => self.category(key),
             ObjectKind::Post => format!("the post in {}", self.channel(key)),
             ObjectKind::ProjectPost => format!("{}'s project post", self.project(key)),
+            ObjectKind::Thread => {
+                let (forum, own) = key.split_once('/').unwrap_or(("", key));
+                let title = self
+                    .cfg
+                    .desired
+                    .channel(forum)
+                    .and_then(|c| c.threads.iter().find(|t| t.key == own))
+                    .map_or_else(|| format!("`{own}`"), |t| format!("**{}**", t.title));
+                format!("the post {title} in {}", self.channel(forum))
+            }
             ObjectKind::Server => "server settings".into(),
             ObjectKind::Onboarding => "onboarding".into(),
             ObjectKind::Screening => "membership screening".into(),
@@ -438,7 +448,7 @@ impl Group {
         match kind {
             ObjectKind::Role => Self::Roles,
             ObjectKind::Category | ObjectKind::Channel => Self::Channels,
-            ObjectKind::Post | ObjectKind::ProjectPost => Self::Posts,
+            ObjectKind::Post | ObjectKind::ProjectPost | ObjectKind::Thread => Self::Posts,
             ObjectKind::Holders => Self::Members,
             ObjectKind::Server | ObjectKind::Onboarding | ObjectKind::Screening | ObjectKind::AutoMod => Self::Server,
         }

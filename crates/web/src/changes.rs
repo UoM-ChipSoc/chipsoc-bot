@@ -166,9 +166,13 @@ impl Names {
             [named(ObjectKind::Channel, &c.key, &c.name), named(ObjectKind::Post, &c.key, &format!("in {}", c.name))]
         });
         let projects = cfg.projects.iter().map(|p| named(ObjectKind::ProjectPost, &p.slug, &p.name));
+        let threads = snap.channels().flat_map(|(c, _)| {
+            let key = |t: &chipsoc_config::schema::ForumThread| chipsoc_config::schema::thread_key(&c.key, &t.key);
+            c.threads.iter().map(move |t| named(ObjectKind::Thread, &key(t), &format!("{} in {}", t.title, c.name)))
+        });
         let rules = snap.settings.automod.iter().map(|r| named(ObjectKind::AutoMod, &r.key, &r.name));
         let server = named(ObjectKind::Server, "server", &snap.server.guild.name);
-        Self(roles.chain(cats).chain(chans).chain(projects).chain(rules).chain([server]).collect())
+        Self(roles.chain(cats).chain(chans).chain(projects).chain(threads).chain(rules).chain([server]).collect())
     }
 
     fn get<'a>(&'a self, kind: ObjectKind, key: &'a str) -> &'a str {

@@ -17,6 +17,9 @@ fn now() -> i64 {
 /// Discord's limits that matter here.
 const MAX_MESSAGE: usize = template::MAX_MESSAGE;
 const MAX_TAGS: usize = 20;
+/// Tags on one forum post, and characters in its title.
+const MAX_POST_TAGS: usize = 5;
+const MAX_THREAD_TITLE: usize = 100;
 const MIN_ONBOARDING_DEFAULTS: usize = 7;
 const MAX_APPLICATION_QUESTIONS: usize = 3;
 /// Boxes on one Discord form.
@@ -192,6 +195,9 @@ fn structure(r: &mut Report, s: &Snapshot, keys: &Keys) {
         if !ch.tags.is_empty() && !ch.kind.has_tags() {
             r.warn(format!("{owner}: tags only apply to forum and media channels"));
         }
+        if ch.sort.is_some() && !ch.kind.has_tags() {
+            r.warn(format!("{owner}: sort only applies to forum and media channels"));
+        }
         if ch.user_limit.is_some() && !ch.kind.is_voice() {
             r.warn(format!("{owner}: user_limit only applies to voice channels"));
         }
@@ -224,62 +230,111 @@ fn posts(r: &mut Report, c: &Config, keys: &Keys) {
         c.projects.iter().filter(|p| p.application.open && p.is_live()).map(|p| format!("apply:{}", p.slug)).collect();
     for (channel, body) in &c.desired.posts {
         let file = c.desired.channel(channel).and_then(|ch| ch.post.clone()).unwrap_or_default();
-        for k in template::refs(body, '#') {
-            keys.channel(r, &file, &k);
+        post_body(r, c, keys, &open, &file, body);
+    }
+    threads(r, c, keys, &open);
+}
+
+/// Forums' `[[channel.thread]]` posts: a forum's, keyed and titled as
+/// Discord allows, with tags the forum has, and text like any post's.
+fn threads(r: &mut Report, c: &Config, keys: &Keys, open: &BTreeSet<String>) {
+    for (ch, _) in c.desired.channels().filter(|(ch, _)| !ch.threads.is_empty()) {
+        let owner = format!("channel `{}`", ch.key);
+        if !ch.kind.has_tags() {
+            r.err(format!("{owner}: `[[channel.thread]]` posts go in forum and media channels only"));
+            continue;
         }
-        for k in template::refs(body, '@') {
-            keys.role(r, &file, &k);
-        }
-        let actions = template::button_actions(body);
-        if actions.len() > MAX_BUTTONS {
-            r.err(format!("{file}: at most {MAX_BUTTONS} buttons fit under a post (it has {})", actions.len()));
-        }
-        let mut seen = BTreeSet::new();
-        for a in actions.iter().filter(|a| !seen.insert(a.as_str())) {
-            r.err(format!("{file}: two `{a}` buttons; Discord needs each button on a post to differ (e.g. `join` and `join:update`)"));
-        }
-        for a in actions {
-            if a.split(':').next() == Some("join") && c.join.is_none() {
-                r.err(format!("{file}: the `join` button needs a join.toml"));
+        duplicates(r, &format!("{owner} thread key"), ch.threads.iter().map(|t| t.key.as_str()));
+        well_formed(r, &format!("{owner} thread"), ch.threads.iter().map(|t| t.key.as_str()));
+        duplicates(r, &format!("{owner} thread title"), ch.threads.iter().map(|t| t.title.as_str()));
+        for t in &ch.threads {
+            let at = format!("{owner} thread `{}`", t.key);
+            match t.title.trim().chars().count() {
+                0 => r.err(format!("{at}: give it a `title`")),
+                n if n > MAX_THREAD_TITLE => {
+                    r.err(format!("{at}: the title is {n} characters; Discord allows {MAX_THREAD_TITLE}"))
+                }
+                _ => {}
             }
-            use template::ButtonAction as B;
-            let parsed = B::parse(&a);
-            let form = matches!(parsed, Some(B::ProposeProject | B::ShareResource | B::SuggestFeed));
-            let off = match parsed {
-                Some(B::ProposeProject) => c.bot.ideas.is_none().then_some("[ideas]"),
-                Some(B::ShareResource) => c.bot.resources.is_none().then_some("[resources]"),
-                Some(B::SuggestFeed) => c.bot.feeds.is_none().then_some("[feeds]"),
-                Some(B::Event) => c.bot.events.is_none().then_some("[events]"),
-                _ => None,
-            };
-            if parsed == Some(B::Event) && c.bot.events.is_some() && !c.bot.event_suggestions() {
-                r.warn(format!(
-                    "{file}: the `event` button works only for admins: members can suggest events with [review] in bot.toml and `suggest` left on"
-                ));
+            if t.tags.len() > MAX_POST_TAGS {
+                r.err(format!("{at}: a forum post takes at most {MAX_POST_TAGS} tags"));
             }
-            let needs = off.or((form && c.bot.review.is_none()).then_some("[review]"));
-            if let Some(section) = needs {
-                r.warn(format!("{file}: the `{a}` button does nothing without {section} in bot.toml"));
+            let unknown: Vec<&str> = t
+                .tags
+                .iter()
+                .filter(|n| !ch.tags.iter().any(|f| f.eq_ignore_ascii_case(n)))
+                .map(String::as_str)
+                .collect();
+            if !unknown.is_empty() {
+                r.err(format!("{at}: #{} has no tag {}; add it to the forum's `tags`", ch.key, unknown.join(", ")));
             }
-            let known = match parsed {
-                Some(B::Apply(_)) => open.contains(&a),
-                Some(_) => true,
-                None => false,
-            };
-            if !known {
-                r.err(format!(
-                    "{file}: unknown button action `{a}` (use {}, or apply:<project>)",
-                    BUTTON_ACTIONS.join(", ")
-                ));
+            match c.desired.threads.get(&crate::schema::thread_key(&ch.key, &t.key)) {
+                Some(body) => post_body(r, c, keys, open, &t.post, body),
+                None => r.err(format!("{at}: post file `{}` not found", t.post)),
             }
         }
-        parts(r, &file, body, &template::split(body));
-        for a in template::early_buttons(body) {
-            r.err(format!(
-                "{file}: the `{a}` button is in a part before the last; buttons go under the last part, so write it after the last `{}` line",
-                template::PART_BREAK
+    }
+}
+
+/// One post's text: what it mentions exists, its buttons work, its parts fit.
+fn post_body(r: &mut Report, c: &Config, keys: &Keys, open: &BTreeSet<String>, file: &str, body: &str) {
+    for k in template::refs(body, '#') {
+        keys.channel(r, file, &k);
+    }
+    for k in template::refs(body, '@') {
+        keys.role(r, file, &k);
+    }
+    let actions = template::button_actions(body);
+    if actions.len() > MAX_BUTTONS {
+        r.err(format!("{file}: at most {MAX_BUTTONS} buttons fit under a post (it has {})", actions.len()));
+    }
+    let mut seen = BTreeSet::new();
+    for a in actions.iter().filter(|a| !seen.insert(a.as_str())) {
+        r.err(format!(
+            "{file}: two `{a}` buttons; Discord needs each button on a post to differ (e.g. `join` and `join:update`)"
+        ));
+    }
+    for a in actions {
+        if a.split(':').next() == Some("join") && c.join.is_none() {
+            r.err(format!("{file}: the `join` button needs a join.toml"));
+        }
+        use template::ButtonAction as B;
+        let parsed = B::parse(&a);
+        let form = matches!(parsed, Some(B::ProposeProject | B::ShareResource | B::SuggestFeed));
+        let off = match parsed {
+            Some(B::ProposeProject) => c.bot.ideas.is_none().then_some("[ideas]"),
+            Some(B::ShareResource) => c.bot.resources.is_none().then_some("[resources]"),
+            Some(B::SuggestFeed) => c.bot.feeds.is_none().then_some("[feeds]"),
+            Some(B::Event) => c.bot.events.is_none().then_some("[events]"),
+            _ => None,
+        };
+        if parsed == Some(B::Event) && c.bot.events.is_some() && !c.bot.event_suggestions() {
+            r.warn(format!(
+                "{file}: the `event` button works only for admins: members can suggest events with [review] in bot.toml and `suggest` left on"
             ));
         }
+        let needs = off.or((form && c.bot.review.is_none()).then_some("[review]"));
+        if let Some(section) = needs {
+            r.warn(format!("{file}: the `{a}` button does nothing without {section} in bot.toml"));
+        }
+        let known = match parsed {
+            Some(B::Apply(_)) => open.contains(&a),
+            Some(_) => true,
+            None => false,
+        };
+        if !known {
+            r.err(format!(
+                "{file}: unknown button action `{a}` (use {}, or apply:<project>)",
+                BUTTON_ACTIONS.join(", ")
+            ));
+        }
+    }
+    parts(r, file, body, &template::split(body));
+    for a in template::early_buttons(body) {
+        r.err(format!(
+            "{file}: the `{a}` button is in a part before the last; buttons go under the last part, so write it after the last `{}` line",
+            template::PART_BREAK
+        ));
     }
 }
 
@@ -606,6 +661,39 @@ fn projects(r: &mut Report, c: &Config) {
     if !c.projects.is_empty() && c.bot.projects.is_none() {
         r.warn("projects.toml has projects but bot.toml has no [projects] section, so they get no forum posts");
     }
+    let Some(conf) = &c.bot.projects else { return };
+    let forum = c.desired.channel(&conf.forum);
+    // A project's tags go on its post only where the forum has them.
+    if let Some(forum) = forum.filter(|f| f.kind.has_tags()) {
+        for p in &c.projects {
+            let missing: Vec<&str> = p
+                .tags
+                .iter()
+                .filter(|t| !forum.tags.iter().any(|f| f.eq_ignore_ascii_case(t)))
+                .map(String::as_str)
+                .collect();
+            if !missing.is_empty() {
+                r.warn(format!(
+                    "project `{}`: #{} has no tag {}, so its post goes without; add it to the forum's `tags`",
+                    p.slug,
+                    conf.forum,
+                    missing.join(", ")
+                ));
+            }
+        }
+    }
+    if let Some(pinned) = &conf.pinned {
+        if !c.projects.iter().any(|p| &p.slug == pinned) {
+            r.err(format!("bot.toml [projects] pinned: no project `{pinned}` in projects.toml"));
+        }
+        // Discord pins one post per forum.
+        if forum.is_some_and(|f| f.post.is_some()) {
+            r.err(format!(
+                "bot.toml [projects] pinned: #{} has its own pinned post (`post = …`), and Discord pins only one post per forum; drop one",
+                conf.forum
+            ));
+        }
+    }
 }
 
 fn bot(r: &mut Report, c: &Config, keys: &Keys) {
@@ -803,7 +891,7 @@ fn forums(r: &mut Report, c: &Config) {
         let form = forms.iter().find(|(k, ..)| *k == key);
         let post = c.desired.posts.get(key);
         match form {
-            None if own.contains(&key) => {}
+            None if own.contains(&key) || !ch.threads.is_empty() => {}
             None => r.warn(format!(
                 "#{key}: @everyone can't start posts here and no bot form posts into it, so members can only reply"
             )),
@@ -817,7 +905,8 @@ fn forums(r: &mut Report, c: &Config) {
                 }
             }
         }
-        if (form.is_some() || own.contains(&key) || post.is_some()) && !bot_can_post(c, &ows) {
+        let bot_posts = form.is_some() || own.contains(&key) || post.is_some() || !ch.threads.is_empty();
+        if bot_posts && !bot_can_post(c, &ows) {
             r.err(format!(
                 "#{key}: @everyone is denied Send Messages here and the bot's role isn't allowed it back, so the bot can't post; allow it on the bot's role (or give that role Administrator)"
             ));
@@ -1558,6 +1647,79 @@ mod tests {
         fs::write(p.join("join.toml"), FLOW).unwrap();
         fs::write(p.join("content/welcome.md"), "Hi\n").unwrap();
         assert!(warnings(&d).contains("only find the flow through `/profile`"), "{}", warnings(&d));
+    }
+
+    /// A `projects` forum with tags (and `extra` on it), and a project `golem` with `tags`.
+    fn projects_forum(d: &tempfile::TempDir, extra: &str, tags: &str) {
+        let p = d.path();
+        fs::write(
+            p.join("categories/20-p.toml"),
+            format!(
+                "[category]\nkey = \"p\"\nname = \"P\"\n\n[[channel]]\nkey = \"projects\"\nname = \"projects\"\ntype = \"forum\"\ntags = [\"CPU\", \"tooling\"]\n{extra}"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            p.join("projects.toml"),
+            format!("[[project]]\nslug = \"golem\"\nname = \"Golem\"\nblurb = \"a CPU\"\ntags = {tags}\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn the_pinned_project_must_exist_and_have_the_forums_pin_to_itself() {
+        let d = dir();
+        let p = d.path();
+        projects_forum(&d, "", "[\"cpu\"]");
+        let bot = "name = \"T\"\n[projects]\nforum = \"projects\"\n";
+        fs::write(p.join("bot.toml"), format!("{bot}pinned = \"golem\"\n")).unwrap();
+        assert_eq!(errors(&d), "");
+        fs::write(p.join("bot.toml"), format!("{bot}pinned = \"robot\"\n")).unwrap();
+        assert!(errors(&d).contains("pinned: no project `robot`"), "{}", errors(&d));
+        fs::write(p.join("content.md"), "How to post.\n").unwrap();
+        projects_forum(&d, "post = \"content.md\"\n", "[\"cpu\"]");
+        fs::write(p.join("bot.toml"), format!("{bot}pinned = \"golem\"\n")).unwrap();
+        assert!(errors(&d).contains("Discord pins only one post per forum"), "{}", errors(&d));
+    }
+
+    #[test]
+    fn project_tags_the_forum_lacks_are_said() {
+        let d = dir();
+        projects_forum(&d, "", "[\"cpu\", \"fpga\"]");
+        fs::write(d.path().join("bot.toml"), "name = \"T\"\n[projects]\nforum = \"projects\"\n").unwrap();
+        assert!(warnings(&d).contains("project `golem`: #projects has no tag fpga"), "{}", warnings(&d));
+        assert!(!warnings(&d).contains("no tag cpu"), "matched whatever the case: {}", warnings(&d));
+    }
+
+    #[test]
+    fn forum_threads_are_checked_like_posts() {
+        let d = dir();
+        let p = d.path();
+        fs::write(p.join("toolchain.md"), "Tools in {#nowhere}.\n").unwrap();
+        let thread = |title: &str, tags: &str| {
+            format!(
+                "[[channel.thread]]\nkey = \"toolchain\"\ntitle = \"{title}\"\npost = \"toolchain.md\"\ntags = {tags}\n"
+            )
+        };
+        projects_forum(&d, &thread("Toolchain", "[\"tooling\"]"), "[]");
+        assert_eq!(errors(&d), "toolchain.md: unknown channel `nowhere`");
+        fs::write(p.join("toolchain.md"), "Tools.\n").unwrap();
+        assert_eq!(errors(&d), "");
+        projects_forum(&d, &thread(&"x".repeat(101), "[\"tooling\", \"asic\"]"), "[]");
+        let e = errors(&d);
+        assert!(e.contains("the title is 101 characters; Discord allows 100"), "{e}");
+        assert!(e.contains("#projects has no tag asic"), "{e}");
+        let cat = fs::read_to_string(p.join("categories/10-a.toml")).unwrap();
+        fs::write(
+            p.join("categories/10-a.toml"),
+            format!("{cat}\n[[channel]]\nkey = \"chat\"\nname = \"chat\"\n{}", thread("T", "[]")),
+        )
+        .unwrap();
+        assert!(
+            errors(&d).contains("channel `chat`: `[[channel.thread]]` posts go in forum and media channels only"),
+            "{}",
+            errors(&d)
+        );
     }
 
     #[test]

@@ -39,6 +39,7 @@ pub fn plan(cfg: &Config, live: &Snapshot, opts: Options) -> Plan {
     d.orphans(cfg.bot.archive.as_deref());
     d.posts();
     d.project_posts(cfg);
+    d.threads();
     d.settings();
     d.join_gate(cfg);
     d.unreadable();
@@ -153,6 +154,28 @@ fn part_changes(have: &str, want: &str) -> Vec<Change> {
     changes
 }
 
+/// [`part_changes`] for project posts, with being pinned (or not) said on its own.
+fn pinned_changes(have: &str, want: &str) -> Vec<Change> {
+    let ((was, have), (is, want)) = (projects::unpinned(have), projects::unpinned(want));
+    let mut changes = if have == want { Vec::new() } else { part_changes(have, want) };
+    if was != is {
+        let say = |p: bool| if p { "pinned" } else { "not pinned" };
+        changes.push(ch(Field::Pinned, say(was), say(is)));
+    }
+    changes
+}
+
+/// A forum post's title as Discord keeps it (at most 100 characters).
+pub fn thread_title(title: &str) -> String {
+    title.chars().take(100).collect()
+}
+
+/// The tags of `names` that `forum` has (matched case-insensitively), as named.
+fn forum_tags(forum: &Channel) -> impl Fn(&[String]) -> Vec<String> + '_ {
+    let have: BTreeSet<String> = forum.tags.iter().map(|t| t.to_lowercase()).collect();
+    move |names| names.iter().filter(|t| have.contains(&t.to_lowercase())).cloned().collect()
+}
+
 /// Who moved: compare both sides with what was last applied.
 fn cause(applied: Option<&str>, want: &str, have: &str) -> Cause {
     match applied {
@@ -189,9 +212,11 @@ fn category_state(c: &Category, lock: &Lock) -> String {
     hash(&json!([c.name, ow_set(&c.overwrites, lock)]))
 }
 
-fn channel_state(c: &Channel, parent: Option<String>, lock: &Lock) -> String {
+/// `sort`: the forum's sort order, when config sets it (else it isn't part of
+/// the state, so hashes from before it could be set still match).
+fn channel_state(c: &Channel, parent: Option<String>, lock: &Lock, sort: Option<Option<ForumSort>>) -> String {
     let text = !c.kind.is_voice();
-    hash(&json!([
+    let mut state = json!([
         c.kind,
         parent,
         c.name,
@@ -201,7 +226,16 @@ fn channel_state(c: &Channel, parent: Option<String>, lock: &Lock) -> String {
         (!text).then(|| c.user_limit.unwrap_or(0)),
         c.kind.has_tags().then_some(&c.tags),
         ow_set(&c.overwrites, lock),
-    ]))
+    ]);
+    if let (Some(sort), Some(list)) = (sort, state.as_array_mut()) {
+        list.push(json!(sort));
+    }
+    hash(&state)
+}
+
+/// The forum sort order config manages for `c`, if any.
+fn managed_sort(c: &Channel) -> Option<ForumSort> {
+    c.sort.filter(|_| c.kind.has_tags())
 }
 
 /// Text ↔ announcement is the only type change Discord allows in place.
@@ -397,7 +431,8 @@ impl Diff<'_> {
             let want_parent = cat_key.as_deref().and_then(|k| self.want.lock.category(k));
             let parent_text =
                 want_parent.map(|p| p.to_string()).or_else(|| cat_key.as_ref().map(|k| format!("new:{k}")));
-            let want_state = channel_state(c, parent_text, &self.want.lock);
+            let sort = managed_sort(c).map(Some);
+            let want_state = channel_state(c, parent_text, &self.want.lock, sort);
             let Some(id) = self.matched(ObjectKind::Channel, &c.key, id, id.is_some_and(|i| live.contains_key(&i)))
             else {
                 self.wanted(ObjectKind::Channel, &c.key, &want_state);
@@ -446,10 +481,22 @@ impl Diff<'_> {
             if c.kind.has_tags() && c.tags != l.tags {
                 v.push(ch(Field::Tags, l.tags.join(", "), c.tags.join(", ")));
             }
+            if let Some(want) = managed_sort(c)
+                && l.sort != Some(want)
+            {
+                v.push(ch(Field::Sort, l.sort.map_or("(Discord's default)", ForumSort::as_str), want.as_str()));
+            }
             if ow_set(&c.overwrites, &self.want.lock) != ow_set(&l.overwrites, &self.live.lock) {
                 v.push(ch(Field::Overwrites, ow_text(&l.overwrites), ow_text(&c.overwrites)));
             }
-            let have = channel_state(l, live_parent.map(|p| p.to_string()), &self.live.lock);
+            let live_parent_text = live_parent.map(|p| p.to_string());
+            let mut have = channel_state(l, live_parent_text.clone(), &self.live.lock, sort.map(|_| l.sort));
+            // Sort newly set in config: what was applied before had none, and still matches without it.
+            let obj = object_key(ObjectKind::Channel, &c.key);
+            let unsorted = channel_state(l, live_parent_text, &self.live.lock, None);
+            if sort.is_some() && self.want.lock.applied.hashes.get(&obj) == Some(&unsorted) {
+                have = unsorted;
+            }
             self.edit(ObjectKind::Channel, &c.key, id, v, &want_state, &have);
         }
 
@@ -714,23 +761,87 @@ impl Diff<'_> {
 
     fn project_posts(&mut self, cfg: &Config) {
         let Some(forum) = cfg.bot.projects.as_ref().and_then(|p| self.want.channel(&p.forum)) else { return };
-        let forum_tags: BTreeSet<String> = forum.tags.iter().map(|t| t.to_lowercase()).collect();
-        for p in cfg.projects.iter().filter(|p| !self.live.unreadable.project_posts.contains(&p.slug)) {
+        let pinned = cfg.bot.projects.as_ref().and_then(|p| p.pinned.as_deref());
+        let tagged = forum_tags(forum);
+        // Discord pins one post per forum: the pinned one's step comes last,
+        // after the one it takes over from is unpinned.
+        let (last, first): (Vec<&Project>, Vec<&Project>) =
+            cfg.projects.iter().partition(|p| Some(p.slug.as_str()) == pinned);
+        for p in first.into_iter().chain(last).filter(|p| !self.live.unreadable.project_posts.contains(&p.slug)) {
             let post = projects::post(p, &self.want.lock, self.want.project_posts.get(&p.slug).map(String::as_str));
-            let tags: Vec<String> =
-                post.tags.iter().filter(|t| forum_tags.contains(&t.to_lowercase())).cloned().collect();
-            let want = projects::signature(&post.title, &tags, &post.parts);
+            let pin = Some(p.slug.as_str()) == pinned;
+            let want = projects::pinned(projects::signature(&post.title, &tagged(&post.tags), &post.parts), pin);
             let want_state = stable_hash(&want);
             self.wanted(ObjectKind::ProjectPost, &p.slug, &want_state);
             match (self.want.lock.project_posts.get(&p.slug), self.live.project_posts.get(&p.slug)) {
                 (Some(t), Some(have)) => {
                     if *have != want {
-                        let changes = part_changes(have, &want);
+                        let changes = pinned_changes(have, &want);
                         self.edit(ObjectKind::ProjectPost, &p.slug, t.thread, changes, &want_state, &stable_hash(have));
                     }
                 }
                 _ => self.push(Action::Create { kind: ObjectKind::ProjectPost, key: p.slug.clone() }),
             }
+        }
+    }
+
+    /// Forums' `[[channel.thread]]` posts: started, kept in step, and
+    /// archived once taken out of the config.
+    fn threads(&mut self) {
+        let creating = self.creating();
+        let mut wanted = BTreeSet::new();
+        for (forum, _) in self.want.channels().filter(|(c, _)| c.kind.has_tags()) {
+            let tagged = forum_tags(forum);
+            for t in &forum.threads {
+                let key = thread_key(&forum.key, &t.key);
+                wanted.insert(key.clone());
+                let Some(src) = self.want.threads.get(&key) else { continue };
+                if self.live.unreadable.posts.contains(&key) {
+                    continue;
+                }
+                let parts = template::render_parts(src, &self.want.lock);
+                let want = projects::signature(&thread_title(&t.title), &tagged(&t.tags), &parts);
+                let want_state = stable_hash(&want);
+                self.wanted(ObjectKind::Thread, &key, &want_state);
+                let mentions_new = ['@', '#']
+                    .into_iter()
+                    .any(|sigil| template::refs(src, sigil).into_iter().any(|k| creating.contains(&(sigil, k))));
+                match (self.want.lock.posts.get(&key), self.live.threads.get(&key)) {
+                    (Some(p), Some(have)) => {
+                        if *have != want || mentions_new {
+                            let changes = if *have == want {
+                                let (from, to) = ("mentions things this run makes", "sent again once they exist");
+                                vec![ch(Field::Content, from, to)]
+                            } else {
+                                part_changes(have, &want)
+                            };
+                            self.edit(ObjectKind::Thread, &key, p.message, changes, &want_state, &stable_hash(have));
+                        }
+                    }
+                    (Some(p), None) => {
+                        self.plan.warnings.push(Warning::Missing {
+                            kind: ObjectKind::Thread,
+                            key: key.clone(),
+                            id: p.message,
+                        });
+                        self.push(Action::Create { kind: ObjectKind::Thread, key });
+                    }
+                    (None, _) => self.push(Action::Create { kind: ObjectKind::Thread, key }),
+                }
+            }
+        }
+        // Taken out of the config (still there in Discord): archived, never deleted.
+        let gone: Vec<(String, Snowflake)> = self
+            .want
+            .lock
+            .posts
+            .iter()
+            .filter(|(k, _)| k.contains('/') && !wanted.contains(*k))
+            .filter(|(k, _)| self.live.threads.contains_key(*k))
+            .map(|(k, p)| (k.clone(), p.message))
+            .collect();
+        for (key, id) in gone {
+            self.push(Action::Archive { kind: ObjectKind::Thread, key, id });
         }
     }
 
@@ -753,6 +864,7 @@ impl Diff<'_> {
             .filter(|k| self.want.posts.contains_key(*k))
             .map(|k| format!("#{k}"))
             .chain(u.project_posts.iter().map(|s| format!("project {s}")))
+            .chain(u.posts.iter().filter(|k| self.want.threads.contains_key(*k)).map(|k| format!("the forum post {k}")))
             .collect();
         if !posts.is_empty() {
             gaps.push(format!(

@@ -225,6 +225,8 @@ async fn export_raw(rest: &impl Rest, guild: Snowflake, known: &Lock) -> Result<
             overwrites: wire::overwrites_from(&c["permission_overwrites"], &role_key),
             inherit: false,
             post: None,
+            sort: c["default_sort_order"].as_u64().and_then(ForumSort::from_discord).filter(|_| kind.has_tags()),
+            threads: Vec::new(),
         };
         match id(&c["parent_id"]).and_then(|p| categories.iter_mut().find(|(i, _)| *i == p)) {
             Some((_, cf)) => cf.channels.push(ch),
@@ -259,6 +261,7 @@ async fn export_raw(rest: &impl Rest, guild: Snowflake, known: &Lock) -> Result<
     let mut unreadable = Unreadable::default();
     let settings = settings(rest, guild, &g, known, &mut lock, &mut unreadable).await?;
     let (posts, project_posts) = posts(rest, known, &mut lock, &channels, &mut unreadable).await?;
+    let threads = threads(rest, known, &mut lock, &channels, &mut unreadable).await?;
 
     let snap = Snapshot {
         server,
@@ -268,6 +271,7 @@ async fn export_raw(rest: &impl Rest, guild: Snowflake, known: &Lock) -> Result<
         settings,
         posts,
         project_posts,
+        threads,
         assets,
         lock,
         unreadable,
@@ -364,43 +368,84 @@ async fn posts(
     }
     let mut project_posts = BTreeMap::new();
     for (slug, t) in &known.project_posts {
-        let (thread, m) = (
-            get_read(rest, &format!("channels/{}", t.thread)).await?,
-            get_read(rest, &format!("channels/{}/messages/{}", t.thread, t.message)).await?,
-        );
-        let (thread, m) = match (thread, m) {
-            (Read::Found(thread), Read::Found(m)) => (thread, m),
-            (Read::Forbidden, _) | (_, Read::Forbidden) => {
+        let Some((thread, sig)) = forum_post(rest, t, channels).await? else {
+            continue;
+        };
+        let sig = match sig {
+            Some(sig) => projects::pinned(sig, thread["flags"].as_u64().unwrap_or(0) & PINNED_THREAD != 0),
+            None => {
                 unreadable.project_posts.insert(slug.clone());
                 lock.project_posts.insert(slug.clone(), t.clone());
                 continue;
             }
-            _ => continue,
         };
-        let Some(later) = later_parts(rest, t.thread, &t.parts).await? else {
-            unreadable.project_posts.insert(slug.clone());
-            lock.project_posts.insert(slug.clone(), t.clone());
-            continue;
-        };
-        let forum = id(&thread["parent_id"]).and_then(|p| channels.iter().find(|c| id(&c["id"]) == Some(p)));
-        let applied = wire::ids(&thread["applied_tags"]);
-        let tags: Vec<String> = forum
-            .map(|f| {
-                f["available_tags"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter(|tag| id(&tag["id"]).is_some_and(|i| applied.contains(&i)))
-                    .map(|tag| s(&tag["name"]))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let all: Vec<Rendered> = std::iter::once(wire::rendered_from(&m)).chain(later).collect();
-        let sig = projects::signature(&s(&thread["name"]), &tags, &all);
         project_posts.insert(slug.clone(), sig);
         lock.project_posts.insert(slug.clone(), t.clone());
     }
     Ok((posts, project_posts))
+}
+
+/// Discord's flag for a forum post pinned at the top.
+pub const PINNED_THREAD: u64 = 1 << 1;
+
+/// The `[[channel.thread]]` posts the lockfile knows (`[posts]` entries keyed
+/// `forum/key`), as signatures to compare.
+async fn threads(
+    rest: &impl Rest,
+    known: &Lock,
+    lock: &mut Lock,
+    channels: &[Value],
+    unreadable: &mut Unreadable,
+) -> Result<BTreeMap<String, String>> {
+    let mut out = BTreeMap::new();
+    for (key, p) in known.posts.iter().filter(|(k, _)| k.contains('/')) {
+        let t = ThreadRef { thread: p.message, message: p.message, parts: p.parts.clone() };
+        match forum_post(rest, &t, channels).await? {
+            None => {}
+            Some((_, None)) => {
+                unreadable.posts.insert(key.clone());
+                lock.posts.insert(key.clone(), p.clone());
+            }
+            Some((_, Some(sig))) => {
+                out.insert(key.clone(), sig);
+                lock.posts.insert(key.clone(), p.clone());
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// A forum post the bot keeps: its thread, and its signature (title, tags,
+/// text), or none if the token can't read it. None at all if it's gone.
+async fn forum_post(rest: &impl Rest, t: &ThreadRef, channels: &[Value]) -> Result<Option<(Value, Option<String>)>> {
+    let (thread, m) = (
+        get_read(rest, &format!("channels/{}", t.thread)).await?,
+        get_read(rest, &format!("channels/{}/messages/{}", t.thread, t.message)).await?,
+    );
+    let (thread, m) = match (thread, m) {
+        (Read::Found(thread), Read::Found(m)) => (thread, m),
+        (Read::Forbidden, _) | (_, Read::Forbidden) => return Ok(Some((Value::Null, None))),
+        _ => return Ok(None),
+    };
+    let Some(later) = later_parts(rest, t.thread, &t.parts).await? else {
+        return Ok(Some((thread, None)));
+    };
+    let forum = id(&thread["parent_id"]).and_then(|p| channels.iter().find(|c| id(&c["id"]) == Some(p)));
+    let applied = wire::ids(&thread["applied_tags"]);
+    let tags: Vec<String> = forum
+        .map(|f| {
+            f["available_tags"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|tag| id(&tag["id"]).is_some_and(|i| applied.contains(&i)))
+                .map(|tag| s(&tag["name"]))
+                .collect()
+        })
+        .unwrap_or_default();
+    let all: Vec<Rendered> = std::iter::once(wire::rendered_from(&m)).chain(later).collect();
+    let sig = projects::signature(&s(&thread["name"]), &tags, &all);
+    Ok(Some((thread, Some(sig))))
 }
 
 /// A long post's later parts in `ch`, as Discord has them: one deleted reads

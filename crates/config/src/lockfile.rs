@@ -134,6 +134,17 @@ mod tests {
     use crate::Snowflake;
 
     #[test]
+    fn forum_threads_are_posts_entries_an_older_bot_reads() {
+        // Kept among the posts under `forum/key`: no new table for an older bot to refuse.
+        let mut lock = Lock::default();
+        let key = crate::schema::thread_key("resources", "toolchain");
+        lock.posts.insert(key.clone(), crate::PostRef { message: Snowflake(9), parts: vec![Snowflake(10)] });
+        let body = toml::to_string_pretty(&lock).unwrap();
+        assert!(body.contains("[posts.\"resources/toolchain\"]"), "{body}");
+        assert_eq!(toml::from_str::<Lock>(&body).unwrap().posts[&key].message, Snowflake(9));
+    }
+
+    #[test]
     fn long_posts_parts_read_in_old_and_new_versions() {
         // A lock.toml from before parts reads as one-part posts.
         let old = "[posts.rules]\nmessage = \"5\"\n\n[project_posts.golem]\nthread = \"6\"\nmessage = \"6\"\n";

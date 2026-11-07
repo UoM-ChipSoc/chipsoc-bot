@@ -109,6 +109,9 @@ pub fn channel_json(c: &Channel, parent: Option<Snowflake>, lock: &Lock, live_ta
     }
     if c.kind.has_tags() {
         v["available_tags"] = tags_json(&c.tags, live_tags);
+        if let Some(sort) = c.sort {
+            v["default_sort_order"] = json!(sort.discord());
+        }
     }
     Ok(v)
 }

@@ -4,7 +4,7 @@ use std::fs;
 use std::path::Path;
 
 use chipsoc_discord::fake::FakeDiscord;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::*;
 
@@ -1389,5 +1389,183 @@ async fn only_the_bots_own_old_parts_are_deleted() {
     apply_all(&mut e).await;
     assert!(messages_in(&e, ch).iter().any(|(id, t, _)| id == "9000000" && t == "mine"), "kept");
     assert!(e.cfg.desired.lock.posts["general"].parts.is_empty(), "and no longer counted as the post's");
+    assert_converged(&e).await;
+}
+
+/// The fixture's projects forum, with `extra` after its tags (more fields, `[[channel.thread]]`s).
+fn forum_with(p: &Path, extra: &str) {
+    let cat = fs::read_to_string(p.join("categories/10-main.toml")).unwrap();
+    let start = cat.find("[[channel]]\nkey = \"projects\"").unwrap();
+    let end = start + cat[start..].find("tags = [\"active\", \"past\", \"cpu\"]\n").unwrap();
+    let end = end + "tags = [\"active\", \"past\", \"cpu\"]\n".len();
+    let lounge = cat[end..].find("[[channel]]").map_or(cat.len(), |i| end + i);
+    let forum = format!("{}{extra}\n", &cat[start..end]);
+    write(p, "categories/10-main.toml", &format!("{}{forum}{}", &cat[..start], &cat[lounge..]));
+}
+
+fn thread_of(e: &Engine<FakeDiscord>, id: Snowflake) -> Value {
+    let st = e.rest.state.lock().unwrap();
+    st.channels.iter().find(|c| c["id"] == id.to_string()).unwrap().clone()
+}
+
+/// Tag names a thread has, as its forum names them.
+fn tags_of(e: &Engine<FakeDiscord>, thread: &Value) -> Vec<String> {
+    let forum = e.cfg.desired.lock.channel("projects").unwrap();
+    let f = thread_of(e, forum);
+    let applied: Vec<&Value> = thread["applied_tags"].as_array().unwrap().iter().collect();
+    let mut names: Vec<String> = f["available_tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| applied.contains(&&t["id"]))
+        .map(|t| t["name"].as_str().unwrap().to_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+const TOOLCHAIN: &str = "[[channel.thread]]\nkey = \"toolchain\"\ntitle = \"Toolchain: HDL, FPGA and ASIC flows\"\n\
+     post = \"content/toolchain.md\"\ntags = [\"cpu\"]\n";
+
+/// A `[[channel.thread]]` is a forum post the bot starts (not pinned) and
+/// keeps in step: text part by part, title and tags in place; found again
+/// when lock.toml is lost; archived, never deleted, once taken out. It sits
+/// alongside the forum's own pinned post.
+#[tokio::test]
+async fn config_forum_threads_are_kept_in_step_and_archived_when_removed() {
+    let d = fixture();
+    let p = d.path();
+    forum_with(p, &format!("post = \"content/how.md\"\n\n{TOOLCHAIN}"));
+    write(p, "content/how.md", "Projects only.\n");
+    write(p, "content/toolchain.md", "Verilator, Yosys.\n<!-- part -->\nOpenROAD for {#general}.\n");
+    let mut e = engine(p);
+    let plan = e.plan(Options::default()).await.unwrap();
+    assert!(lines(&plan).contains("+ create forum post projects/toolchain"), "{}", lines(&plan));
+    apply_all(&mut e).await;
+    assert_converged(&e).await;
+
+    let lock = e.cfg.desired.lock.clone();
+    let t = lock.posts["projects/toolchain"].clone();
+    let thread = thread_of(&e, t.message);
+    assert_eq!(thread["name"], "Toolchain: HDL, FPGA and ASIC flows");
+    assert_eq!(thread["parent_id"], lock.channel("projects").unwrap().to_string());
+    assert!(thread["flags"].is_null(), "not pinned: {thread}");
+    assert_eq!(tags_of(&e, &thread), ["cpu"]);
+    let general = lock.channel("general").unwrap();
+    let texts: Vec<String> = messages_in(&e, t.message).into_iter().map(|(_, t, _)| t).collect();
+    assert_eq!(texts, ["Verilator, Yosys.".to_owned(), format!("OpenROAD for <#{general}>.")]);
+    assert_eq!(thread_of(&e, lock.posts["projects"].message)["flags"], json!(2), "the forum's own post stays pinned");
+
+    // Part 2, the title and the tags change: edited in place, part 1's message left alone.
+    write(p, "content/toolchain.md", "Verilator, Yosys.\n<!-- part -->\nOpenROAD and KLayout.\n");
+    let renamed = TOOLCHAIN.replace("ASIC flows", "ASIC tools").replace("[\"cpu\"]", "[\"cpu\", \"active\"]");
+    forum_with(p, &format!("post = \"content/how.md\"\n\n{renamed}"));
+    e.reload().unwrap();
+    e.rest.take_calls();
+    apply_all(&mut e).await;
+    let calls = e.rest.take_calls();
+    assert!(!calls.iter().any(|c| c.starts_with("Post")), "nothing posted anew: {calls:?}");
+    assert!(calls.contains(&format!("Patch channels/{}/messages/{}", t.message, t.parts[0])), "{calls:?}");
+    let thread = thread_of(&e, t.message);
+    assert_eq!(thread["name"], "Toolchain: HDL, FPGA and ASIC tools");
+    assert_eq!(tags_of(&e, &thread), ["active", "cpu"]);
+    assert_converged(&e).await;
+    assert_eq!(e.cfg.desired.lock.posts["projects/toolchain"], t, "the same messages");
+
+    // lock.toml lost: found again, not posted twice.
+    fs::remove_file(p.join(LOCK)).unwrap();
+    let _ = fs::remove_file(p.join(chipsoc_config::LOCK_BACKUP));
+    e.reload().unwrap();
+    e.rest.take_calls();
+    apply_all(&mut e).await;
+    assert_eq!(posts_made(&e), Vec::<String>::new(), "found again, not posted twice");
+    assert_eq!(e.cfg.desired.lock.posts["projects/toolchain"], t);
+    assert_converged(&e).await;
+
+    // Taken out of the config: archived and locked, its messages kept.
+    forum_with(p, "post = \"content/how.md\"\n");
+    e.reload().unwrap();
+    let plan = e.plan(Options::default()).await.unwrap();
+    assert!(lines(&plan).contains("archive forum post projects/toolchain"), "{}", lines(&plan));
+    e.rest.take_calls();
+    apply_all(&mut e).await;
+    let calls = e.rest.take_calls();
+    assert!(!calls.iter().any(|c| c.starts_with("Delete")), "nothing deleted: {calls:?}");
+    let thread = thread_of(&e, t.message);
+    assert_eq!((&thread["thread_metadata"]["archived"], &thread["locked"]), (&json!(true), &json!(true)));
+    assert_eq!(messages_in(&e, t.message).len(), 2);
+    assert!(!e.cfg.desired.lock.posts.contains_key("projects/toolchain"));
+    assert_converged(&e).await;
+}
+
+/// `[projects] pinned` pins that project's post; moving it unpins the old
+/// one first (Discord pins one post per forum), and the plan says so.
+#[tokio::test]
+async fn the_pinned_project_moves_its_pin() {
+    let d = fixture();
+    let p = d.path();
+    let projects = fs::read_to_string(p.join("projects.toml")).unwrap();
+    write(
+        p,
+        "projects.toml",
+        &format!(
+            "{projects}\n[[project]]\nslug = \"robot\"\nname = \"Robot\"\nblurb = \"arms\"\nstatus = \"active\"\ntags = [\"cpu\"]\n"
+        ),
+    );
+    let bot = fs::read_to_string(p.join("bot.toml")).unwrap();
+    write(p, "bot.toml", &format!("{bot}pinned = \"golem\"\n"));
+    let mut e = engine(p);
+    apply_all(&mut e).await;
+    assert_converged(&e).await;
+    let (golem, robot) =
+        (e.cfg.desired.lock.project_posts["golem"].thread, e.cfg.desired.lock.project_posts["robot"].thread);
+    assert_eq!(thread_of(&e, golem)["flags"], json!(2));
+    assert!(thread_of(&e, robot)["flags"].as_u64().unwrap_or(0) & 2 == 0);
+    assert_eq!(tags_of(&e, &thread_of(&e, robot)), ["active", "cpu"], "its own tags, and its status");
+
+    write(p, "bot.toml", &format!("{bot}pinned = \"robot\"\n"));
+    e.reload().unwrap();
+    let plan = e.plan(Options::default()).await.unwrap();
+    let said = lines(&plan);
+    assert!(said.contains("pinned: pinned → not pinned") && said.contains("pinned: not pinned → pinned"), "{said}");
+    let (unpin, pin) = (said.find("project post golem").unwrap(), said.find("project post robot").unwrap());
+    assert!(unpin < pin, "unpinned first: {said}");
+    apply_all(&mut e).await;
+    assert_eq!(thread_of(&e, golem)["flags"], json!(0));
+    assert_eq!(thread_of(&e, robot)["flags"], json!(2));
+    assert_converged(&e).await;
+
+    // Pinned in Discord by hand: drift, put back.
+    e.rest.state.lock().unwrap().channels.iter_mut().find(|c| c["id"] == robot.to_string()).unwrap()["flags"] =
+        json!(0);
+    let plan = e.plan(Options::default()).await.unwrap();
+    assert!(lines(&plan).contains("not pinned → pinned"), "{}", lines(&plan));
+}
+
+/// A forum's `sort` is sent and kept; unset, Discord's is left alone (and
+/// what was applied before it could be set still matches).
+#[tokio::test]
+async fn a_forums_sort_order_is_kept_only_when_set() {
+    let d = fixture();
+    let p = d.path();
+    let mut e = engine(p);
+    apply_all(&mut e).await;
+    let forum = e.cfg.desired.lock.channel("projects").unwrap();
+    e.rest.state.lock().unwrap().channels.iter_mut().find(|c| c["id"] == forum.to_string()).unwrap()["default_sort_order"] =
+        json!(1);
+    assert_converged(&e).await;
+
+    forum_with(p, "sort = \"activity\"\n");
+    e.reload().unwrap();
+    let plan = e.plan(Options::default()).await.unwrap();
+    assert_eq!(lines(&plan), "~ edit channel projects\n    sort: creation → activity", "{}", lines(&plan));
+    match &plan.actions[0] {
+        Action::Edit { cause, .. } => assert_ne!(*cause, chipsoc_model::Cause::Discord, "a config change"),
+        a => panic!("{a}"),
+    }
+    e.rest.take_calls();
+    apply_all(&mut e).await;
+    assert_eq!(e.rest.take_calls(), [format!("Patch channels/{forum}")], "only the forum");
+    assert_eq!(thread_of(&e, forum)["default_sort_order"], json!(0));
     assert_converged(&e).await;
 }

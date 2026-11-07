@@ -15,17 +15,18 @@ use serde_json::{Map, Value, json};
 use crate::wire::{self, id, s};
 use crate::{ApiError, Method, Rest};
 
-/// Discord's channel flag for a forum post pinned at the top.
-const PINNED_THREAD: u64 = 1 << 1;
+use crate::export::PINNED_THREAD;
 
 /// What a long post's part no longer needed says, if the bot can't delete it.
 const MOVED_UP: &str = "(moved up)";
 
-/// Which post's lockfile entry: a channel's (by key) or a project's (by slug).
+/// Which post's lockfile entry: a channel's (by key), a project's (by slug)
+/// or a forum's `[[channel.thread]]` (by `forum/key`, among the posts).
 #[derive(Clone, Copy)]
 enum Entry<'k> {
     Post(&'k str),
     Project(&'k str),
+    Thread(&'k str),
 }
 
 /// Each part's signature.
@@ -285,6 +286,7 @@ impl<R: Rest> Exec<'_, R> {
             }
             ObjectKind::Post => self.post(key, None).await?,
             ObjectKind::ProjectPost => self.project_post(key, None).await?,
+            ObjectKind::Thread => self.thread(key, None).await?,
             ObjectKind::Onboarding | ObjectKind::Screening | ObjectKind::Server | ObjectKind::Holders => {
                 self.edit(g, kind, key, g, &[]).await?
             }
@@ -364,6 +366,7 @@ impl<R: Rest> Exec<'_, R> {
                     (Field::Nsfw, "nsfw"),
                     (Field::UserLimit, "user_limit"),
                     (Field::Tags, "available_tags"),
+                    (Field::Sort, "default_sort_order"),
                     (Field::Overwrites, "permission_overwrites"),
                     (Field::Parent, "parent_id"),
                 ] {
@@ -378,6 +381,10 @@ impl<R: Rest> Exec<'_, R> {
             ObjectKind::ProjectPost => {
                 let existing = self.lock.project_posts.get(key).cloned();
                 self.project_post(key, existing).await?;
+            }
+            ObjectKind::Thread => {
+                let existing = self.thread_ref(Entry::Thread(key));
+                self.thread(key, existing).await?;
             }
             ObjectKind::Onboarding => {
                 let o = want.settings.onboarding.as_ref().context("no onboarding in config")?;
@@ -529,6 +536,7 @@ impl<R: Rest> Exec<'_, R> {
             Entry::Project(s) => {
                 (live.project_posts.get(s), live.lock.project_posts.get(s) == self.lock.project_posts.get(s))
             }
+            Entry::Thread(k) => (live.threads.get(k), live.lock.posts.get(k) == self.lock.posts.get(k)),
         };
         match sig {
             Some(sig) if same => template::signature_parts(sig).into_iter().map(str::to_owned).collect(),
@@ -539,10 +547,32 @@ impl<R: Rest> Exec<'_, R> {
     /// A post's later parts as the lockfile has them.
     fn parts_of(&self, post: Entry) -> Vec<Snowflake> {
         match post {
-            Entry::Post(k) => self.lock.posts.get(k).map(|p| p.parts.clone()),
+            Entry::Post(k) | Entry::Thread(k) => self.lock.posts.get(k).map(|p| p.parts.clone()),
             Entry::Project(s) => self.lock.project_posts.get(s).map(|t| t.parts.clone()),
         }
         .unwrap_or_default()
+    }
+
+    /// A forum post's entry as a [`ThreadRef`] (a `[[channel.thread]]`'s first
+    /// message has its thread's id).
+    fn thread_ref(&self, post: Entry) -> Option<ThreadRef> {
+        match post {
+            Entry::Project(s) => self.lock.project_posts.get(s).cloned(),
+            Entry::Post(k) | Entry::Thread(k) => self.lock.posts.get(k).map(|p| ThreadRef {
+                thread: p.message,
+                message: p.message,
+                parts: p.parts.clone(),
+            }),
+        }
+    }
+
+    fn set_thread_ref(&mut self, post: Entry, t: ThreadRef) {
+        match post {
+            Entry::Project(s) => drop(self.lock.project_posts.insert(s.to_owned(), t)),
+            Entry::Post(k) | Entry::Thread(k) => {
+                drop(self.lock.posts.insert(k.to_owned(), PostRef { message: t.thread, parts: t.parts }))
+            }
+        }
     }
 
     /// Bring a post's later parts (the bot's messages in `ch` after the
@@ -558,7 +588,7 @@ impl<R: Rest> Exec<'_, R> {
     ) -> Result<()> {
         let (ids, result) = self.later(ch, old, want, have).await;
         match post {
-            Entry::Post(k) => self.lock.posts.get_mut(k).map(|p| p.parts = ids),
+            Entry::Post(k) | Entry::Thread(k) => self.lock.posts.get_mut(k).map(|p| p.parts = ids),
             Entry::Project(s) => self.lock.project_posts.get_mut(s).map(|t| t.parts = ids),
         };
         result
@@ -735,23 +765,61 @@ impl<R: Rest> Exec<'_, R> {
 
     async fn project_post(&mut self, slug: &str, existing: Option<ThreadRef>) -> Result<()> {
         let p = self.cfg.projects.iter().find(|p| p.slug == slug).context("project not in config")?;
-        let forum_key = &self.cfg.bot.projects.as_ref().context("no [projects] in bot.toml")?.forum;
+        let conf = self.cfg.bot.projects.as_ref().context("no [projects] in bot.toml")?;
+        let forum_key = &conf.forum;
         let forum = self.lock.channel(forum_key).with_context(|| format!("forum `{forum_key}` doesn't exist yet"))?;
         let post = projects::post(p, self.lock, self.cfg.desired.project_posts.get(slug).map(String::as_str));
-        let (first, later) = post.parts.split_first().context("the post has no text")?;
-        let entry = Entry::Project(slug);
-        let mut have = self.have(entry);
+        // Flags are sent only to pin, or to unpin one that was.
+        let want_pin = conf.pinned.as_deref() == Some(slug);
+        let was_pinned = self.live.and_then(|l| l.project_posts.get(slug)).is_some_and(|sig| projects::unpinned(sig).0);
+        let pin = (want_pin || was_pinned).then_some(want_pin);
+        self.forum_thread(Entry::Project(slug), forum, &post.title, &post.tags, &post.parts, existing, pin).await
+    }
+
+    /// A forum's `[[channel.thread]]` post, keyed `forum/key`. Never pinned.
+    async fn thread(&mut self, key: &str, existing: Option<ThreadRef>) -> Result<()> {
+        let (forum_key, own) = key.split_once('/').context("not a forum post's key")?;
+        let ch = self.cfg.desired.channel(forum_key).with_context(|| format!("forum `{forum_key}` not in config"))?;
+        let t = ch.threads.iter().find(|t| t.key == own).context("forum post not in config")?;
+        let src = self.cfg.desired.threads.get(key).context("no text for this forum post")?;
+        let forum = self.lock.channel(forum_key).with_context(|| format!("forum `{forum_key}` doesn't exist yet"))?;
+        let parts = template::render_parts(src, self.lock);
+        self.forum_thread(Entry::Thread(key), forum, &t.title, &t.tags, &parts, existing, None).await
+    }
+
+    /// The ids of `forum`'s tags named in `names` (matched case-insensitively), at most 5.
+    async fn tag_ids(&self, forum: Snowflake, names: &[String]) -> Result<Vec<String>> {
         let available = self.call(Method::Get, format!("channels/{forum}"), None).await?["available_tags"].clone();
-        let wanted: Vec<String> = post.tags.iter().map(|t| t.to_lowercase()).collect();
-        let tag_ids: Vec<String> = available
+        let wanted: Vec<String> = names.iter().map(|t| t.to_lowercase()).collect();
+        Ok(available
             .as_array()
             .into_iter()
             .flatten()
             .filter(|t| wanted.contains(&s(&t["name"]).to_lowercase()))
             .filter_map(|t| id(&t["id"]).map(|i| i.to_string()))
             .take(5)
-            .collect();
-        let title: String = post.title.chars().take(100).collect();
+            .collect())
+    }
+
+    /// A forum post the bot keeps (a project's, or a `[[channel.thread]]`):
+    /// its title, tags and parts edited in place; found again if the
+    /// lockfile lost track of it; posted again if it was deleted. `pin`:
+    /// pin it (or unpin it), else its pin is left as it is.
+    #[allow(clippy::too_many_arguments)]
+    async fn forum_thread(
+        &mut self,
+        entry: Entry<'_>,
+        forum: Snowflake,
+        title: &str,
+        tags: &[String],
+        parts: &[Rendered],
+        existing: Option<ThreadRef>,
+        pin: Option<bool>,
+    ) -> Result<()> {
+        let (first, later) = parts.split_first().context("the post has no text")?;
+        let mut have = self.have(entry);
+        let tag_ids = self.tag_ids(forum, tags).await?;
+        let title: String = title.chars().take(100).collect();
         let message = wire::message_json(first);
         let claimed = self.claimed();
         let found = if existing.is_none() {
@@ -764,20 +832,19 @@ impl<R: Rest> Exec<'_, R> {
                 t.parts = self.find_later(t.thread, t.message, later).await.unwrap_or_default();
                 // The first part is sent again below with the title and tags.
                 have = [vec![String::new()], signatures(&later[..t.parts.len()])].concat();
-                self.lock.project_posts.insert(slug.to_owned(), t.clone());
+                self.set_thread_ref(entry, t.clone());
                 Some(t)
             }
             None => None,
         };
-        let old = self.lock.project_posts.get(slug).cloned();
+        let old = self.thread_ref(entry);
+        let flags = |on: bool| json!(if on { PINNED_THREAD } else { 0 });
         if let Some(t) = existing.or(found) {
-            let thread = self
-                .call(
-                    Method::Patch,
-                    format!("channels/{}", t.thread),
-                    Some(json!({ "name": title, "applied_tags": tag_ids })),
-                )
-                .await;
+            let mut patch = json!({ "name": title, "applied_tags": tag_ids });
+            if let Some(on) = pin {
+                patch["flags"] = flags(on);
+            }
+            let thread = self.call(Method::Patch, format!("channels/{}", t.thread), Some(patch)).await;
             let msg = self
                 .call(Method::Patch, format!("channels/{}/messages/{}", t.thread, t.message), Some(message.clone()))
                 .await;
@@ -797,8 +864,13 @@ impl<R: Rest> Exec<'_, R> {
         let made = self.call(Method::Post, format!("channels/{forum}/threads"), Some(body)).await?;
         let thread = id(&made["id"]).context("no id in reply")?;
         let message = id(&made["message"]["id"]).unwrap_or(thread);
-        self.lock.project_posts.insert(slug.to_owned(), ThreadRef { thread, message, parts: Vec::new() });
+        self.set_thread_ref(entry, ThreadRef { thread, message, parts: Vec::new() });
         self.finish(entry, thread, &[], later, &[]).await?;
+        if pin == Some(true) {
+            self.call(Method::Patch, format!("channels/{thread}"), Some(json!({ "flags": flags(true) })))
+                .await
+                .context("posted, but couldn't pin it (the bot needs Manage Threads there)")?;
+        }
         cleared.map_or(Ok(()), |e| Err(e.context("posted again, but the old parts are still there")))
     }
 
@@ -903,8 +975,19 @@ impl<R: Rest> Exec<'_, R> {
         Ok(())
     }
 
-    /// Move to the archive category, visible to admins only, read-only.
+    /// Move to the archive category, visible to admins only, read-only. A
+    /// forum post is archived and locked where it is.
     async fn archive(&mut self, kind: ObjectKind, key: &str, oid: Snowflake) -> Result<()> {
+        if kind == ObjectKind::Thread {
+            let body = json!({ "archived": true, "locked": true });
+            match self.call(Method::Patch, format!("channels/{oid}"), Some(body)).await {
+                Err(e) if ApiError::status_of(&e) != Some(404) => return Err(e),
+                _ => {}
+            }
+            self.lock.posts.remove(key);
+            self.lock.archived.insert(format!("{key}-{oid}"), oid);
+            return Ok(());
+        }
         let mut ows = vec![
             json!({ "id": guild(self.lock)?.to_string(), "type": 0, "allow": "0", "deny": (1u64 << 10).to_string() }),
         ];

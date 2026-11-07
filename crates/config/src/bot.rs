@@ -566,6 +566,9 @@ pub struct ProjectsConf {
     /// Channels a new project starts with.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub default_channels: Vec<String>,
+    /// The project (slug) whose post is pinned at the top of the forum.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pinned: Option<String>,
 }
 
 /// `[resources]`: links members share (title, address, tags), one post each in this forum.

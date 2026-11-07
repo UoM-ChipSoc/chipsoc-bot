@@ -70,6 +70,8 @@ pub enum ObjectKind {
     Post,
     /// A project's front page in the projects forum.
     ProjectPost,
+    /// A forum post the config describes (`[[channel.thread]]`), keyed `forum/key`.
+    Thread,
     Onboarding,
     Screening,
     AutoMod,
@@ -87,6 +89,7 @@ impl ObjectKind {
             Self::Channel => "channel",
             Self::Post => "post",
             Self::ProjectPost => "project-post",
+            Self::Thread => "thread",
             Self::Onboarding => "onboarding",
             Self::Screening => "screening",
             Self::AutoMod => "auto-mod",
@@ -104,6 +107,7 @@ impl fmt::Display for ObjectKind {
             Self::Channel => "channel",
             Self::Post => "post",
             Self::ProjectPost => "project post",
+            Self::Thread => "forum post",
             Self::Onboarding => "onboarding",
             Self::Screening => "screening",
             Self::AutoMod => "automod rule",
@@ -139,6 +143,10 @@ pub enum Field {
     Nsfw,
     UserLimit,
     Tags,
+    /// A forum's default sort order.
+    Sort,
+    /// A forum post pinned at the top of its forum.
+    Pinned,
     /// Message text, onboarding prompts, rule settings: the object's body.
     Content,
     /// Who holds a role.

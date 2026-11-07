@@ -244,6 +244,68 @@ pub struct Channel {
     /// Markdown file (relative to the config dir) the bot keeps posted here.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub post: Option<String>,
+    /// Forums: how posts are listed (`activity` or `creation`); unset = left as Discord has it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort: Option<ForumSort>,
+    /// Forums: `[[channel.thread]]` posts the bot starts and keeps in step.
+    #[serde(default, rename = "thread", skip_serializing_if = "Vec::is_empty")]
+    pub threads: Vec<ForumThread>,
+}
+
+/// A forum's default sort order (Discord's `default_sort_order`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ForumSort {
+    /// Latest activity first.
+    Activity,
+    /// Newest post first.
+    Creation,
+}
+
+impl ForumSort {
+    pub fn discord(self) -> u8 {
+        match self {
+            Self::Activity => 0,
+            Self::Creation => 1,
+        }
+    }
+
+    pub fn from_discord(n: u64) -> Option<Self> {
+        match n {
+            0 => Some(Self::Activity),
+            1 => Some(Self::Creation),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Activity => "activity",
+            Self::Creation => "creation",
+        }
+    }
+}
+
+/// A forum post the config describes: started by the bot, its title, text
+/// and tags kept in step. Removed from config, it's archived (never deleted).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForumThread {
+    /// How the config refers to it (unique in its forum).
+    pub key: String,
+    /// The post's title (at most 100 characters).
+    pub title: String,
+    /// Markdown file (relative to the config dir): its text, in parts like other posts.
+    pub post: String,
+    /// Forum tag names to apply (at most 5; each one of the forum's `tags`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+}
+
+/// How a forum thread is keyed in `lock.toml` `[posts]` and in plans: `forum/key`.
+/// (Channel keys have no `/`, so older versions of the bot pass these by.)
+pub fn thread_key(forum: &str, key: &str) -> String {
+    format!("{forum}/{key}")
 }
 
 impl Overwrite {
@@ -293,6 +355,8 @@ impl Default for Channel {
             overwrites: Vec::new(),
             inherit: true,
             post: None,
+            sort: None,
+            threads: Vec::new(),
         }
     }
 }
@@ -1031,6 +1095,9 @@ pub struct Snapshot {
     pub posts: BTreeMap<String, String>,
     /// Project slug → its forum post.
     pub project_posts: BTreeMap<String, String>,
+    /// `forum/key` ([`thread_key`]) → a `[[channel.thread]]` post's text.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub threads: BTreeMap<String, String>,
     /// `icon` / `banner`: the file's hash (config) or Discord's image hash (live).
     pub assets: BTreeMap<String, String>,
     /// Who holds each role whose holders config manages (role key → user ids).

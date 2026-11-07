@@ -291,6 +291,26 @@ impl FakeDiscord {
                 let i = find(&st.channels, cid).ok_or_else(|| err(404, "Unknown Channel"))?;
                 let mut patch = body;
                 with_tag_ids(&mut patch, &self.next);
+                if st.channels[i]["thread"] == true {
+                    // Like Discord: one pinned post per forum.
+                    let pins = patch["flags"].as_u64().is_some_and(|f| f & 2 != 0);
+                    let parent = st.channels[i]["parent_id"].clone();
+                    let other = st.channels.iter().any(|c| {
+                        c["thread"] == true
+                            && c["parent_id"] == parent
+                            && c["id"] != *cid
+                            && c["flags"].as_u64().is_some_and(|f| f & 2 != 0)
+                    });
+                    if pins && other {
+                        return Err(err(400, "Maximum number of pinned threads in a forum channel has been reached"));
+                    }
+                    // Discord keeps these in the thread's metadata.
+                    for k in ["archived", "locked"] {
+                        if let Some(v) = patch.get(k) {
+                            st.channels[i]["thread_metadata"][k] = v.clone();
+                        }
+                    }
+                }
                 for (k, v) in patch.as_object().cloned().unwrap_or_default() {
                     st.channels[i][k] = v;
                 }
@@ -532,7 +552,7 @@ fn archived(thread: &Value) -> bool {
 
 /// Give forum tags without an id a fresh one, as Discord does.
 fn with_tag_ids(c: &mut Value, next: &AtomicU64) {
-    if let Some(tags) = c["available_tags"].as_array_mut() {
+    if let Some(tags) = c.get_mut("available_tags").and_then(Value::as_array_mut) {
         for t in tags {
             if t["id"].is_null() {
                 t["id"] = json!(next.fetch_add(1, Ordering::Relaxed).to_string());
