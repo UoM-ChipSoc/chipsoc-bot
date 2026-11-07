@@ -200,8 +200,58 @@ pub fn longest(src: &str) -> usize {
     n.max(0) as usize
 }
 
+/// [`longest`] of lines joined, a line at a time: what [`fit`] measures
+/// each piece with, so a long post isn't measured again for every cut.
+#[derive(Default)]
+struct Measure {
+    /// Characters from the first one that isn't space to the last.
+    text: usize,
+    /// Space after the last such character (it counts once more text comes).
+    space: usize,
+    /// What mentions add (or take away) to the length.
+    mentions: isize,
+    /// Whether any line was added (the next one comes after a newline).
+    lines: bool,
+    /// Whether any line, buttons too, isn't blank.
+    any: bool,
+}
+
+impl Measure {
+    fn add(&mut self, line: &str) {
+        self.any |= !line.trim().is_empty();
+        if parse_button(line.trim()).is_some() {
+            return;
+        }
+        let newline = usize::from(self.lines);
+        self.lines = true;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            if self.text > 0 {
+                self.space += newline + line.chars().count();
+            }
+            return;
+        }
+        let lead = line.chars().count() - line.trim_start().chars().count();
+        let trail = line.trim_start().chars().count() - trimmed.chars().count();
+        if self.text > 0 {
+            self.text += self.space + newline + lead;
+        }
+        self.text += trimmed.chars().count();
+        self.space = trail;
+        for (sigil, mention) in [('#', 23), ('@', 24)] {
+            for k in refs(trimmed, sigil) {
+                self.mentions += mention - (k.chars().count() as isize + 3);
+            }
+        }
+    }
+
+    fn longest(&self) -> usize {
+        (self.text as isize + self.mentions).max(0) as usize
+    }
+}
+
 /// One explicit part as messages that fit, cut before headings or at blank
-/// lines (never inside a ``` code block).
+/// lines (never inside a ``` code block): each as long as it can be.
 fn fit(lines: &[&str]) -> Vec<String> {
     let mut fence = false;
     let in_code: Vec<bool> = lines
@@ -223,19 +273,30 @@ fn fit(lines: &[&str]) -> Vec<String> {
     let mut start = 0;
     loop {
         let rest = &lines[start..];
-        if longest(&rest.join("\n")) <= MAX_MESSAGE {
-            out.push(rest.join("\n"));
-            return out;
-        }
         let at = |i: usize| {
             let l = rest[i];
             !in_code[start + i] && (l.trim().is_empty() || heading(l) || rest[i - 1].trim().is_empty())
         };
-        let cut = (1..rest.len()).rev().filter(|&i| at(i)).find(|&i| {
-            let piece = rest[..i].join("\n");
-            !piece.trim().is_empty() && longest(&piece) <= MAX_MESSAGE
-        });
+        // A piece only grows as lines are added, so the last cut found
+        // before it's too long is the one to make.
+        let mut piece = Measure::default();
+        let mut cut = None;
+        let mut fits = true;
+        for (i, l) in rest.iter().enumerate() {
+            if i > 0 && at(i) && piece.any {
+                cut = Some(i);
+            }
+            piece.add(l);
+            if piece.longest() > MAX_MESSAGE {
+                fits = false;
+                break;
+            }
+        }
         match cut {
+            _ if fits => {
+                out.push(rest.join("\n"));
+                return out;
+            }
             Some(i) => {
                 out.push(rest[..i].join("\n"));
                 start += i;
@@ -409,6 +470,33 @@ mod tests {
     fn drops_chosen_buttons() {
         let src = "Hi\n{button:apply:a|Join A}\n{button:volunteer|Help}\n";
         assert_eq!(without_buttons(src, |a| a == "apply:a"), "Hi\n{button:volunteer|Help}\n");
+    }
+
+    #[test]
+    fn measuring_a_line_at_a_time_is_measuring_the_whole() {
+        let lines = [
+            "",
+            "  ",
+            "  Hello {#general} and {@chair}",
+            "",
+            "{button:x|Go}",
+            "\t",
+            "## Heading  ",
+            "text {#a}",
+            " ",
+            "{#a-very-long-channel-key-that-is-longer-than-an-id}",
+            "",
+            "",
+        ];
+        for from in 0..lines.len() {
+            let mut m = Measure::default();
+            for to in from..lines.len() {
+                m.add(lines[to]);
+                let joined = lines[from..=to].join("\n");
+                assert_eq!(m.longest(), longest(&joined), "{joined:?}");
+                assert_eq!(m.any, !joined.trim().is_empty());
+            }
+        }
     }
 
     #[test]
