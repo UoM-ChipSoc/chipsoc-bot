@@ -66,10 +66,17 @@ pub async fn member<R: Rest + Clone>(c: &Ctx<'_, R>, cmd: MemberCmd) -> Result<(
                 }
             }
             if !r.former.is_empty() {
+                let tz = c.zone().await;
                 println!("\nLeft holding roles (`{BIN} member restore <id>` if they're back)");
                 for f in &r.former {
                     let roles: Vec<&str> = f.roles.iter().map(|n| n.name.as_str()).collect();
-                    println!("  {} ({}): {} · left {}", f.person.name, f.person.id, roles.join(", "), when(f.since));
+                    println!(
+                        "  {} ({}): {} · left {}",
+                        f.person.name,
+                        f.person.id,
+                        roles.join(", "),
+                        when(&tz, f.since)
+                    );
                 }
             }
             Ok(())
@@ -87,7 +94,7 @@ pub async fn member<R: Rest + Clone>(c: &Ctx<'_, R>, cmd: MemberCmd) -> Result<(
             if c.json {
                 return print_json(&a);
             }
-            print!("{}", about_text(&a));
+            print!("{}", about_text(&a, &c.zone().await));
             Ok(())
         }
         MemberCmd::Restore { user } => c.done(&c.b.restore(c.b.user(&user).await?).await?),
@@ -102,8 +109,8 @@ pub async fn member<R: Rest + Clone>(c: &Ctx<'_, R>, cmd: MemberCmd) -> Result<(
     }
 }
 
-/// What someone told the bot, as `member info` prints it.
-pub(crate) fn about_text(a: &chipsoc_admin::join::About) -> String {
+/// What someone told the bot, as `member info` prints it (times in `tz`).
+pub(crate) fn about_text(a: &chipsoc_admin::join::About, tz: &str) -> String {
     if a.is_empty() {
         return format!("{}: hasn't been through the join flow or set a profile.\n", a.id);
     }
@@ -117,7 +124,7 @@ pub(crate) fn about_text(a: &chipsoc_admin::join::About) -> String {
         out.push_str(&format!("  Company: {}\n", a.company));
     }
     if !a.answers.is_empty() {
-        let finished = a.finished.map(|t| format!(", finished {}", when(t))).unwrap_or_default();
+        let finished = a.finished.map(|t| format!(", finished {}", when(tz, t))).unwrap_or_default();
         out.push_str(&format!("  Join flow{finished}:\n"));
         for s in &a.answers {
             let said = if s.answer.is_empty() { "—" } else { &s.answer };
@@ -142,8 +149,10 @@ mod tests {
             answers: vec![Said { question: "Placement?".into(), answer: String::new() }],
             ..About::default()
         };
-        let text = super::about_text(&a);
+        let text = super::about_text(&a, "UTC");
         assert_eq!(text, "7 (Ada L.)\n  Name:    Ada\n  Company: Arm\n  Join flow:\n    Placement? —\n");
-        assert!(super::about_text(&About { id: Snowflake(8), ..About::default() }).contains("hasn't been through"));
+        assert!(
+            super::about_text(&About { id: Snowflake(8), ..About::default() }, "UTC").contains("hasn't been through")
+        );
     }
 }

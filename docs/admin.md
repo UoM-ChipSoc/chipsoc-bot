@@ -287,7 +287,8 @@ Lines starting with `#` are notes.
 Every edit is checked first and refused (with the problems) if `check` would
 fail. bot.toml sections, screening, AutoMod rules and partners are edited
 only as files or with `op`. `--json` prints JSON for scripts. Without a
-terminal, missing values must be given as flags.
+terminal, missing values must be given as flags. Times are shown in
+bot.toml's `timezone` (JSON keeps Unix times).
 
 **Sign in first.** Commands that reach Discord or the bot's data need
 `chipsoc-bot login` (default server: `[web] url`). It opens the browser, you
@@ -299,7 +300,9 @@ a code to paste instead. Offline: `check`, `open`, `template`, `tui --demo`,
 `position list`, `role list`, …) on a checkout. On the bot's server,
 `--local` uses its token; `run`, `web`, `fed revoke` need it. Signed in,
 the TUI and every command work on the server's copy of the config; changes
-are pushed to the config repo (`git pull` to see them locally).
+are pushed to the config repo (`git pull` to see them locally). The TUI's
+`e` still opens the file in your local clone, so commit and push what you
+change there.
 
 ## JSON API
 

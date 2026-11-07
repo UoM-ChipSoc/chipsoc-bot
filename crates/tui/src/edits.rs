@@ -125,14 +125,30 @@ impl App {
         s.top_level.iter().chain(s.categories.iter().flat_map(|c| &c.channels)).find(|c| c.key == key)
     }
 
+    /// `e` (`b`): the file that defines the selection. Signed in to the bot's
+    /// server, that's in the local clone (the server's copy changes only once
+    /// it's pushed), so it says `local`; with no config here it's left out.
+    fn file_key(&self, b: Binding, local: &'static str) -> Option<Binding> {
+        match (self.remote, self.cfg.is_some()) {
+            (false, _) => Some(b),
+            (true, true) => Some(b.doing(local)),
+            (true, false) => None,
+        }
+    }
+
     /// The keys for the current tab and selection (while nothing runs).
     pub(crate) fn tab_keys(&self) -> Vec<Binding> {
         use keys::*;
         let loaded = self.schema.is_some();
         let any = self.len(self.tab) > 0;
         let mut v = if any { vec![MOVE] } else { Vec::new() };
+        let edit = || self.file_key(EDIT, "open local file");
         match self.tab {
-            Tab::Overview => return vec![SCROLL, PAGE, EDIT_SERVER],
+            Tab::Overview => {
+                let mut v = vec![SCROLL, PAGE];
+                v.extend(self.file_key(EDIT_SERVER, "edit local server settings"));
+                return v;
+            }
             Tab::Changes => {
                 let mut v = vec![SCROLL, PAGE, FETCH];
                 v.extend(self.can_apply_now().then_some(APPLY));
@@ -140,16 +156,24 @@ impl App {
                 return v;
             }
             Tab::Roles if loaded => match self.role() {
-                Some(r) if r.managed => v.extend([NEW_ROLE, EDIT]),
-                Some(_) => v.extend([OPEN, NEW_ROLE, PERMISSIONS, REORDER, REMOVE, EDIT]),
+                Some(r) if r.managed => {
+                    v.push(NEW_ROLE);
+                    v.extend(edit());
+                }
+                Some(_) => {
+                    v.extend([OPEN, NEW_ROLE, PERMISSIONS, REORDER, REMOVE]);
+                    v.extend(edit());
+                }
                 None => v.push(NEW_ROLE),
             },
             Tab::Channels if loaded => match self.spot() {
                 Some(Spot::Category(_)) => {
-                    v.extend([OPEN, NEW_CHANNEL, NEW_CATEGORY, PERMISSIONS, REORDER, REMOVE_CATEGORY, EDIT])
+                    v.extend([OPEN, NEW_CHANNEL, NEW_CATEGORY, PERMISSIONS, REORDER, REMOVE_CATEGORY]);
+                    v.extend(edit());
                 }
                 Some(Spot::Channel(..)) => {
-                    v.extend([OPEN, NEW_CHANNEL, NEW_CATEGORY, PERMISSIONS, POST, REORDER, MOVE_TO, ARCHIVE, EDIT])
+                    v.extend([OPEN, NEW_CHANNEL, NEW_CATEGORY, PERMISSIONS, POST, REORDER, MOVE_TO, ARCHIVE]);
+                    v.extend(edit());
                 }
                 None => v.extend([NEW_CHANNEL, NEW_CATEGORY]),
             },
@@ -158,15 +182,20 @@ impl App {
                     v.extend([OPEN, STATUS, APPLICATIONS, BRIEF]);
                     v.extend(p.lead_role.then_some(ADD_LEAD));
                     v.extend((!p.leads.is_empty()).then_some(REMOVE_LEAD));
-                    v.extend([NEW_PROJECT, EDIT]);
+                    v.push(NEW_PROJECT);
+                    v.extend(edit());
                 }
-                None => v.extend([NEW_PROJECT, EDIT]),
+                None => {
+                    v.push(NEW_PROJECT);
+                    v.extend(edit());
+                }
             },
             Tab::Positions if loaded => {
                 if any {
                     v.extend([OPEN, OPEN_POSITION, INTRO, QUESTIONS, REORDER, REMOVE_POSITION]);
                 }
-                v.extend([NEW_POSITION, EDIT]);
+                v.push(NEW_POSITION);
+                v.extend(edit());
             }
             Tab::Queue => {
                 if self.show_history {

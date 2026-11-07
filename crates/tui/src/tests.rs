@@ -28,7 +28,7 @@ fn write(dir: &Path, file: &str, body: &str) {
     fs::write(p, body).unwrap();
 }
 
-fn fixture() -> tempfile::TempDir {
+pub(crate) fn fixture() -> tempfile::TempDir {
     let d = tempfile::tempdir().unwrap();
     let p = d.path();
     write(p, "server.toml", "[guild]\nname = \"Test\"\n");
@@ -598,6 +598,9 @@ async fn signed_in_it_works_through_the_web_server() {
         h.run(Command::Discord(job)).await;
     }
     assert_shows(&h.screen(), "connected to http://127.0.0.1:");
+    // `e` opens the local clone, and says so; with no config here there's nothing to open.
+    assert!(has_key(&h.app, "edit local server settings") && !has_key(&h.app, "edit server settings"));
+    assert!(!has_key(&App::with(config.path().join("none"), false, true), "edit local server settings"));
 
     // The tabs show the server's copy, and edits go there.
     h.keys("9").await;

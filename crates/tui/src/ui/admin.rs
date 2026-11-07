@@ -44,9 +44,9 @@ pub fn queue(f: &mut Frame, area: Rect, app: &App) {
                 Line::from(format!("{}: {}", lists::sender(&p.user, &p.from), lists::item(&p.kind, &p.what))).bold(),
                 field("Decision", decision),
                 field("By", p.by.clone().or_else(|| p.reviewed_by.clone()).unwrap_or_else(|| "-".into())),
-                field("When", p.reviewed_at.map(when).unwrap_or_default()),
+                field("When", p.reviewed_at.map(|t| when(app, t)).unwrap_or_default()),
                 field("Reason", p.reason.clone().unwrap_or_else(|| "none given".into())),
-                field("Sent", when(p.created_at)),
+                field("Sent", when(app, p.created_at)),
                 field("Discord id", p.user.clone()).italic(),
             ];
         }
@@ -82,7 +82,7 @@ pub fn queue(f: &mut Frame, area: Rect, app: &App) {
         details
             .push(Line::from(format!("{}: {}", lists::sender(&p.user, &p.from), lists::item(&p.kind, &p.what))).bold());
         details.push(field("Kind", lists::kind_label(&p.kind)));
-        details.push(field("Sent", when(p.created_at)));
+        details.push(field("Sent", when(app, p.created_at)));
         details.push(field("Discord id", p.user.clone()).italic());
         if p.as_lead {
             details.push(Line::from("They'd like to lead it.").cyan());
@@ -153,7 +153,7 @@ pub fn members(f: &mut Frame, area: Rect, app: &App) {
             Some(x) => vec![
                 Line::from(x.person.name.clone()).bold(),
                 field("Held", x.roles.iter().map(|n| n.name.clone()).collect::<Vec<_>>().join(", ")),
-                field("Left", when(x.since)),
+                field("Left", when(app, x.since)),
                 Line::from("g restores their roles (once they're back); f forgets them.").italic(),
             ],
             None => Vec::new(),
@@ -191,7 +191,7 @@ pub fn feeds(f: &mut Frame, area: Rect, app: &App) {
             field("Posts in", format!("#{}", x.channel)),
             field("State", if x.paused { "paused" } else { "following" }),
             field("Added by", x.added_by_name.clone().or_else(|| x.added_by.clone()).unwrap_or_else(|| "-".into())),
-            field("Added", when(x.added_at)),
+            field("Added", when(app, x.added_at)),
         ];
     }
     list_and_details(f, area, app, ("Feeds followed", labels, app.sel()), ("Details", details));

@@ -185,6 +185,12 @@ impl<R: Rest + Clone> Ctx<'_, R> {
     async fn schema(&self) -> Result<Schema> {
         self.b.schema().await
     }
+
+    /// The config's time zone (bot.toml's `timezone`), which times are shown
+    /// in; UTC if the config can't be read.
+    async fn zone(&self) -> String {
+        self.schema().await.map_or_else(|_| "UTC".to_owned(), |s| s.bot.timezone)
+    }
 }
 
 // ---- status and drift ----
@@ -262,11 +268,12 @@ pub async fn activity<R: Rest + Clone>(c: &Ctx<'_, R>, limit: usize) -> Result<(
     if log.is_empty() {
         println!("Nothing logged yet.");
     }
+    let tz = c.zone().await;
     for e in &log {
         let actor = e.actor.as_deref().unwrap_or("-");
         let target = e.target.as_deref().map(|t| format!(" {t}")).unwrap_or_default();
         let detail = e.detail.as_deref().map(|d| format!(" ({d})")).unwrap_or_default();
-        println!("{}  {actor:<20} {}{target}{detail}", when(e.ts), e.action);
+        println!("{}  {actor:<20} {}{target}{detail}", when(&tz, e.ts), e.action);
     }
     Ok(())
 }
@@ -284,9 +291,10 @@ pub async fn history<R: Rest + Clone>(c: &Ctx<'_, R>, admin: Option<&str>, limit
     if done.is_empty() {
         println!("{}", if admin.is_some() { "Nothing this week." } else { "No config history (not a git checkout?)." });
     }
+    let tz = c.zone().await;
     for d in &done {
         let id = d.commit.as_deref().unwrap_or("-");
-        println!("{}  {id:<9} {:<20} {}", when(d.at), d.who, d.what);
+        println!("{}  {id:<9} {:<20} {}", when(&tz, d.at), d.who, d.what);
     }
     if admin.is_none() && !done.is_empty() {
         println!("`{BIN} revert <id>` undoes one (the server owner only).");
@@ -317,9 +325,9 @@ pub async fn schema<R: Rest + Clone>(c: &Ctx<'_, R>) -> Result<()> {
     print_json(&c.schema().await?)
 }
 
-/// A Unix time as `2026-11-04 13:05` (UTC).
-pub fn when(ts: i64) -> String {
-    chipsoc_model::utc_minute(ts)
+/// A Unix time as `2026-11-04 13:05 UK time`, in the time zone `tz`.
+pub fn when(tz: &str, ts: i64) -> String {
+    chipsoc_config::bot::local_minute(tz, ts)
 }
 
 #[cfg(test)]
@@ -328,8 +336,8 @@ mod tests {
 
     #[test]
     fn times_read_as_dates() {
-        assert_eq!(when(0), "1970-01-01 00:00");
-        assert_eq!(when(1_793_793_900), "2026-11-04 12:05");
-        assert_eq!(when(951_782_400), "2000-02-29 00:00", "leap day");
+        assert_eq!(when("UTC", 0), "1970-01-01 00:00 UTC");
+        assert_eq!(when("Europe/London", 1_782_907_200), "2026-07-01 13:00 UK time", "summer time");
+        assert_eq!(when("UTC", 951_782_400), "2000-02-29 00:00 UTC", "leap day");
     }
 }

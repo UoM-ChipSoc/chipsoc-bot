@@ -92,7 +92,7 @@ pub fn overview(f: &mut Frame, area: Rect, app: &App) {
             let what: Vec<&str> = what.into_iter().flatten().collect();
             Line::from(format!(
                 "  {}  {}  {}",
-                super::when(e.ts),
+                super::when(app, e.ts),
                 e.actor_name.as_deref().or(e.actor.as_deref()).unwrap_or("-"),
                 what.join(" ")
             ))
@@ -105,7 +105,7 @@ pub fn overview(f: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from("Latest config changes").bold());
         lines.extend(changes.iter().map(|d| {
             let id = d.commit.as_deref().unwrap_or("-");
-            Line::from(format!("  {}  {id:<9} {}  {}", super::when(d.at), d.who, d.what))
+            Line::from(format!("  {}  {id:<9} {}  {}", super::when(app, d.at), d.who, d.what))
         }));
         lines.push(Line::from("  The server owner can undo one: chipsoc-bot revert <id>.").italic());
     }

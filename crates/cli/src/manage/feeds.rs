@@ -38,10 +38,11 @@ pub async fn feed<R: Rest + Clone>(c: &Ctx<'_, R>, cmd: FeedCmd) -> Result<()> {
             if f.is_empty() {
                 println!("No feeds yet. Follow one with `{BIN} feed add <url>`.");
             }
+            let tz = c.zone().await;
             for x in &f {
                 let paused = if x.paused { " · paused" } else { "" };
                 let title = x.title.as_deref().map(|t| format!("{t} · ")).unwrap_or_default();
-                println!("#{:<4} {title}{} → #{} · since {}{paused}", x.id, x.url, x.channel, when(x.added_at));
+                println!("#{:<4} {title}{} → #{} · since {}{paused}", x.id, x.url, x.channel, when(&tz, x.added_at));
             }
             Ok(())
         }

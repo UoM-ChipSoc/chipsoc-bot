@@ -130,9 +130,11 @@ pub fn count(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
-/// A unix time as `2026-11-04 13:05` (UTC).
-fn when(ts: i64) -> String {
-    chipsoc_model::utc_minute(ts)
+/// A unix time as `2026-11-04 13:05 UK time`, in the config's time zone
+/// (UTC until the config is loaded).
+fn when(app: &App, ts: i64) -> String {
+    let tz = app.schema.as_ref().map_or("UTC", |s| s.bot.timezone.as_str());
+    chipsoc_config::bot::local_minute(tz, ts)
 }
 
 #[cfg(test)]
@@ -144,8 +146,11 @@ mod tests {
     }
 
     #[test]
-    fn times_read_as_dates() {
-        assert_eq!(super::when(0), "1970-01-01 00:00");
-        assert_eq!(super::when(1_793_797_500), "2026-11-04 13:05");
+    fn times_read_in_the_config_s_zone() {
+        let mut app = crate::app::App::with(".".into(), false, false);
+        assert_eq!(super::when(&app, 1_782_907_200), "2026-07-01 12:00 UTC", "before the config is loaded");
+        let dir = crate::tests::fixture();
+        app.schema = Some(chipsoc_config::ops::schema(dir.path()).unwrap());
+        assert_eq!(super::when(&app, 1_782_907_200), "2026-07-01 13:00 UK time");
     }
 }

@@ -49,10 +49,11 @@ pub async fn queue<R: Rest + Clone>(c: &Ctx<'_, R>, cmd: QueueCmd) -> Result<()>
             if q.is_empty() {
                 println!("Nothing waiting.");
             }
+            let tz = c.zone().await;
             for a in &q {
                 let lead = if a.as_lead { " · would like to lead" } else { "" };
                 let kind = AppKind::label_of(&a.kind);
-                println!("#{:<5} {kind:<20} {:<24} from {} · {}{lead}", a.id, a.what, from(a), when(a.created_at));
+                println!("#{:<5} {kind:<20} {:<24} from {} · {}{lead}", a.id, a.what, from(a), when(&tz, a.created_at));
             }
             if !q.is_empty() {
                 println!("\n`{BIN} queue show <id>` for the answers; then `queue accept <id>` or `queue reject <id>`.");
@@ -66,7 +67,7 @@ pub async fn queue<R: Rest + Clone>(c: &Ctx<'_, R>, cmd: QueueCmd) -> Result<()>
                 return print_json(a);
             }
             let kind = AppKind::label_of(&a.kind);
-            println!("#{} {kind}: {} from {} ({})", a.id, a.what, from(a), when(a.created_at));
+            println!("#{} {kind}: {} from {} ({})", a.id, a.what, from(a), when(&c.zone().await, a.created_at));
             for ans in &a.answers {
                 println!("\n{}\n{}", ans.question, indent(if ans.answer.is_empty() { "(blank)" } else { &ans.answer }));
             }
@@ -110,9 +111,10 @@ pub async fn queue<R: Rest + Clone>(c: &Ctx<'_, R>, cmd: QueueCmd) -> Result<()>
             if h.is_empty() {
                 println!("No decisions yet.");
             }
+            let tz = c.zone().await;
             for p in &h {
                 let by = p.by.as_deref().or(p.reviewed_by.as_deref()).map(|b| format!(" by {b}")).unwrap_or_default();
-                let at = p.reviewed_at.map(|t| format!(" on {}", when(t))).unwrap_or_default();
+                let at = p.reviewed_at.map(|t| format!(" on {}", when(&tz, t))).unwrap_or_default();
                 let why = p.reason.as_deref().map(|r| format!(" ({r})")).unwrap_or_default();
                 let kind = AppKind::label_of(&p.kind);
                 let from = if p.from.is_empty() { &p.user } else { &p.from };

@@ -43,7 +43,7 @@ const HELP: &[&str] = &[
     "  ↑↓ or j k      move           Home End     first, last",
     "  PgUp PgDn      scroll details Shift+↑↓     reorder (or J K)",
     "  Tab, 1-9, 0    screens        r            reload",
-    "  e              open the file that defines it, in $EDITOR",
+    "  e              open the local file that defines it, in $EDITOR",
     "",
     "In a form",
     "  Tab ↑↓         field          ←→ Home End  cursor",
