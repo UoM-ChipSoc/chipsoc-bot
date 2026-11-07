@@ -20,16 +20,30 @@ pub struct Answer {
     /// The config's name for the question, when it has one (`[ideas] questions`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    /// The answer as a list, when it's one (a resource's tags); `answer` is
+    /// then the list as people read it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<String>,
 }
 
 impl Answer {
     pub fn new(question: &str, answer: Option<&String>) -> Self {
-        Self { question: question.to_owned(), answer: answer.cloned().unwrap_or_default(), key: None }
+        Self {
+            question: question.to_owned(),
+            answer: answer.cloned().unwrap_or_default(),
+            key: None,
+            items: Vec::new(),
+        }
     }
 
     /// An answer to the question the config calls `key`.
     pub fn keyed(key: &str, question: &str, answer: impl Into<String>) -> Self {
-        Self { question: question.to_owned(), answer: answer.into(), key: Some(key.to_owned()) }
+        Self { key: Some(key.to_owned()), ..Self::new(question, Some(&answer.into())) }
+    }
+
+    /// A list for an answer, kept as it is (a comma in an item is just a comma).
+    pub fn list(question: &str, items: Vec<String>) -> Self {
+        Self { items: items.clone(), ..Self::new(question, Some(&items.join(", "))) }
     }
 
     /// How answers are stored.
@@ -44,7 +58,7 @@ impl Answer {
         }
         let fields: serde_json::Map<String, Value> = serde_json::from_str(json).unwrap_or_default();
         let text = |v: Value| v.as_str().map_or_else(|| v.to_string(), str::to_owned);
-        fields.into_iter().map(|(question, v)| Self { question, answer: text(v), key: None }).collect()
+        fields.into_iter().map(|(question, v)| Self::new(&question, Some(&text(v)))).collect()
     }
 }
 

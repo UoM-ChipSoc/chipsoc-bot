@@ -389,6 +389,14 @@ fn shared(url: &str) -> NewResource {
     }
 }
 
+#[test]
+fn a_resource_keeps_its_tags_in_the_queue_commas_and_all() {
+    let r = NewResource { tags: vec!["papers".into(), "rock, paper".into(), " ".into()], ..shared("https://a.org") };
+    let kept = Answer::parse(&Answer::to_json(&r.answers()));
+    assert_eq!(kept[3].answer, "papers, rock, paper", "as people read it");
+    assert_eq!(NewResource::from_answers(&kept).tags, ["papers", "rock, paper"]);
+}
+
 /// What a refusal says (refusals, not Discord failures).
 fn refused(e: anyhow::Error) -> String {
     e.downcast_ref::<Refused>().map(ToString::to_string).unwrap_or_else(|| panic!("not a refusal: {e:#}"))
@@ -1332,6 +1340,23 @@ async fn an_idea_is_closed_with_a_tag_and_a_reason_never_deleted() {
         let said: Vec<&str> = mine.filter_map(|m| m["content"].as_str()).collect();
         assert_eq!(said, ["!", "🔒 **Closed:** Merged into Golem.\nIt stays here to read."]);
     }
+
+    // An archived idea is opened to take the reply; if the reply fails, it's
+    // left archived and untouched.
+    let body = json!({ "name": "quiet", "applied_tags": [needs], "message": { "content": "." } });
+    let quiet = h.rest().call(Method::Post, &format!("channels/{ideas}/threads"), Some(body)).await.unwrap();
+    let quiet: Snowflake = quiet["id"].as_str().unwrap().parse().unwrap();
+    h.discord.auto_archive(quiet);
+    h.discord.fail(&format!("POST channels/{quiet}/messages"), 500, false);
+    assert!(close_idea(&h, quiet, None, &reviewer()).await.is_err());
+    let thread = |st: &chipsoc_discord::fake::State| st.channels.iter().find(|c| c["id"] == quiet.to_string()).cloned();
+    let t = thread(&h.discord.state.lock().unwrap()).unwrap();
+    assert_eq!(t["thread_metadata"]["archived"], json!(true), "archived again");
+    assert_eq!(t["applied_tags"], json!([needs]), "not tagged");
+    close_idea(&h, quiet, None, &reviewer()).await.unwrap().unwrap();
+    let t = thread(&h.discord.state.lock().unwrap()).unwrap();
+    assert_eq!(t["applied_tags"], json!(["777"]));
+    assert_eq!((&t["thread_metadata"]["archived"], &t["thread_metadata"]["locked"]), (&json!(true), &json!(true)));
 
     // No closed_tag and no reason: the reply says so, and the post still gets a line.
     let mut c = (*h.cfg()).clone();
