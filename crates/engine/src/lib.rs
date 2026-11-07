@@ -125,6 +125,12 @@ impl Lease {
         }
     }
 
+    /// Whether an apply holds the lease now, here or in another program
+    /// (lock.toml may be half written meanwhile).
+    pub fn busy(dir: &Path) -> bool {
+        matches!(Self::take(dir), Err(e) if e.downcast_ref::<Refused>() == Some(&Refused::Busy))
+    }
+
     /// [`Lease::take`], trying again for a moment first: a lease just let go
     /// can stay held a little longer by a program being started meanwhile
     /// (it shares the lock until it starts running).
@@ -544,20 +550,28 @@ impl<R: Rest> Engine<R> {
         if let Some(head) = blocking(move || Ok(git::head_full(&dir))).await? {
             lock.applied.commit = Some(head);
         }
+        // The bot's own copy first, so lock.toml never has ids it doesn't
+        // (another program reloading meanwhile would take them for a pusher's).
         struct Saver<'a, P> {
             cfg: &'a Config,
+            trust: Option<Arc<dyn Baseline>>,
             progress: &'a mut P,
         }
         impl<P: Progress + Send> exec::Sink for Saver<'_, P> {
             async fn saved(&mut self, lock: &Lock) -> Result<()> {
-                self.cfg.save_lock_async(lock).await
+                let trusted = match &self.trust {
+                    Some(b) => b.save_lock(lock).await,
+                    None => Ok(()),
+                };
+                let file = self.cfg.save_lock_async(lock).await;
+                trusted.and(file)
             }
             fn step(&mut self, a: &Action, r: &Result<(), String>) {
                 self.progress.step(a, r);
             }
         }
         let cfg = self.cfg.clone();
-        let mut saver = Saver { cfg: &cfg, progress };
+        let mut saver = Saver { cfg: &cfg, trust: self.baseline(), progress };
         let report = exec::execute(&self.rest, &cfg, &checked, Some(&live), &mut lock, &mut saver).await;
         // Objects made during this run were hashed before they existed; record
         // what everything in sync looks like now.
@@ -566,6 +580,9 @@ impl<R: Rest> Engine<R> {
         }
         if let Err(e) = self.trust_lock(&lock).await {
             tracing::warn!("keeping the applied lock in the bot's database failed: {e:#}");
+        }
+        if let Err(e) = self.cfg.save_lock_async(&lock).await {
+            tracing::warn!("saving the lockfile after apply failed: {e:#}");
         }
         let done = report.outcomes.iter().filter(|o| o.result.is_ok()).count();
         if let Err(e) = self.commit(&signed(format!("Apply {done} change(s)"), by)).await {
@@ -604,6 +621,7 @@ impl<R: Rest> Engine<R> {
         b.save_lock(lock).await
     }
 
+    /// Record in `lock` what's in step after an apply (the caller saves it).
     async fn record_applied(&mut self, g: Snowflake, lock: &mut Lock) -> Result<()> {
         let mut cfg = (*self.cfg).clone();
         cfg.desired.lock = lock.clone();
@@ -615,7 +633,7 @@ impl<R: Rest> Engine<R> {
                 lock.applied.hashes.insert(obj, h);
             }
         }
-        self.cfg.save_lock_async(lock).await
+        Ok(())
     }
 
     /// Bring one person's holding of `roles` in line with the config, now:
@@ -672,8 +690,8 @@ impl<R: Rest> Engine<R> {
         }
         if lock != d.lock {
             lock.guild = Some(g);
-            cfg.save_lock_async(&lock).await?;
             self.trust_lock(&lock).await?;
+            cfg.save_lock_async(&lock).await?;
             let mut fresh = (*cfg).clone();
             fresh.desired.lock = lock;
             self.cfg = Arc::new(fresh);

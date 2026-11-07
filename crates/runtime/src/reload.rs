@@ -26,6 +26,10 @@ pub async fn watch(ctx: Arc<Ctx>, dir: PathBuf) {
         tick.tick().await;
         // Applied by the web UI or the CLI: the bot log's plans are moot.
         control::close_applied(&ctx, &mut applied).await;
+        // Mid-apply lock.toml is half written; read it once the apply is done.
+        if applying(&ctx, &dir) {
+            continue;
+        }
         let now = changed(&dir).await;
         if now.0 != seen.0 && reload(&ctx, &dir).await && now.1 != seen.1 {
             let intro = crate::gitsync::headline(&last_commit(&dir).await.unwrap_or_default());
@@ -36,6 +40,12 @@ pub async fn watch(ctx: Arc<Ctx>, dir: PathBuf) {
         }
         seen = now;
     }
+}
+
+/// Whether the bot, or another program on this config (the web UI, the
+/// CLI), is changing things now.
+pub fn applying(ctx: &Ctx, dir: &Path) -> bool {
+    ctx.changing.try_lock().is_err() || chipsoc_engine::Lease::busy(dir)
 }
 
 /// Fingerprints of every file, and of the ones people edit (not lock.toml,

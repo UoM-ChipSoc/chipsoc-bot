@@ -1569,3 +1569,46 @@ async fn a_forums_sort_order_is_kept_only_when_set() {
     assert_eq!(thread_of(&e, forum)["default_sort_order"], json!(0));
     assert_converged(&e).await;
 }
+
+/// The bot's own apply of a long brief never leaves lock.toml with ids its
+/// trusted copy hasn't: a reload in the middle (the bot's watcher, the web
+/// UI) found the new parts there and refused them as a pusher's repointing.
+#[tokio::test]
+async fn mid_apply_lock_toml_never_runs_ahead_of_the_trusted_lock() {
+    let d = fixture();
+    let p = d.path().to_owned();
+    let kept = Arc::new(Kept::default());
+    let mut e = Engine::load(FakeDiscord::new(), &p).unwrap().trusting(kept.clone()).await.unwrap();
+    apply_all(&mut e).await;
+    let projects = fs::read_to_string(p.join("projects.toml")).unwrap();
+    write(&p, "projects.toml", &projects.replace("kind = \"cpu\"\n", "kind = \"cpu\"\nbrief = \"content/golem.md\"\n"));
+    write(&p, "content/golem.md", "About it.\n<!-- part -->\nThe plan.\n<!-- part -->\nThe team.\n");
+    e.refresh().await.unwrap();
+    let plan = e.plan(Options::default()).await.unwrap();
+    let mut checked = 0;
+    let (dir, k) = (p.clone(), kept.clone());
+    let mut each = |a: &Action, _: &Result<(), String>| {
+        let file: Lock = toml::from_str(&fs::read_to_string(dir.join(LOCK)).unwrap()).unwrap();
+        let trusted = k.0.lock().unwrap().lock.clone().unwrap();
+        let r = chipsoc_config::trust::review(&file, &trusted);
+        assert!(r.refused.is_empty(), "after {a}: {r:?}");
+        assert_eq!(file.project_posts, trusted.project_posts, "after {a}");
+        checked += 1;
+    };
+    e.apply(&plan, &mut each).await.unwrap();
+    assert!(checked > 0);
+    let golem = e.cfg.desired.lock.project_posts["golem"].clone();
+    assert_eq!(golem.parts.len(), 2);
+    assert_eq!(kept.0.lock().unwrap().lock.as_ref().unwrap().project_posts["golem"], golem);
+    assert!(e.vetted.lock.is_clean(), "{:?}", e.vetted.lock);
+
+    // Before: parts on disk, not yet in the trusted copy. Now they don't count.
+    kept.0.lock().unwrap().lock.as_mut().unwrap().project_posts.get_mut("golem").unwrap().parts.clear();
+    e.refresh().await.unwrap();
+    assert!(e.vetted.lock.is_clean(), "{:?}", e.vetted.lock);
+    // A pushed lock moving the post to another thread is still refused.
+    edit_lock(&p, |l| l.project_posts.get_mut("golem").unwrap().thread = Snowflake(4242));
+    e.refresh().await.unwrap();
+    assert_eq!(e.vetted.lock.refused, ["project_posts.golem"]);
+    assert_eq!(e.cfg.desired.lock.project_posts["golem"].thread, golem.thread);
+}

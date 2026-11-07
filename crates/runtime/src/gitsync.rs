@@ -32,7 +32,9 @@ pub async fn watch(ctx: Arc<Ctx>, dir: PathBuf) {
                 if alarm.ok() {
                     ctx.log_bot(&format!("{} **The config syncs with its repo again.**", fmt::DONE)).await;
                 }
+                // Another program applying: the reload watcher takes it once that's done.
                 if let Some(head) = head
+                    && !chipsoc_engine::Lease::busy(&dir)
                     && reload::reload(&ctx, &dir).await
                 {
                     // Busy: the reload watcher posts it once the files settle.

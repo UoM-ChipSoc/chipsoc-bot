@@ -4,7 +4,8 @@
 //!   which is how drift watch tells a change made in Discord from one made in
 //!   the files. The bot keeps its own copy (in its database) and uses that:
 //!   the repo's may only add keys for objects nobody else claims. A changed id
-//!   is refused, and a removed key waits for an admin.
+//!   is refused, and a removed key waits for an admin. A long post's later
+//!   parts are only ever the bot's own record, never taken from the repo.
 //! - Some settings decide who is an admin or where the bot reports
 //!   ([`Sensitive`]). A pushed change to them waits for an admin to approve
 //!   it; until then the bot keeps the ones approved last.
@@ -306,7 +307,54 @@ pub fn review(repo: &Lock, trusted: &Lock) -> LockReview {
     r
 }
 
-fn section<V: Clone + PartialEq + std::fmt::Debug>(
+/// A `lock.toml` entry, as [`review`] weighs the repo's copy against the bot's.
+trait Pinned: Clone + PartialEq {
+    /// Whether `repo` says this is the same Discord object. A long post's
+    /// later parts don't count: only the bot records them.
+    fn same(&self, repo: &Self) -> bool {
+        self == repo
+    }
+    /// Whether `repo` (a new key's entry) names an object this one is or holds.
+    fn claims(&self, repo: &Self) -> bool {
+        self == repo
+    }
+    /// What's taken from the repo's copy for a key the bot hasn't: never a
+    /// post's later parts (the bot edits and deletes those; it finds its own
+    /// again by their text).
+    fn as_taken(&self) -> Self {
+        self.clone()
+    }
+}
+
+impl Pinned for Snowflake {}
+impl Pinned for crate::AssetRef {}
+
+impl Pinned for crate::PostRef {
+    fn same(&self, repo: &Self) -> bool {
+        self.message == repo.message
+    }
+    fn claims(&self, repo: &Self) -> bool {
+        self.message == repo.message || self.parts.contains(&repo.message)
+    }
+    fn as_taken(&self) -> Self {
+        Self { message: self.message, parts: Vec::new() }
+    }
+}
+
+impl Pinned for crate::ThreadRef {
+    fn same(&self, repo: &Self) -> bool {
+        (self.thread, self.message) == (repo.thread, repo.message)
+    }
+    fn claims(&self, repo: &Self) -> bool {
+        let ours = [self.thread, self.message];
+        [repo.thread, repo.message].iter().any(|id| ours.contains(id) || self.parts.contains(id))
+    }
+    fn as_taken(&self) -> Self {
+        Self { thread: self.thread, message: self.message, parts: Vec::new() }
+    }
+}
+
+fn section<V: Pinned>(
     r: &mut LockReview,
     name: &str,
     repo: &BTreeMap<String, V>,
@@ -315,11 +363,11 @@ fn section<V: Clone + PartialEq + std::fmt::Debug>(
     let ours = of(&mut r.lock).clone();
     for (k, v) in repo {
         match ours.get(k) {
-            Some(o) if o != v => r.refused.push(format!("{name}.{k}")),
+            Some(o) if !o.same(v) => r.refused.push(format!("{name}.{k}")),
             Some(_) => {}
-            None if ours.values().any(|o| o == v) => r.refused.push(format!("{name}.{k}")),
+            None if ours.values().any(|o| o.claims(v)) => r.refused.push(format!("{name}.{k}")),
             None => {
-                of(&mut r.lock).insert(k.clone(), v.clone());
+                of(&mut r.lock).insert(k.clone(), v.as_taken());
             }
         }
     }
@@ -440,6 +488,45 @@ mod tests {
         let mut approved = gone.lock.clone();
         unlink(&mut approved, &gone.unlinks);
         assert!(!approved.roles.contains_key("admin"));
+    }
+
+    #[test]
+    fn a_posts_later_parts_are_only_ever_the_bots() {
+        use crate::{PostRef, ThreadRef};
+        let t = |thread, parts: &[u64]| ThreadRef {
+            thread: Snowflake(thread),
+            message: Snowflake(thread),
+            parts: parts.iter().copied().map(Snowflake).collect(),
+        };
+        let mut trusted = Lock::default();
+        trusted.project_posts.insert("cpu".into(), t(20, &[21, 22]));
+        trusted.posts.insert("rules".into(), PostRef { message: Snowflake(30), parts: vec![Snowflake(31)] });
+
+        // The bot's own commit after a long post's apply: the same entries, parts and all.
+        assert!(review(&trusted.clone(), &trusted).is_clean());
+        // Parts differing alone (the repo's lags, or was edited) say nothing; the bot's are kept.
+        let mut repo = trusted.clone();
+        repo.project_posts.insert("cpu".into(), t(20, &[]));
+        repo.posts.get_mut("rules").unwrap().parts = vec![Snowflake(99)];
+        let r = review(&repo, &trusted);
+        assert!(r.is_clean(), "{r:?}");
+        assert_eq!(r.lock.project_posts["cpu"], trusted.project_posts["cpu"]);
+        assert_eq!(r.lock.posts["rules"].parts, [Snowflake(31)]);
+        // A new key's parts from the repo aren't taken, nor one claiming a message the bot holds.
+        repo.project_posts.insert("new".into(), t(40, &[41]));
+        repo.project_posts.insert("steal".into(), t(22, &[]));
+        let r = review(&repo, &trusted);
+        assert_eq!(r.lock.project_posts["new"], t(40, &[]));
+        assert_eq!(r.refused, ["project_posts.steal"]);
+
+        // Changing a post's thread or first message is still refused.
+        let mut repo = trusted.clone();
+        repo.project_posts.get_mut("cpu").unwrap().message = Snowflake(23);
+        repo.posts.get_mut("rules").unwrap().message = Snowflake(32);
+        let r = review(&repo, &trusted);
+        assert_eq!(r.refused, ["posts.rules", "project_posts.cpu"]);
+        assert_eq!(r.lock.project_posts["cpu"], trusted.project_posts["cpu"]);
+        assert_eq!(r.lock.posts["rules"], trusted.posts["rules"]);
     }
 
     fn cfg() -> Config {

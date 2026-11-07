@@ -23,7 +23,9 @@ Anyone who can push to the config repo can propose anything, but:
 - The bot keeps its own `lock.toml` (ids, what was applied and from which
   commit) in its database and uses that, not the repo's: a pushed lock.toml
   may add keys for ids no key has, a changed id is refused (and said in
-  `log.bot`), and a dropped key waits for an admin's approval. So a pushed
+  `log.bot`), and a dropped key waits for an admin's approval. A long post's
+  later parts (`parts = [...]`) are never taken from the repo: the bot keeps
+  its own, and a repo that differs only there is not refused. So a pushed
   change always shows as "changed in config", which needs an admin's Apply.
 - Sensitive settings wait for an admin's **Approve** in `log.bot`:
   `admin_role`, which positions are `admin`, who members.toml lists for those

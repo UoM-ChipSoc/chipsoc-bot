@@ -273,3 +273,43 @@ async fn every_outgoing_body_pings_nobody() {
         assert_eq!(*am, json!({ "parse": [] }), "{r}");
     }
 }
+
+/// A long project post's later parts in lock.toml (the bot's own commit, or
+/// a reload while it applies) aren't a pusher repointing the post: the bot
+/// log says nothing. Moving the post to another thread is still refused.
+#[tokio::test]
+async fn a_long_posts_parts_in_the_repo_lock_arent_refused() {
+    use chipsoc_config::{Lock, Snowflake, ThreadRef};
+    let (_root, fake, ctx) = server().await;
+    let dir = ctx.cfg().dir.clone();
+    assert!(crate::reload::reload(&ctx, &dir).await);
+    let edit = |f: &dyn Fn(&mut Lock)| {
+        let path = dir.join(chipsoc_config::LOCK_FILE);
+        let mut lock: Lock = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        f(&mut lock);
+        std::fs::write(&path, toml::to_string(&lock).unwrap()).unwrap();
+    };
+    let post = |thread, parts: &[u64]| ThreadRef {
+        thread: Snowflake(thread),
+        message: Snowflake(thread),
+        parts: parts.iter().copied().map(Snowflake).collect(),
+    };
+    // The bot's record of a one-part post…
+    let scope = chipsoc_admin::trust::scope(&dir);
+    let mut trusted = chipsoc_admin::trust::load(&ctx.store, &scope).await.unwrap().lock.unwrap();
+    trusted.project_posts.insert("cpu".into(), post(20, &[]));
+    chipsoc_admin::trust::save_lock(&ctx.store, &scope, &trusted).await.unwrap();
+    edit(&|l| drop(l.project_posts.insert("cpu".into(), post(20, &[]))));
+    assert!(crate::reload::reload(&ctx, &dir).await);
+    // …and lock.toml with the parts an apply just posted.
+    edit(&|l| drop(l.project_posts.insert("cpu".into(), post(20, &[21, 22]))));
+    assert!(crate::reload::reload(&ctx, &dir).await);
+    assert!(!logged(&fake, &ctx).contains("Refused"), "{}", logged(&fake, &ctx));
+    assert_eq!(ctx.cfg().desired.lock.project_posts["cpu"], post(20, &[]), "parts are only ever the bot's");
+
+    edit(&|l| drop(l.project_posts.insert("cpu".into(), post(30, &[]))));
+    assert!(crate::reload::reload(&ctx, &dir).await);
+    let log = logged(&fake, &ctx);
+    assert!(log.contains("**Refused:**") && log.contains("`project_posts.cpu`"), "{log}");
+    assert_eq!(ctx.cfg().desired.lock.project_posts["cpu"].thread, Snowflake(20));
+}
