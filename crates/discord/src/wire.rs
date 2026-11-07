@@ -35,6 +35,11 @@ pub fn shown_name(member: &Value) -> Option<String> {
     names(member).next()
 }
 
+/// [`shown_name`] from the names apart (as twilight's models have them).
+pub fn shown_of(nick: Option<&str>, global: Option<&str>, username: &str) -> String {
+    [nick, global].into_iter().flatten().find(|n| !n.trim().is_empty()).unwrap_or(username).to_owned()
+}
+
 pub fn strings(v: &Value) -> Vec<String> {
     v.as_array().into_iter().flatten().filter_map(|x| x.as_str().map(str::to_owned)).collect()
 }

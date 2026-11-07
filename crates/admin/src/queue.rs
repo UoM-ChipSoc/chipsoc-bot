@@ -181,7 +181,7 @@ pub struct Past {
 }
 
 /// The latest decisions, newest first.
-pub async fn history<H: Host>(h: &H, limit: i64) -> Result<Vec<Past>> {
+pub async fn queue_history<H: Host>(h: &H, limit: i64) -> Result<Vec<Past>> {
     let cfg = h.cfg();
     let rows = h.db().decided_applications(limit).await?;
     let ids =
@@ -526,8 +526,15 @@ impl From<(Said, bool, Option<String>)> for Granted {
 /// Give what an accepted application earns.
 async fn grant<H: Host>(h: &H, app: &Application, by: &Actor) -> Granted {
     if app.kind.is_partner() {
-        let (said, ok, link) = crate::shares::accept(h, app).await;
-        return (Said::md(&said), ok, link).into();
+        return match crate::shares::accept(h, app).await {
+            Ok(done @ crate::shares::Accepted::Posted(_)) => {
+                (Said::new().text(format!("Posted: {}", done.link())), true, Some(done.link().to_owned())).into()
+            }
+            Ok(done @ crate::shares::Accepted::Updated(_)) => {
+                (Said::new().text(format!("Updated: {}", done.link())), true, Some(done.link().to_owned())).into()
+            }
+            Err(why) => (Said::md(&format!("{} {why}", crate::fmt::ATTENTION)), false, None).into(),
+        };
     }
     let Ok(user) = app.user.parse::<Snowflake>() else {
         return (Said::new().text("(Not a Discord user.)"), false, None).into();
