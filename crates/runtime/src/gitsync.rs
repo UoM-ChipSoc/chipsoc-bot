@@ -1,8 +1,8 @@
 //! A config that is a git checkout: pull every 2 minutes, and when new commits
-//! arrive, use them and post what they'd change, with an Apply button (the
-//! reload watcher does the same for every other change to the files). Commits
-//! made here that didn't get pushed are rebased and pushed (a clash in
-//! `lock.toml` is merged). GitHub refuses now and then for a moment, so a
+//! arrive, tell the reload watcher, which uses them and posts what they'd
+//! change, as it does for every other change to the files. Commits made here
+//! that didn't get pushed are rebased and pushed (a clash in `lock.toml` is
+//! merged). GitHub refuses now and then for a moment, so a
 //! failure is said in the bot log only after [`SAY_AFTER`] in a row (about 6
 //! minutes), then every hour while it lasts, and once when it syncs again.
 
@@ -15,14 +15,15 @@ use chipsoc_engine::git;
 
 use chipsoc_admin::fmt;
 
+use crate::Ctx;
 use crate::alarm::Alarm;
-use crate::{Ctx, control, reload};
 
 pub const EVERY: Duration = Duration::from_secs(120);
 /// Failed syncs in a row before the bot log hears of it; fewer are hiccups.
 pub const SAY_AFTER: u32 = 3;
 
-pub async fn watch(ctx: Arc<Ctx>, dir: PathBuf) {
+/// Sync every [`EVERY`]; new commits are `pulled` (the reload watcher's cue).
+pub async fn watch(ctx: Arc<Ctx>, dir: PathBuf, pulled: Arc<tokio::sync::Notify>) {
     let mut tick = tokio::time::interval(EVERY);
     let mut alarm = Alarm::after(SAY_AFTER);
     loop {
@@ -32,17 +33,9 @@ pub async fn watch(ctx: Arc<Ctx>, dir: PathBuf) {
                 if alarm.ok() {
                     ctx.log_bot(&format!("{} **The config syncs with its repo again.**", fmt::DONE)).await;
                 }
-                // Another program applying: the reload watcher takes it once that's done.
-                if let Some(head) = head
-                    && !chipsoc_engine::Lease::busy(&dir)
-                    && reload::reload(&ctx, &dir).await
-                {
-                    // Busy: the reload watcher posts it once the files settle.
-                    let commit = reload::last_commit(&dir).await;
-                    control::announce(&ctx, &headline(commit.as_deref().unwrap_or(&head))).await;
+                if head.is_some() {
+                    pulled.notify_one();
                 }
-                // An approval card that couldn't be posted (or was deleted) goes up again.
-                crate::trust::review(&ctx, &dir).await;
             }
             Err(e) => {
                 tracing::warn!("syncing the config failed: {e:#}");

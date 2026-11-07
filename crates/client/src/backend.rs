@@ -88,8 +88,12 @@ impl<R: Rest + Clone> Local<R> {
             return self.engine().await?.edit_ops(list, &self.actor.by(true)).await;
         }
         // The bot or web UI may share this checkout: don't write while they do.
-        let _held = chipsoc_config::WriteLock::take(&self.dir)?;
-        ops::apply_ops(&self.dir, list)
+        let (dir, list) = (self.dir.clone(), list.to_vec());
+        chipsoc_config::blocking(move || {
+            let _held = chipsoc_config::WriteLock::take(&dir)?;
+            ops::apply_ops(&dir, &list)
+        })
+        .await
     }
 
     /// The config directory this works on.

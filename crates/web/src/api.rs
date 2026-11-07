@@ -16,7 +16,7 @@ use chipsoc_admin::join::Notice;
 use chipsoc_admin::{Decided, Drift, Entry, FeedInfo, Host as _, NewResource, Past, Pending, Post, Roster};
 use chipsoc_config::ops::{Change, Schema};
 use chipsoc_config::template::{self, Rendered};
-use chipsoc_config::{Snowflake, authoring};
+use chipsoc_config::{Snowflake, authoring, blocking};
 use chipsoc_discord::Rest;
 use chipsoc_engine::{Options, Problems, Pulled, plan_lines};
 use chipsoc_model::{Action, Expiring, Plan};
@@ -115,25 +115,30 @@ pub(crate) async fn export<R: Rest + 'static>(State(app): State<Arc<App<R>>>) ->
     let cfg = app.config().await.ok();
     let guild = app.guild(cfg.as_deref()).await?;
     let dir = std::env::temp_dir().join(format!("chipsoc-export-{}", random_token()));
-    let made = async {
-        chipsoc_engine::export_to(&app.rest, guild, &dir).await?;
-        let mut files = std::collections::BTreeMap::new();
-        let mut todo = vec![dir.clone()];
-        while let Some(d) = todo.pop() {
-            for e in std::fs::read_dir(&d)? {
-                let path = e?.path();
-                if path.is_dir() {
-                    todo.push(path);
-                } else if let Ok(rel) = path.strip_prefix(&dir) {
-                    files.insert(rel.to_string_lossy().replace('\\', "/"), std::fs::read_to_string(&path)?);
-                }
+    let made = chipsoc_engine::export_to(&app.rest, guild, &dir).await;
+    let read = blocking(move || {
+        let files = made.and_then(|_| read_tree(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+        files
+    });
+    Ok(Json(Exported { files: read.await? }))
+}
+
+/// Every file under `dir`, by `/`-separated path.
+fn read_tree(dir: &std::path::Path) -> anyhow::Result<std::collections::BTreeMap<String, String>> {
+    let mut files = std::collections::BTreeMap::new();
+    let mut todo = vec![dir.to_owned()];
+    while let Some(d) = todo.pop() {
+        for e in std::fs::read_dir(&d)? {
+            let path = e?.path();
+            if path.is_dir() {
+                todo.push(path);
+            } else if let Ok(rel) = path.strip_prefix(dir) {
+                files.insert(rel.to_string_lossy().replace('\\', "/"), std::fs::read_to_string(&path)?);
             }
         }
-        anyhow::Ok(files)
     }
-    .await;
-    let _ = std::fs::remove_dir_all(&dir);
-    Ok(Json(Exported { files: made? }))
+    Ok(files)
 }
 
 #[derive(Deserialize)]
@@ -202,7 +207,7 @@ pub(crate) async fn pull<R: Rest + 'static>(
 pub(crate) async fn check<R: Rest + 'static>(State(app): State<Arc<App<R>>>) -> Reply<Checked> {
     let dir = app.dir.clone();
     // A file that doesn't load is a problem to report, not a failure.
-    let r = chipsoc_config::blocking(move || authoring::check(&dir)).await?;
+    let r = blocking(move || authoring::check(&dir)).await?;
     Ok(Json(Checked { errors: r.errors, warnings: r.warnings }))
 }
 

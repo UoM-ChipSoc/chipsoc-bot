@@ -728,8 +728,10 @@ fn start_jobs(ctx: &Arc<Ctx>, dir: &Path) {
     supervise("partner deltas", move || fedsync::flush_loop(c.clone()));
     let c = ctx.clone();
     supervise("partner shares", move || fedshare::send_loop(c.clone()));
-    let (c, d) = (ctx.clone(), dir.to_path_buf());
-    supervise("config reload", move || reload::watch(c.clone(), d.clone()));
+    // The git sync's cue to the reload watcher that new commits arrived.
+    let pulled = Arc::new(tokio::sync::Notify::new());
+    let (c, d, p) = (ctx.clone(), dir.to_path_buf(), pulled.clone());
+    supervise("config reload", move || reload::watch(c.clone(), d.clone(), p.clone()));
     let c = ctx.clone();
     supervise("drift watch", move || drift::watch(c.clone()));
     let c = ctx.clone();
@@ -737,7 +739,7 @@ fn start_jobs(ctx: &Arc<Ctx>, dir: &Path) {
     let c = ctx.clone();
     supervise("join flow", move || join::watch(c.clone()));
     let (c, d) = (ctx.clone(), dir.to_path_buf());
-    supervise("config sync", move || gitsync::watch(c.clone(), d.clone()));
+    supervise("config sync", move || gitsync::watch(c.clone(), d.clone(), pulled.clone()));
     let c = ctx.clone();
     supervise("recording limits", move || record::watch(c.clone()));
     let c = ctx.clone();

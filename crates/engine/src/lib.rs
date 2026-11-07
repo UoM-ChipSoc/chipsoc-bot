@@ -1011,6 +1011,6 @@ pub async fn export_to(rest: &impl Rest, guild: Snowflake, dir: &Path) -> Result
     }
     std::fs::create_dir_all(dir)?;
     let snap = export::export(rest, guild, &Lock::default()).await?;
-    write_snapshot(dir, &snap)?;
-    Ok(snap)
+    let dir = dir.to_owned();
+    blocking(move || write_snapshot(&dir, &snap).map(|()| snap)).await
 }

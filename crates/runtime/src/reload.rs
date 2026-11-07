@@ -1,9 +1,10 @@
-//! Reload a server's config soon after its files change (e.g. a deploy), not
-//! only on the drift watch's 20-minute tick.
+//! Reload a server's config soon after its files change (a pull, a deploy),
+//! not only on the drift watch's 20-minute tick. The one place a changed
+//! config is picked up.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chipsoc_admin::fmt;
 use chipsoc_config::Config;
@@ -11,34 +12,52 @@ use chipsoc_config::Config;
 use crate::{Ctx, commands, control, fedrecv, fedsync};
 
 const EVERY: Duration = Duration::from_secs(30);
+/// How often approval cards are checked for (see [`crate::trust::review`]).
+const REVIEW_EVERY: Duration = crate::gitsync::EVERY;
 
 pub use chipsoc_config::fingerprint;
 
 /// Every config change (a merged commit, an edit from the web UI or
 /// `/server`, a deploy) is reloaded, and its plan posted in the bot log if
-/// there's anything to apply.
-pub async fn watch(ctx: Arc<Ctx>, dir: PathBuf) {
+/// there's anything to apply. Commits the git sync just `pulled` are looked
+/// at straight away. Every [`REVIEW_EVERY`], an approval card that couldn't be
+/// posted (or was deleted) goes up again, whatever the config comes from.
+pub async fn watch(ctx: Arc<Ctx>, dir: PathBuf, pulled: Arc<tokio::sync::Notify>) {
     let mut seen = changed(&dir).await;
     // Plan posts from before now were closed at start (see `control::close_stale_posts`).
     let mut applied = ctx.db().last_audit_id().await.unwrap_or_default();
     let mut tick = tokio::time::interval(EVERY);
+    // The cards were looked at as the server started.
+    let mut reviewed = Instant::now();
+    // New commits not looked at yet: announced even if only lock.toml changed.
+    let mut pull = false;
     loop {
-        tick.tick().await;
+        tokio::select! {
+            _ = tick.tick() => {}
+            () = pulled.notified() => pull = true,
+        }
         // Applied by the web UI or the CLI: the bot log's plans are moot.
         control::close_applied(&ctx, &mut applied).await;
         // Mid-apply, lock.toml changes step by step; read it once the apply is done.
         if applying(&ctx, &dir) {
             continue;
         }
+        if reviewed.elapsed() >= REVIEW_EVERY {
+            crate::trust::review(&ctx, &dir).await;
+            reviewed = Instant::now();
+        }
         let now = changed(&dir).await;
-        if now.0 != seen.0 && reload(&ctx, &dir).await && now.1 != seen.1 {
-            let intro = crate::gitsync::headline(&last_commit(&dir).await.unwrap_or_default());
-            // Busy applying: try again on the next tick.
-            if !control::announce(&ctx, &intro).await {
-                continue;
+        if now.0 != seen.0 && reload(&ctx, &dir).await {
+            reviewed = Instant::now();
+            if now.1 != seen.1 || pull {
+                let intro = crate::gitsync::headline(&last_commit(&dir).await.unwrap_or_default());
+                // Busy applying: try again on the next tick.
+                if !control::announce(&ctx, &intro).await {
+                    continue;
+                }
             }
         }
-        seen = now;
+        (seen, pull) = (now, false);
     }
 }
 
