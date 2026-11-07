@@ -157,9 +157,9 @@ Removing a `[[peer]]` takes back every role its word gave and deletes its
 shared projects. What it shared is archived here (posts closed and locked,
 messages replaced by a note, events cancelled; nothing deleted), what waits
 for review comes off the queue, and the bot forgets what it shared and what
-we shared with it, so adding the partner back starts afresh. Removing a key from its `public_keys` takes back what was
-given on messages that key signed, drops what it has held, and resets the
-partner's seqs; so to rotate, add the new key, wait a day for their full
+we shared with it, so adding the partner back starts afresh. Removing a key
+from its `public_keys` takes back what was given on messages that key
+signed, drops what it has held, and resets the partner's seqs; so to rotate, add the new key, wait a day for their full
 sync, then remove the old one. Removing an entry from `role_map`, or a
 mapped role gaining moderator or admin permissions in Discord, takes back
 the grants of that role. Whatever fails is tried again every few minutes;

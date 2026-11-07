@@ -191,10 +191,10 @@ Whoever joins while it records gets that by DM (in the call's chat, to
 them, if their DMs are closed; failing that, in the channel `/record
 start` was run from). If none of those works, the recording stops and
 `log.bot` says why. Only whoever started a recording, or an admin, stops
-it. There's no opt-out button: someone who
-doesn't want to be recorded leaves the call. Change the wording with
-`notice` and `join_notice`, but keep it clear: who records, that it's
-transcribed, who keeps it, and how not to be in it.
+it. There's no opt-out button: someone who doesn't want to be recorded
+leaves the call. Change the wording with `notice` and `join_notice`, but
+keep it clear: who records, that it's transcribed, who keeps it, and how
+not to be in it.
 
 It stops with `/record stop`, when the call has been empty for 2 minutes,
 at `max_hours` (default 3), at `max_gb`, when all the server's recordings
@@ -213,9 +213,8 @@ closed and reported when it starts again.
 
 Recordings are never deleted by the bot. An admin deletes one on its page
 (**Delete this recording**, then **Yes, delete it for good**); it's logged
-in the audit log and `log.bot`. Do
-that when someone asks for their recording to be erased, or when your
-retention period is up.
+in the audit log and `log.bot`. Do that when someone asks for their
+recording to be erased, or when your retention period is up.
 
 **Your duties (UK GDPR).** A recording of people is their personal data.
 Before turning this on: say in the server's rules or privacy notice that

@@ -67,15 +67,15 @@ and unknown keys.
   key = "toolchain"                 # unique in this forum
   title = "Toolchain: HDL, FPGA and ASIC flows"   # at most 100 characters
   post = "content/toolchain.md"     # its text, in parts like any post
-  tags = ["tools"]                  # optional; each one of the forum's tags, at most 5
+  tags = ["tools"]                  # optional; at most 5 of the forum's tags
   ```
 
   Its text is edited part by part in place, and its title and tags follow
   the config (the bot deletes the "changed the post title" notice Discord
   leaves when it renames one, as it does for project posts, and at start
-  any older ones of its own). lock.toml keeps it among the posts as `"<forum>/<key>"`
-  (older versions of the bot pass it by). One Discord archived for
-  inactivity is opened again when it's edited. Taken out of the config, it's
+  any older ones of its own). lock.toml keeps it among the posts as
+  `"<forum>/<key>"` (older versions of the bot pass it by). One Discord
+  archived for inactivity is opened again when it's edited. Taken out of the config, it's
   archived and locked, never deleted (one the bot never made isn't touched,
   and the plan says so); with lock.toml lost, it's found again by its title
   and text. `check` errors on a missing title or one
@@ -166,8 +166,8 @@ onboarding asks every question of everyone; this one branches.
   plan takes View Channel from @everyone, gives it to `access_role`, and lets
   @everyone view each open channel; hidden categories stay hidden. Discord's
   onboarding must be off (`enabled = false`). New members who haven't
-  finished after `remind_after_hours` (default 24, 0: never) get one reminder DM, and
-  `log.bot` lists them. `grandfather = true` gives `access_role` to members
+  finished after `remind_after_hours` (default 24, 0: never) get one
+  reminder DM, and `log.bot` lists them. `grandfather = true` gives `access_role` to members
   who were here before the gate.
 - Nobody is DMed when the flow or the gate is turned on. Members already
   here hear about it from an announcement post (any post can have the
@@ -179,8 +179,8 @@ onboarding asks every question of everyone; this one branches.
   says when everyone due has been asked.
 - **If the bot is down** while the gate is on, **Get started** fails and
   newcomers can't get in: the committee gives them `access_role` by hand,
-  or opens the server for a while (`gate = false`), as [deploy.md](deploy.md#when-the-bot-is-down)
-  says.
+  or opens the server for a while (`gate = false`), as
+  [deploy.md](deploy.md#when-the-bot-is-down) says.
 
 **Going live:** try it with `gate = false` (everyone still sees everything);
 check the flow from a test account; then set `gate = true`, apply (the plan
@@ -340,7 +340,7 @@ who changed it since the last apply:
   unknown things share is refused, and `--sweep` is refused while the lock
   knows less than half the config.
 - **Not managed:** emojis and stickers, scheduled events, invites, webhooks,
-  the onboarding Server Guide, role icons, forum layout (beyond `sort`) and default
-  reactions, soundboard, vanity URL, widget, who holds roles not listed in
+  the onboarding Server Guide, role icons, forum layout (beyond `sort`) and
+  default reactions, soundboard, vanity URL, widget, who holds roles not listed in
   members.toml or as project leads (join-flow roles included), and Discord's
   built-in AutoMod rules.
