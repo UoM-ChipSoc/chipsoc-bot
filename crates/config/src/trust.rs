@@ -546,19 +546,19 @@ mod tests {
         pushed.bot.admin_role = Some("member".into());
         pushed.bot.positions.push(Position { role: "mod".into(), admin: true, ..Default::default() });
         pushed.members.get_mut("chair").unwrap().push(Snowflake(9));
-        pushed.bot.drift.mode = DriftMode::Report;
+        pushed.bot.drift.mode = DriftMode::Undo;
         let v = t.vet(&mut pushed);
         let held = v.held.expect("held back");
         assert_eq!(pushed.bot.admin_role.as_deref(), Some("admin"));
         assert!(!pushed.bot.positions[1].admin, "a new admin position isn't one yet");
         assert_eq!(pushed.members["chair"], [Snowflake(1)]);
         assert_eq!(pushed.desired.holders["admin"], [Snowflake(1)].into(), "the admin role goes to approved people");
-        assert_eq!(pushed.bot.drift.mode, DriftMode::Undo);
+        assert_eq!(pushed.bot.drift.mode, DriftMode::Report);
         let lines = approved.changes(&held);
         assert!(lines.iter().any(|l| l.contains("admin role (`admin_role`): `admin` → `member`")), "{lines:?}");
         assert!(lines.iter().any(|l| l.contains("`mod` becomes an admin position")), "{lines:?}");
         assert!(lines.iter().any(|l| l.contains("give to <@9>")), "{lines:?}");
-        assert!(lines.iter().any(|l| l.contains("[drift] mode: undo → report")), "{lines:?}");
+        assert!(lines.iter().any(|l| l.contains("[drift] mode: report → undo")), "{lines:?}");
 
         let mut same = cfg();
         same.members.get_mut("mod").unwrap().push(Snowflake(6));

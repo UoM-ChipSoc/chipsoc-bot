@@ -127,10 +127,27 @@ pub enum Cmd {
 /// A change that asks "are you sure?" first, carried in its button.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Sure {
-    Status { slug: String, status: ProjectStatus },
+    Status {
+        slug: String,
+        status: ProjectStatus,
+    },
     RemoveFeed(i64),
     ArchiveResource(Snowflake),
-    Unappoint { role: String, user: Snowflake },
+    Unappoint {
+        role: String,
+        user: Snowflake,
+    },
+    /// `revert`/`rewind` a config commit (its id, or the start of one).
+    Undo {
+        commit: String,
+        how: Undo,
+    },
+    /// Close an idea's post; `reason` is the key its reason is kept under
+    /// meanwhile (see [`keep_reason`]), empty for none.
+    CloseIdea {
+        post: Snowflake,
+        reason: String,
+    },
 }
 
 impl Sure {
@@ -141,6 +158,10 @@ impl Sure {
             Self::RemoveFeed(id) => format!("rmfeed:{id}"),
             Self::ArchiveResource(id) => format!("rmres:{id}"),
             Self::Unappoint { role, user } => format!("unappoint:{user}:{role}"),
+            Self::Undo { commit, how } => {
+                format!("undo:{}:{commit}", if *how == Undo::Rewind { "rewind" } else { "revert" })
+            }
+            Self::CloseIdea { post, reason } => format!("idea:{post}:{reason}"),
         }
     }
 
@@ -157,12 +178,35 @@ impl Sure {
                 let (user, role) = rest.split_once(':')?;
                 Self::Unappoint { role: role.to_owned(), user: user.parse().ok()? }
             }
+            "undo" => {
+                let (how, commit) = rest.split_once(':')?;
+                let how = match how {
+                    "revert" => Undo::Revert,
+                    "rewind" => Undo::Rewind,
+                    _ => return None,
+                };
+                Self::Undo { commit: commit.to_owned(), how }
+            }
+            "idea" => {
+                let (post, reason) = rest.split_once(':')?;
+                Self::CloseIdea { post: post.parse().ok()?, reason: reason.to_owned() }
+            }
             _ => return None,
         })
     }
 
     /// The question to confirm; `feed` is the feed's address, if known.
     fn question(&self, cfg: &Config, feed: Option<&str>) -> String {
+        if let Self::Undo { commit, how } = self {
+            return chipsoc_admin::undo_question_for(&cfg.dir, commit, *how).markdown();
+        }
+        if let Self::CloseIdea { post, reason } = self {
+            let line = chipsoc_admin::closing_line(kept_reason(reason).as_deref());
+            let quoted = line.lines().map(|l| format!("> {l}")).collect::<Vec<_>>().join("\n");
+            return format!(
+                "Close the idea <#{post}>? It's locked and archived (never deleted), and this is posted in it:\n{quoted}"
+            );
+        }
         match self {
             Self::Status { slug, status } => {
                 let from = cfg.projects.iter().find(|p| &p.slug == slug).map(|p| p.status);
@@ -179,8 +223,46 @@ impl Sure {
             Self::Unappoint { role, user } => {
                 format!("Take **{}** from <@{user}>? They lose the role.", chipsoc_admin::role_name(cfg, role))
             }
+            Self::Undo { .. } | Self::CloseIdea { .. } => String::new(),
         }
     }
+}
+
+/// Reasons for closing ideas, kept between the question and Confirm (by a
+/// short hash, as a button's id can't hold them), with when they were kept.
+fn reasons() -> &'static std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, String)>> {
+    static KEPT: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, String)>>,
+    > = std::sync::OnceLock::new();
+    KEPT.get_or_init(Default::default)
+}
+
+/// How long a kept reason lasts: as long as Discord lets the question be answered.
+const REASON_KEPT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// The key `reason` is kept under (empty for none).
+fn reason_key(reason: Option<&str>) -> String {
+    match reason.map(str::trim).filter(|r| !r.is_empty()) {
+        Some(r) => chipsoc_model::stable_hash(r).chars().take(16).collect(),
+        None => String::new(),
+    }
+}
+
+/// Keep `reason` until Confirm, forgetting ones kept too long.
+fn keep_reason(reason: Option<&str>) {
+    let Some(r) = reason.map(str::trim).filter(|r| !r.is_empty()) else { return };
+    let mut kept = reasons().lock().unwrap_or_else(|e| e.into_inner());
+    kept.retain(|_, (at, _)| at.elapsed() < REASON_KEPT);
+    kept.insert(reason_key(Some(r)), (std::time::Instant::now(), r.to_owned()));
+}
+
+/// A kept reason by its key: `None` for none, or one no longer kept.
+fn kept_reason(key: &str) -> Option<String> {
+    if key.is_empty() {
+        return None;
+    }
+    let kept = reasons().lock().unwrap_or_else(|e| e.into_inner());
+    kept.get(key).filter(|(at, _)| at.elapsed() < REASON_KEPT).map(|(_, r)| r.clone())
 }
 
 fn status_named(s: &str) -> Option<ProjectStatus> {
@@ -266,10 +348,13 @@ pub fn parse(options: &[CommandDataOption]) -> Result<Cmd, String> {
         (None, "web") => Cmd::Basic(Basic::Web),
         (None, "help") => Cmd::Basic(Basic::Help),
         (None, "history") => Cmd::Changes(args.maybe_user("admin")),
-        (None, "revert") => Cmd::Undo {
-            commit: args.need("change")?,
-            how: if args.flag("rewind") == Some(true) { Undo::Rewind } else { Undo::Revert },
-        },
+        (None, "revert") => {
+            let commit = args.need("change")?;
+            if commit.len() > 40 || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err("Give the change's id, from `/server history` (e.g. `abc1234`).".into());
+            }
+            Cmd::Undo { commit, how: if args.flag("rewind") == Some(true) { Undo::Rewind } else { Undo::Revert } }
+        }
         (Some("queue"), "list") => Cmd::Queue,
         (Some("queue"), "history") => Cmd::History,
         (Some("queue"), "accept") => Cmd::Decide { id: args.int("id")?, accept: true, reason: None },
@@ -299,7 +384,8 @@ pub fn parse(options: &[CommandDataOption]) -> Result<Cmd, String> {
         }),
         (Some("resource"), "archive") => Cmd::ArchiveResource(post_id(&args.need("post")?)?),
         (Some("idea"), "close") => {
-            Cmd::CloseIdea { post: post_id(&args.need("thread")?)?, reason: args.text("reason") }
+            let post = args.text("post").or_else(|| args.text("thread")).ok_or("Give the post's link.")?;
+            Cmd::CloseIdea { post: post_id(&post)?, reason: args.text("reason") }
         }
         (Some("member"), "list") => Cmd::Members,
         (Some("member"), "info") => Cmd::About(args.user("user")?),
@@ -316,7 +402,9 @@ pub fn parse(options: &[CommandDataOption]) -> Result<Cmd, String> {
 fn post_id(text: &str) -> Result<Snowflake, String> {
     let last = text.trim().trim_end_matches('/').rsplit('/').next().unwrap_or_default();
     let digits = last.trim_start_matches("<#").trim_end_matches('>');
-    digits.parse().map_err(|_| "Give the post's link or id.".to_owned())
+    digits
+        .parse()
+        .map_err(|_| "Paste the post's link: right-click the post (long-press on mobile) → Copy Link.".to_owned())
 }
 
 /// The config edit a command makes, if it's one.
@@ -341,6 +429,8 @@ fn sure(cmd: &Cmd) -> Option<Sure> {
         Cmd::RemoveFeed(id) => Sure::RemoveFeed(*id),
         Cmd::ArchiveResource(id) => Sure::ArchiveResource(*id),
         Cmd::Unappoint { role, user } => Sure::Unappoint { role: role.clone(), user: *user },
+        Cmd::Undo { commit, how } => Sure::Undo { commit: commit.clone(), how: *how },
+        Cmd::CloseIdea { post, reason } => Sure::CloseIdea { post: *post, reason: reason_key(reason.as_deref()) },
         _ => return None,
     })
 }
@@ -349,8 +439,9 @@ fn actor(i: &Interaction) -> Option<Actor> {
     invoker(i).map(|u| Actor { id: Some(Snowflake(u.id.get())), name: u.name.clone() })
 }
 
-/// What `/server help` says: what admins can do and where, one short
-/// section per area (only those the config turns on), with the commands.
+/// What `/server help` says: the dashboard first, where to look, then one
+/// line per group of commands (only those the config turns on). Fits one
+/// message whatever is on.
 pub fn help(cfg: &Config) -> String {
     let b = &cfg.bot;
     let mut out = vec![format!(
@@ -361,99 +452,64 @@ pub fn help(cfg: &Config) -> String {
             .map(|k| format!(" (**{}**, or Manage Server)", chipsoc_admin::role_name(cfg, k)))
             .unwrap_or_default()
     )];
+    if let Some(w) = &b.web {
+        out.push(format!("**Dashboard:** {} (`/server web` DMs you a way in).", w.url));
+    }
     let channel = |k: &str| cfg.desired.lock.channel(k).map_or_else(|| format!("#{k}"), |c| format!("<#{c}>"));
     let log = b.log.bot.as_deref().or(b.log.people.as_deref()).map_or_else(|| "the bot log".to_owned(), channel);
-    let mut first = vec![format!("{log}: plans to **Apply**, changes to **Approve**, drift and problems")];
+    let mut lines = vec![format!("{log}: plans to **Apply**, changes to **Approve**, drift and problems")];
     if let Some(r) = &b.review {
-        first.push(format!(
+        lines.push(format!(
             "{}: applications and suggestions; press **Accept** or **Reject** on each",
             channel(&r.channel)
         ));
     }
-    let mut section = |title: &str, lines: &[&str]| {
-        out.push(format!("\n**{title}**"));
-        out.extend(lines.iter().map(|l| format!("• {l}")));
-    };
-    section("Where to look", &first.iter().map(String::as_str).collect::<Vec<_>>());
-    section(
-        "Plan & apply",
-        &[
-            "`/server status`: the server at a glance",
-            "`/server drift`: does Discord match the config?",
-            "`/server plan`: what applying would change, with an Apply button",
-            "`/server apply`: apply it (asks first)",
-            "`/server pull`: keep changes made in Discord by copying them into the config",
-            "`/server history`: the latest config changes and who made them; `history @admin`: what they did this week",
-            "`/server revert`: undo a config change, then apply (the server owner only)",
-        ],
+    let mut add = |l: &str| lines.push(l.to_owned());
+    add("`/server status|drift|plan|apply|pull`: Discord against the config; apply it, or copy Discord's changes in");
+    add(
+        "`/server history|revert|approvals`: who changed the config; undo a change (the owner); what waits for an Approve",
     );
-    let mut members = vec![
-        "`/server member list`: who holds what, and who left",
-        "`/server member info`: what someone answered when they joined",
-        "`/server member appoint`: appoint someone to a position or role",
-        "`/server member remove`: take someone out of one (asks first)",
-    ];
+    add("`/server member list|info|appoint|remove`: who holds what; appoint someone, or take them out");
     if !b.positions.is_empty() {
-        members.push("`/server position open` / `close`: take applications for a position, or stop");
+        add("`/server position open|close`: take applications for a position, or stop");
     }
     if cfg.join.is_some() {
-        members.push("`/server join notify`: DM members who haven't been through the join flow (asks first)");
+        add("`/server join notify`: DM members who haven't been through the join flow");
     }
-    section("Members & positions", &members);
     if !cfg.projects.is_empty() {
-        section(
-            "Projects",
-            &[
-                "`/server project status`: proposed, active or past (asks first)",
-                "`/server project applications`: open or close a project's applications",
-                "`/server project rename`: a new slug, keeping its roles and channels",
-                "`/server project lead`: make someone a lead (they're DMed)",
-            ],
-        );
+        add("`/server project status|applications|rename|lead`: a project's status, applications, slug and leads");
     }
     if b.review.is_some() {
-        section(
-            "Review queue",
-            &[
-                "`/server queue list`: what's waiting (or use the cards' buttons)",
-                "`/server queue accept` / `reject`: decide one by its number",
-                "`/server queue history`: the latest decisions",
-            ],
-        );
+        add("`/server queue list|accept|reject|history`: the review queue by number");
     }
-    let mut shared = Vec::new();
     if b.feeds.is_some() {
-        shared.push("`/server feed list` / `add` / `pause` / `resume` / `remove`: feeds the bot posts from");
+        add("`/server feed list|add|pause|resume|remove`: feeds the bot posts from");
     }
     if b.resources.is_some() {
-        shared.push("`/server resource list` / `add` / `archive`: links in the resources forum");
+        add("`/server resource list|add|archive`: links in the resources forum");
     }
     if b.ideas.is_some() {
-        shared.push("`/server idea close`: close an idea's post, saying why (tagged, archived and locked)");
+        add("`/server idea close`: close an idea's post, saying why");
     }
     if b.events.is_some() {
-        shared.push("`/event`: create an event (announced, with reminders)");
+        add("`/event`: create an event (announced, with reminders)");
     }
-    if !shared.is_empty() {
-        section("Feeds, ideas, resources & events", &shared);
+    if b.recording.is_some() {
+        add(
+            "`/record start|stop`: record a meeting in a call (everyone in it is told); recordings are on the dashboard",
+        );
     }
     if cfg.federation.peers.iter().any(|p| !p.id.is_empty()) {
-        let mut partners = vec!["`/partners`: what partner communities share"];
-        if shares_on_demand(cfg) {
-            partners.push("`/server share announcement` / `event`: share one with partners you pick");
-        }
-        partners.push("Partner settings live in federation.toml in the config repo");
-        section("Partners", &partners);
+        add(if shares_on_demand(cfg) {
+            "`/partners`, `/server share announcement|event`: what partners share; share one with them"
+        } else {
+            "`/partners`: what partner communities share"
+        });
     }
-    let web = match &b.web {
-        Some(w) => format!("Dashboard: {} (`/server web` DMs you a way in)", w.url),
-        None => "No web dashboard is set up for this server".to_owned(),
-    };
-    let cli = match &b.web {
-        Some(w) => format!("Terminal: `chipsoc-bot login --server {}`, then any command", w.url),
-        None => "Terminal: `chipsoc-bot login --server <dashboard url>`, then any command".to_owned(),
-    };
-    section("Web & CLI", &[&web, &cli]);
+    out.extend(lines.iter().map(|l| format!("• {l}")));
+    if let Some(w) = &b.web {
+        out.push(format!("Terminal: `chipsoc-bot login --server {}`, then any command.", w.url));
+    }
     ui::truncate(&out.join("\n"), ui::MAX_CONTENT - 1)
 }
 
@@ -497,6 +553,15 @@ pub async fn server(ctx: &Ctx, i: &Interaction, options: &[CommandDataOption]) {
         return control::server(ctx, i, sub).await;
     }
     if let Some(s) = sure(&cmd) {
+        // Only the owner may go back on a change: say so now rather than after Confirm.
+        if let (Sure::Undo { .. }, Some(by)) = (&s, actor(i))
+            && let Err(why) = chipsoc_admin::only_owner(ctx, &by, &chipsoc_engine::Ask::Undo).await
+        {
+            return ctx.respond(i, &ui::ephemeral(&format!("{} {why}", fmt::ATTENTION))).await;
+        }
+        if let Cmd::CloseIdea { reason, .. } = &cmd {
+            keep_reason(reason.as_deref());
+        }
         let yes = ui::button(&CustomId::Sure(s.encode()).to_string(), "Confirm", ButtonStyle::Danger);
         let no = ui::button(&CustomId::Sure(CANCEL.into()).to_string(), "Cancel", ButtonStyle::Secondary);
         let feed = match &s {
@@ -529,20 +594,35 @@ pub async fn confirmed(ctx: &Ctx, i: &Interaction, payload: &str) {
         Sure::RemoveFeed(id) => Cmd::RemoveFeed(id),
         Sure::ArchiveResource(id) => Cmd::ArchiveResource(id),
         Sure::Unappoint { role, user } => Cmd::Unappoint { role, user },
+        Sure::Undo { commit, how } => Cmd::Undo { commit, how },
+        Sure::CloseIdea { post, reason } => {
+            let kept = kept_reason(&reason);
+            if !reason.is_empty() && kept.is_none() {
+                let why = "That question has expired, so nothing was closed; run `/server idea close` again.";
+                return ctx.respond(i, &ui::update(why)).await;
+            }
+            Cmd::CloseIdea { post, reason: kept }
+        }
     };
     ctx.respond(i, &ui::defer_update()).await;
     let (text, buttons) = run(ctx, &cmd, &by).await;
     control::reply(ctx, i, &text, &buttons).await;
 }
 
-/// Reject on a review card: ask why first (they're told; it can be left empty).
+/// Reject on a review card: ask why first (it can be left empty), saying
+/// who reads it: the member who sent it, or (a partner's) nobody.
 pub async fn reject_form(ctx: &Ctx, i: &Interaction, id: i64) {
     if !ctx.is_admin(i.member.as_ref()) {
         return ctx.respond(i, &ui::ephemeral(&admins_only(&ctx.cfg()))).await;
     }
-    let reason = ui::input("reason", "Reason (optional, sent to them)", TextInputStyle::Paragraph, false, None);
-    let form = vec![ui::described(reason, "Kept with the application too.")];
-    ctx.respond(i, &ui::modal(&CustomId::RejectForm(id).to_string(), "Turn this application down", form)).await;
+    let app = ctx.db().application(id).await.ok().flatten();
+    let kind = app.as_ref().map_or(chipsoc_admin::AppKind::Position, |a| a.kind);
+    let title =
+        app.as_ref().map_or_else(|| "Reject".to_owned(), |a| format!("Reject: {}", chipsoc_admin::what(&ctx.cfg(), a)));
+    let label = chipsoc_admin::reason_label(kind);
+    let reason = ui::input("reason", label, TextInputStyle::Paragraph, false, None);
+    let form = vec![ui::described(reason, chipsoc_admin::reject_says(kind))];
+    ctx.respond(i, &ui::modal(&CustomId::RejectForm(id).to_string(), &title, form)).await;
 }
 
 /// The reason form sent: reject, tell them why, and mark the card.
@@ -626,8 +706,11 @@ async fn run(ctx: &Ctx, cmd: &Cmd, by: &Actor) -> (String, Vec<Component>) {
             Err(e) => failed(&format!("archive <#{id}>"), &e),
         },
         Cmd::CloseIdea { post, reason } => match chipsoc_admin::close_idea(ctx, *post, reason.as_deref(), by).await {
-            Ok(true) => format!("{} Closed <#{post}>: tagged, archived and locked, still readable.", fmt::DONE),
-            Ok(false) => "That isn't a post in the ideas forum.".into(),
+            Ok(Some(closed)) => format!("{} {}", fmt::DONE, closed.said(*post)),
+            Ok(None) => {
+                "That isn't a post in the ideas forum: paste the link of an idea's post (right-click it → Copy Link)."
+                    .into()
+            }
             Err(e) => failed(&format!("close <#{post}>"), &e),
         },
         Cmd::Members => members(ctx).await,
@@ -975,7 +1058,7 @@ mod tests {
         assert_eq!(parse(&info), Ok(Cmd::About(Snowflake(7))));
         let close = sub("idea", "close", vec![opt("thread", s("<#55>")), opt("reason", s(" Done elsewhere "))]);
         assert_eq!(parse(&close), Ok(Cmd::CloseIdea { post: Snowflake(55), reason: Some("Done elsewhere".into()) }));
-        let close = sub("idea", "close", vec![opt("thread", s("https://discord.com/channels/1/56"))]);
+        let close = sub("idea", "close", vec![opt("post", s("https://discord.com/channels/1/56"))]);
         assert_eq!(parse(&close), Ok(Cmd::CloseIdea { post: Snowflake(56), reason: None }));
         let add = sub(
             "resource",
@@ -1007,36 +1090,72 @@ mod tests {
         cfg.bot.web = Some(chipsoc_config::bot::Web { url: "https://dash.example".into(), share_device: None });
         let text = help(&cfg);
         assert!(text.starts_with("**Running ChipSoc from Discord.**"), "{text}");
-        assert!(text.contains("**Plan & apply**\n• `/server status`"), "{text}");
-        assert!(
-            text.contains("`/server member appoint`") && text.contains("Dashboard: https://dash.example"),
-            "{text}"
-        );
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[1], "**Dashboard:** https://dash.example (`/server web` DMs you a way in).", "first: {text}");
+        assert!(lines[2].starts_with("• the bot log: plans to **Apply**"), "{text}");
+        assert!(text.contains("• `/server status|drift|plan|apply|pull`"), "{text}");
+        assert!(text.contains("`/server member list|info|appoint|remove`"), "{text}");
         assert!(text.contains("`chipsoc-bot login --server https://dash.example`"), "{text}");
-        assert!(!text.contains("**Review queue**") && !text.contains("**Projects**"), "only what's on: {text}");
-        assert!(text.contains("**Where to look**\n• the bot log: plans to **Apply**"), "{text}");
+        assert!(!text.contains("/server queue") && !text.contains("/server project"), "only what's on: {text}");
         cfg.bot.review = Some(chipsoc_config::bot::Review { channel: "review".into() });
         cfg.bot.events = Some(Default::default());
         cfg.join = Some(Default::default());
         cfg.projects.push(toml::from_str("slug = \"golem\"\nname = \"Golem\"").unwrap());
         let text = help(&cfg);
-        assert!(text.contains("**Review queue**\n• `/server queue list`"), "{text}");
+        assert!(text.contains("• `/server queue list|accept|reject|history`"), "{text}");
         assert!(
             text.contains("• #review: applications and suggestions; press **Accept**"),
             "new admins find #review: {text}"
         );
-        for cmd in [
-            "/server member info",
-            "/server project rename",
-            "/server web",
-            "/server join notify",
-            "/event",
-            "/server drift",
-        ] {
+        for cmd in
+            ["member list|info", "project status", "/server web", "/server join notify", "/event", "drift", "approvals"]
+        {
             assert!(text.contains(cmd), "{cmd} missing: {text}");
         }
-        assert!(text.chars().count() < ui::MAX_CONTENT);
         assert_eq!(parse(&[opt("help", CommandOptionValue::SubCommand(vec![]))]), Ok(Cmd::Basic(Basic::Help)));
+    }
+
+    /// Every feature on, with long names: still one message, nothing cut.
+    #[test]
+    fn help_fits_one_message_with_everything_on() {
+        let mut cfg = Config::default();
+        cfg.bot.name = "A Rather Long Community Name For Testing".into();
+        cfg.bot.admin_role = Some("committee".into());
+        cfg.desired.roles.roles.push(chipsoc_config::schema::Role {
+            key: "committee".into(),
+            name: "The Committee Of This Society".into(),
+            ..Default::default()
+        });
+        for (k, id) in [("bot-log", 1_234_567_890_123_456_789), ("review", 1_234_567_890_123_456_780)] {
+            cfg.desired.lock.channels.insert(k.into(), Snowflake(id));
+        }
+        cfg.bot.log.bot = Some("bot-log".into());
+        cfg.bot.web = Some(chipsoc_config::bot::Web {
+            url: "https://a-long-dashboard-name.tailnet-name-here.ts.net".into(),
+            share_device: None,
+        });
+        cfg.bot.review = Some(chipsoc_config::bot::Review { channel: "review".into() });
+        cfg.bot.positions.push(Default::default());
+        cfg.join = Some(Default::default());
+        cfg.projects.push(toml::from_str("slug = \"golem\"\nname = \"Golem\"").unwrap());
+        cfg.bot.feeds = Some(toml::from_str("channel = \"news\"").unwrap());
+        cfg.bot.resources = Some(toml::from_str("forum = \"res\"").unwrap());
+        cfg.bot.ideas = Some(toml::from_str("forum = \"ideas\"").unwrap());
+        cfg.bot.events = Some(Default::default());
+        cfg.bot.recording = Some(toml::from_str("channel = \"committee\"").unwrap());
+        cfg.federation.peers.push(chipsoc_config::schema::Peer {
+            name: "Them".into(),
+            id: "1".into(),
+            send: vec!["announcements".into(), "events".into()],
+            ..Default::default()
+        });
+        assert!(shares_on_demand(&cfg));
+        let text = help(&cfg);
+        assert!(text.chars().count() <= ui::MAX_CONTENT - 1, "{} characters: {text}", text.chars().count());
+        assert!(text.ends_with("then any command."), "nothing cut: {text}");
+        for cmd in ["/record start|stop", "/server feed", "/server idea close", "/server resource", "approvals"] {
+            assert!(text.contains(cmd), "{cmd} missing: {text}");
+        }
     }
 
     #[test]
@@ -1067,6 +1186,10 @@ mod tests {
             Sure::RemoveFeed(3),
             Sure::ArchiveResource(Snowflake(99)),
             Sure::Unappoint { role: "proj-a:b".into(), user: Snowflake(5) },
+            Sure::Undo { commit: "a".repeat(40), how: Undo::Rewind },
+            Sure::Undo { commit: "abc1234".into(), how: Undo::Revert },
+            Sure::CloseIdea { post: Snowflake(u64::MAX), reason: reason_key(Some("a reason")) },
+            Sure::CloseIdea { post: Snowflake(5), reason: String::new() },
         ] {
             let id = CustomId::Sure(s.encode()).to_string();
             assert!(id.len() <= 100, "{id}");
@@ -1075,6 +1198,39 @@ mod tests {
         }
         assert_eq!(Sure::decode("status:done:golem"), None);
         assert_eq!(Sure::decode(CANCEL), None, "Cancel is never taken for a change");
+    }
+
+    /// Revert, rewind and closing an idea ask first; the reason is kept for
+    /// Confirm and shown as it will be posted.
+    #[test]
+    fn going_back_and_closing_ideas_ask_first() {
+        let cfg = Config::default();
+        let rewind = Cmd::Undo { commit: "abc1234".into(), how: Undo::Rewind };
+        let q = sure(&rewind).unwrap().question(&cfg, None);
+        assert!(
+            q.starts_with("Put the config back as it was right after `abc1234`?")
+                && q.contains("Every later change is undone"),
+            "{q}"
+        );
+        let revert = sure(&Cmd::Undo { commit: "abc1234".into(), how: Undo::Revert }).unwrap().question(&cfg, None);
+        assert!(revert.starts_with("Undo change `abc1234`? Only that change is undone"), "{revert}");
+
+        let close = Cmd::CloseIdea { post: Snowflake(55), reason: Some("Merged into Golem.".into()) };
+        let asked = sure(&close).unwrap();
+        let Sure::CloseIdea { reason: key, .. } = &asked else { panic!() };
+        assert_eq!(kept_reason(key), None, "kept only once asked");
+        keep_reason(Some("Merged into Golem."));
+        assert_eq!(kept_reason(key).as_deref(), Some("Merged into Golem."));
+        let q = asked.question(&cfg, None);
+        assert_eq!(
+            q,
+            "Close the idea <#55>? It's locked and archived (never deleted), and this is posted in it:\n> 🔒 **Closed:** Merged into Golem.\n> It stays here to read."
+        );
+        let none = sure(&Cmd::CloseIdea { post: Snowflake(55), reason: None }).unwrap().question(&cfg, None);
+        assert!(none.ends_with("> 🔒 **Closed.** It stays here to read."), "{none}");
+
+        let bad = vec![opt("revert", CommandOptionValue::SubCommand(vec![opt("change", s("--help"))]))];
+        assert!(parse(&bad).unwrap_err().contains("change's id"));
     }
 
     /// Discord refuses the whole command set if any limit is broken.

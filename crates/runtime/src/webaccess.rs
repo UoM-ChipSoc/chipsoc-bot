@@ -275,9 +275,18 @@ pub fn welcome_text(cfg: &chipsoc_config::Config, log: Option<String>, link: Opt
     );
     if let Some(w) = &cfg.bot.web {
         out.push(format!("• Dashboard: {} (sign in with Discord).", w.url));
-        out.push(format!("• Terminal: `chipsoc-bot login --server {}`, then any command.", w.url));
     }
-    out.push("Changes made only in Discord are put back; make them through these instead.".to_owned());
+    out.push(
+        match cfg.bot.drift.mode {
+            chipsoc_config::bot::DriftMode::Undo => {
+                "Changes made only in Discord are put back; make them through these instead."
+            }
+            chipsoc_config::bot::DriftMode::Report => {
+                "Changes made only in Discord show up in the bot log as drift; make them through these instead."
+            }
+        }
+        .to_owned(),
+    );
     if let (Some(link), Some(w)) = (link, &cfg.bot.web) {
         out.push(format!(
             "\n**To open the dashboard from your device:**\n\
@@ -510,7 +519,12 @@ mod tests {
             "👋 **You're an admin of ChipSoc now.** Here's what you can do, and where:
 • <#5>: plans to **Apply**, changes to **Approve**, drift and problems.
 • `/server help`: everything admins can do from Discord: appoint people, open positions, review applications, apply the config.
-Changes made only in Discord are put back; make them through these instead."
+Changes made only in Discord show up in the bot log as drift; make them through these instead."
+        );
+        cfg.bot.drift.mode = chipsoc_config::bot::DriftMode::Undo;
+        assert!(
+            welcome_text(&cfg, None, None)
+                .ends_with("Changes made only in Discord are put back; make them through these instead.")
         );
         cfg.bot.review = Some(chipsoc_config::bot::Review { channel: "review".into() });
         let text = welcome_text(&cfg, Some("<#5>".into()), None);

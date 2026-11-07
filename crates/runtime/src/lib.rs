@@ -289,6 +289,17 @@ impl Ctx {
         self.log_err(edit.await, "editing a response");
     }
 
+    /// Tell whoever pressed a deferred button `text`, for their eyes only.
+    pub async fn follow_up(&self, i: &Interaction, text: &str) {
+        let body = Self::message(text, None).map(|mut m| {
+            m["flags"] = serde_json::json!(twilight_model::channel::message::MessageFlags::EPHEMERAL.bits());
+            m
+        });
+        let path = format!("webhooks/{}/{}", self.app, i.token);
+        let sent = async { self.send(chipsoc_discord::Method::Post, &path, body?).await };
+        self.log_err(sent.await, "following up an interaction");
+    }
+
     /// Post to a channel named in config, if it's set up.
     pub async fn say_in(&self, key: Option<&str>, text: &str) {
         if let Some(ch) = key.and_then(|k| self.channel(k)) {

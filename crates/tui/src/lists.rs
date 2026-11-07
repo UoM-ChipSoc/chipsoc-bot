@@ -63,6 +63,11 @@ pub fn name_of(r: &Roster, id: Snowflake) -> String {
     member(&all.into_iter().find(|p| p.id == id).map_or_else(|| id.to_string(), |p| p.name.clone()))
 }
 
+/// Who sent a queue entry: the name the backend found (`from`), else by id.
+pub fn sender(user: &str, from: &str) -> String {
+    member(if from.is_empty() { user } else { from })
+}
+
 /// A name as shown; a bare id (no name could be found) as "unknown member (id …1111)".
 pub fn member(name: &str) -> String {
     if name.is_empty() || !name.bytes().all(|b| b.is_ascii_digit()) {

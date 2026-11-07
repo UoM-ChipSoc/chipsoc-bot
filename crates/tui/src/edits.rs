@@ -546,28 +546,25 @@ impl App {
             // Only those who asked to lead, as the web UI and the README say.
             let past = self.history.get()?.get(self.sel()).filter(|p| p.as_lead)?.clone();
             let lines = vec![
-                format!("Make {} a lead of {}?", lists::member(&past.user), past.what),
+                format!("Make {} a lead of {}?", lists::sender(&past.user, &past.from), past.what),
                 "They get its Lead role straight away.".into(),
             ];
             self.confirm("Make lead?", lines, Job::Admin(Admin::MakeLead(past.id)));
             return None;
         }
         let app = self.queue.get()?.get(self.sel())?.clone();
-        let who = lists::member(&app.user);
+        let who = lists::sender(&app.user, &app.from);
         let item = lists::item(&app.kind, &app.what);
+        let (accepting, rejecting, reason) = chipsoc_admin::says_of(&app.kind);
         match act {
             Act::Accept => {
-                let gets = match app.kind.as_str() {
-                    "position" | "project" => "They get its role and a DM saying so.",
-                    _ => "It goes up in Discord and they get a DM saying so.",
-                };
-                let lines = vec![format!("Accept {who}'s {item}?"), gets.into()];
+                let lines = vec![format!("Accept {who}'s {item}?"), accepting.into()];
                 let job = Job::Admin(Admin::Decide { id: app.id, accept: true, reason: None });
                 self.confirm("Accept?", lines, job);
                 None
             }
             Act::Reject => {
-                let field = Input::text(Key::Reason, "").hint("Leave blank to give no reason");
+                let field = Input::text(Key::Reason, "").labelled(reason).hint(rejecting);
                 self.form(format!("Reject {who}'s {item}"), vec![field], Then::Reject(app.id))
             }
             _ => None,

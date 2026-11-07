@@ -404,6 +404,14 @@ fn join(r: &mut Report, c: &Config, keys: &Keys) {
         return r.err(format!("{file}: add at least one [[step]]"));
     }
     duplicates(r, "join step", flow.steps.iter().map(|s| s.key.as_str()));
+    if let Some(done) = &flow.done_message {
+        for k in template::refs(done, '#') {
+            keys.channel(r, "join.toml done_message", &k);
+        }
+        for k in template::refs(done, '@') {
+            keys.role(r, "join.toml done_message", &k);
+        }
+    }
     let key_ok = |k: &str| {
         !k.is_empty()
             && k.len() <= MAX_JOIN_KEY
@@ -1371,12 +1379,24 @@ mod tests {
         fs::write(p.join("bot.toml"), bot("2020-01-31")).unwrap();
         let r = check(p).unwrap();
         assert!(r.errors.is_empty(), "{:?}", r.errors);
-        assert!(r.warnings.iter().any(|w| w.contains("closed on 31 January 2020")), "{:?}", r.warnings);
+        assert!(r.warnings.iter().any(|w| w.contains("closed on Friday 31 January 2020")), "{:?}", r.warnings);
         fs::write(p.join("bot.toml"), bot("2999-01-31 18:00")).unwrap();
         let r = check(p).unwrap();
         assert!(r.errors.is_empty() && !r.warnings.iter().any(|w| w.contains("closed on")), "{r:?}");
         let c = Config::load(p).unwrap();
-        assert!(c.fill_lists("{positions}").contains("applications close 31 January 2999, 18:00"));
+        let one = c.fill_lists("{positions}");
+        assert!(one.contains(": applications close Thursday 31 January 2999, 18:00"), "{one}");
+        // Several closing at once: said once, under the list.
+        let two =
+            format!("{}[[position]]\nrole = \"helper\"\ncloses = \"2999-01-31 18:00\"\n", bot("2999-01-31 18:00"));
+        fs::write(p.join("bot.toml"), two).unwrap();
+        let list = Config::load(p).unwrap().fill_lists("{positions}");
+        assert_eq!(list.matches("close").count(), 1, "{list}");
+        assert!(list.ends_with("\nApplications close Thursday 31 January 2999, 18:00."), "{list}");
+        let apart = format!("{}[[position]]\nrole = \"helper\"\ncloses = \"2999-02-01\"\n", bot("2999-01-31 18:00"));
+        fs::write(p.join("bot.toml"), apart).unwrap();
+        let list = Config::load(p).unwrap().fill_lists("{positions}");
+        assert_eq!(list.matches("applications close").count(), 2, "{list}");
     }
 
     #[test]

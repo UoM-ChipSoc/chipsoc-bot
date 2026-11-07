@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use axum::extract::{Query, State};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{IntoResponse, Response};
 use axum::{Extension, Form};
 use chipsoc_config::Snowflake;
 use chipsoc_config::git::Undo;
@@ -16,7 +16,7 @@ use serde::Deserialize;
 use crate::App;
 use crate::auth::Session;
 use crate::form::when;
-use crate::view::{self, Tab, csrf, empty, trouble};
+use crate::view::{self, Tab, csrf, empty};
 
 /// Changes listed.
 const SHOWN: usize = 100;
@@ -89,8 +89,8 @@ pub(crate) async fn page<R: Rest + Clone + 'static>(
                         }
                         td {
                             if let (true, Some(c), true) = (owns, &d.commit, d.revertible) {
-                                {undo_button(&s, c, Undo::Revert)}
-                                {undo_button(&s, c, Undo::Rewind)}
+                                {undo_button(&s, c, &d.what, Undo::Revert)}
+                                {undo_button(&s, c, &d.what, Undo::Rewind)}
                             }
                         }
                     }
@@ -101,17 +101,26 @@ pub(crate) async fn page<R: Rest + Clone + 'static>(
     view::page(Tab::Changes, &s, content).into_response()
 }
 
-fn undo_button(s: &Session, commit: &str, how: Undo) -> Element {
-    let (value, label) = match how {
-        Undo::Revert => ("revert", "Revert"),
-        Undo::Rewind => ("rewind", "Rewind to here"),
+/// Revert or Rewind, asking first (the question every front end asks).
+fn undo_button(s: &Session, commit: &str, subject: &str, how: Undo) -> Element {
+    let (value, label, yes) = match how {
+        Undo::Revert => ("revert", "Revert…", "Yes, revert it"),
+        Undo::Rewind => ("rewind", "Rewind to here…", "Yes, rewind"),
     };
+    let question = chipsoc_admin::undo_question(commit, Some(subject), how).plain(None);
     rsx! {
-        form { method: "post", action: "/changes/undo", class: "inline",
-            {csrf(s)}
-            input { r#type: "hidden", name: "commit", value: "{commit}" }
-            input { r#type: "hidden", name: "how", value: "{value}" }
-            button { class: "quiet", "{label}" }
+        details { class: "confirm-box",
+            summary { class: "button quiet",
+                span { class: "closed", "{label}" }
+                span { class: "opened", "Cancel" }
+            }
+            form { method: "post", action: "/changes/undo", class: "inline",
+                {csrf(s)}
+                input { r#type: "hidden", name: "commit", value: "{commit}" }
+                input { r#type: "hidden", name: "how", value: "{value}" }
+                p { class: "hint", "{question}" }
+                button { class: "danger", "{yes}" }
+            }
         }
     }
 }
@@ -122,12 +131,13 @@ pub(crate) struct UndoForm {
     how: Undo,
 }
 
-/// `POST /changes/undo`: go back on a change, then show the plan to apply it.
+/// `POST /changes/undo`: go back on a change, then send them to the Apply
+/// page saying what happened (so reloading it doesn't go back again).
 pub(crate) async fn undo<R: Rest + Clone + 'static>(
     State(app): State<Arc<App<R>>>,
     Extension(s): Extension<Session>,
     Form(f): Form<UndoForm>,
-) -> Html<String> {
+) -> Response {
     let (a, who) = (app.clone(), s.clone());
     // Spawned so closing the tab can't stop it halfway.
     let run = async move {
@@ -136,9 +146,9 @@ pub(crate) async fn undo<R: Rest + Clone + 'static>(
     };
     let made = tokio::spawn(run).await.unwrap_or_else(|e| Err(e.into())).unwrap_or_else(|e| Err(format!("{e:#}")));
     let head = chipsoc_admin::undo_said(&made).plain(None);
-    if made.is_err() {
-        return view::page(Tab::Changes, &s, trouble(&head));
+    match made {
+        Ok(Some(_)) => crate::flash::redirect("/changes", &format!("{head} Press **See the plan** to apply it."), true),
+        Ok(None) => crate::flash::redirect("/changes/history", &head, true),
+        Err(_) => crate::flash::redirect("/changes/history", &head, false),
     }
-    let plan = crate::changes::plan_section(&app, &s).await;
-    view::page(Tab::Changes, &s, rsx! { {view::done(&head)} {plan} })
 }

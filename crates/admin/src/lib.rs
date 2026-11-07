@@ -40,16 +40,17 @@ pub use chipsoc_store::AppKind;
 pub use feeds::{FeedInfo, accept_feed, add_feed, feeds, pause_feed, remove_feed};
 pub use find::{Found, Member, Unresolved, find_members, members_of, resolve_user};
 pub use forums::{
-    Lead, NewIdea, NewResource, Post, Refused, archive_resource, close_idea, ideas, post_idea, post_resource,
-    precheck_resource, resources, vet_resource,
+    Closed, Lead, NewIdea, NewResource, Post, Refused, archive_resource, close_idea, closing_line, ideas, post_idea,
+    post_resource, precheck_resource, resources, vet_resource,
 };
-pub use owner::{Done, history_of, only_owner, owner_id, undo, undo_said};
+pub use owner::{Done, history_of, only_owner, owner_id, undo, undo_question, undo_question_for, undo_said};
 pub use people::{
     FormerMember, Holding, Named, Person, Roster, appoint, forget_former, remove_lead, restore, roster, unappoint,
 };
 pub use queue::{
-    Answer, Decided, LEAD_WISH, Past, Pending, already, claim, claim_lead, claim_seen, decide, decide_seen,
-    decide_with, history, lead, made_lead, make_lead, mark_card, pending, settle, settle_with, submitted_by, what_md,
+    Answer, Decided, LEAD_WISH, Past, Pending, accept_says, already, claim, claim_lead, claim_seen, decide,
+    decide_seen, decide_with, history, lead, made_lead, make_lead, mark_card, pending, reason_label, reject_says,
+    says_of, settle, settle_with, submitted_by, what, what_md,
 };
 pub use said::{Part, Said};
 pub use status::{Drift, Line, drift};
@@ -202,6 +203,9 @@ impl Actor {
 pub struct Entry {
     pub ts: i64,
     pub actor: Option<String>,
+    /// Who, as people know them.
+    #[serde(default)]
+    pub actor_name: Option<String>,
     pub action: String,
     pub target: Option<String>,
     pub detail: Option<String>,
@@ -210,7 +214,11 @@ pub struct Entry {
 /// The latest audit-log entries, newest first.
 pub async fn activity<H: Host>(h: &H, limit: i64) -> Result<Vec<Entry>> {
     let rows = h.db().recent_audit(limit).await?;
+    let ids = people::ids(rows.iter().filter_map(|e| e.actor.as_deref()));
+    let names = people::names_of(h, &ids).await;
+    let cfg = h.cfg();
     let entry = |e: chipsoc_store::AuditEntry| Entry {
+        actor_name: e.actor.as_deref().map(|a| people::named(&cfg, &names, a)),
         ts: e.ts,
         actor: e.actor,
         action: e.action,
@@ -638,13 +646,26 @@ pub(crate) async fn add_holder_unless<H: Host>(h: &H, role: &str, user: Snowflak
     }
 }
 
-/// Add someone to a project's leads and give them its Lead role.
+/// Add someone to a project's leads and give them its Lead role. `Err` says
+/// why not: it can't go through the config, or the Lead role has grown too
+/// powerful to give (then nothing is recorded or given).
 pub async fn add_lead<H: Host>(h: &H, slug: &str, lead_role: &str, user: Snowflake) -> Result<Said, Said> {
+    add_lead_unless(h, slug, lead_role, user).await.map_err(|(why, _)| why)
+}
+
+/// [`add_lead`], whose `Err` also says whether it's because the Lead role
+/// grew too powerful (so it mustn't be given some other way either).
+pub(crate) async fn add_lead_unless<H: Host>(
+    h: &H,
+    slug: &str,
+    lead_role: &str,
+    user: Snowflake,
+) -> Result<Said, (Said, bool)> {
     if let Some(why) = h.unwritable() {
-        return Err(Said::new().text(why));
+        return Err((Said::new().text(why), false));
     }
     if let Some(why) = grown_too_powerful(h, &[lead_role.to_owned()]).await {
-        return Ok(why);
+        return Err((why, true));
     }
     let led = h.cfg().projects.iter().any(|p| p.slug == slug && p.leads.contains(&user));
     let ops = if led { Vec::new() } else { vec![Op::AddLead { slug: slug.to_owned(), user }] };
@@ -652,9 +673,14 @@ pub async fn add_lead<H: Host>(h: &H, slug: &str, lead_role: &str, user: Snowfla
         Ok(r) => Ok(Said::new().text("Added to the project's leads.").then(r.said)),
         Err(e) => {
             tracing::warn!("recording a holder failed: {e:#}");
-            Err(Said::new().text(fmt::error(&e)))
+            Err((Said::new().text(fmt::error(&e)), false))
         }
     }
+}
+
+/// "Couldn't make @u a lead of **X**." heading a refusal.
+fn couldnt_make_lead(name: &str, user: Snowflake) -> Said {
+    Said::new().text("Couldn't make ").user(user).text(" a lead of ").strong(name).text(". ")
 }
 
 /// Make someone a lead of a project: checked, recorded, given and audited.
@@ -669,7 +695,8 @@ pub async fn add_project_lead<H: Host>(h: &H, slug: &str, user: Snowflake, by: &
     if !p.lead_role {
         return Err(Said::new().strong(&p.name).text(" has no Lead role."));
     }
-    let said = add_lead(h, slug, &p.lead_role_key(), user).await?;
+    let said =
+        add_lead(h, slug, &p.lead_role_key(), user).await.map_err(|why| couldnt_make_lead(&p.name, user).then(why))?;
     audit(h, by, AuditAction::MadeLead, Some(slug), Some(&user.to_string())).await;
     Ok(said.then(queue::tell_lead(h, slug, user).await))
 }

@@ -90,7 +90,12 @@ pub fn overview(f: &mut Frame, area: Rect, app: &App) {
         Loaded::Got((a, _)) => lines.extend(a.iter().take(15).map(|e| {
             let what = [Some(e.action.as_str()), e.target.as_deref(), e.detail.as_deref()];
             let what: Vec<&str> = what.into_iter().flatten().collect();
-            Line::from(format!("  {}  {}  {}", super::when(e.ts), e.actor.as_deref().unwrap_or("-"), what.join(" ")))
+            Line::from(format!(
+                "  {}  {}  {}",
+                super::when(e.ts),
+                e.actor_name.as_deref().or(e.actor.as_deref()).unwrap_or("-"),
+                what.join(" ")
+            ))
         })),
     }
     if let Loaded::Got((_, Ok(changes))) = &app.activity

@@ -345,7 +345,7 @@ pub async fn reject_rest_form(ctx: &Ctx, i: &Interaction, role: &str) {
     if !ctx.is_admin(i.member.as_ref()) {
         return ctx.respond(i, &ui::ephemeral(&crate::manage::admins_only(&ctx.cfg()))).await;
     }
-    let reason = ui::input("reason", "Why? (optional)", TextInputStyle::Paragraph, false, Some("Told to each of them"));
+    let reason = ui::input("reason", "Reason (optional, sent to them)", TextInputStyle::Paragraph, false, None);
     let form = vec![ui::described(reason, "Sent to everyone still waiting, and kept with each application.")];
     let label = chipsoc_admin::rounds::label(&ctx.cfg(), role);
     let title = format!("Reject the rest: {label}");
@@ -382,7 +382,11 @@ pub async fn make_lead(ctx: &Ctx, i: &Interaction, id: i64) {
         Err(why) => return ctx.respond(i, &ui::ephemeral(&why.markdown())).await,
     };
     ctx.respond(i, &ui::defer_update()).await;
-    let text = chipsoc_admin::lead(ctx, &app, &key, &admin).await;
+    let text = match chipsoc_admin::lead(ctx, &app, &key, &admin).await {
+        Ok(text) => text,
+        // The card keeps its Make lead button, to try again once fixed.
+        Err(why) => return ctx.follow_up(i, &why.markdown()).await,
+    };
     let original = i.message.as_ref().map(|m| m.content.clone()).unwrap_or_default();
     ctx.edit_response(i, &chipsoc_admin::fmt::with_note(&original, &chipsoc_admin::made_lead(&admin, &text)), &[])
         .await;

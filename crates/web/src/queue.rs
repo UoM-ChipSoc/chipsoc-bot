@@ -77,7 +77,13 @@ fn said(d: chipsoc_admin::Decided) -> Result<chipsoc_admin::Said, chipsoc_admin:
     if d.pending {
         return Err(Said::new().text("Accept didn't go through, so it's still waiting.").then(d.outcome));
     }
-    Ok(Said::new().text(if d.accepted { "Accepted." } else { "Rejected." }).then(d.outcome))
+    let head = match (d.accepted, d.told) {
+        (true, true) => "Accepted; they've been told by DM.",
+        (true, false) => "Accepted.",
+        (false, true) => "Rejected; they've been told by DM.",
+        (false, false) => "Rejected.",
+    };
+    Ok(Said::new().text(head).then(d.outcome))
 }
 
 fn render(s: &Session, pending: &[Pending], past: &[Past], on: bool, names: &Names) -> Html<String> {
@@ -87,7 +93,7 @@ fn render(s: &Session, pending: &[Pending], past: &[Past], on: bool, names: &Nam
         rsx! {
             h1 { "Review queue" }
             p { class: "hint",
-                "Applications, project ideas, resources, feed and event suggestions, and partners' shares waiting for Accept or Reject. Deciding here also updates the card in Discord and tells whoever sent it."
+                "Applications, project ideas, resources, feed and event suggestions, and partners' shares waiting for Accept or Reject. Deciding here also updates the card in Discord and tells by DM whoever here sent it (a partner isn't told)."
             }
             h2 { "Waiting ({pending.len()})" }
             if !on {
@@ -114,6 +120,7 @@ fn card(s: &Session, p: &Pending, names: &Names) -> Element {
     let id = p.id.to_string();
     let kind = chipsoc_store::AppKind::label_of(&p.kind);
     let form = format!("app-{}", p.id);
+    let (accepting, rejecting, reason) = chipsoc_admin::says_of(&p.kind);
     rsx! {
         section { class: "card", id: "{form}",
             h3 {
@@ -142,25 +149,15 @@ fn card(s: &Session, p: &Pending, names: &Names) -> Element {
                     form { method: "post", action: "/queue/reject",
                         {csrf(s)}
                         {form::hidden(&[("id", &id)])}
-                        label { r#for: "{form}-reason", "Reason (optional, sent to them)" }
+                        label { r#for: "{form}-reason", "{reason}" }
                         textarea { id: "{form}-reason", name: "reason", rows: "3" }
+                        p { class: "hint", "{rejecting}" }
                         button { class: "danger", "Reject" }
                     }
                 }
             }
-            p { class: "hint", "{accept_hint(&p.kind)}" }
+            p { class: "hint", "{accepting}" }
         }
-    }
-}
-
-/// What pressing Accept does, so nobody's surprised.
-fn accept_hint(kind: &str) -> &'static str {
-    match kind {
-        "position" => "Accepting gives them the role and messages them.",
-        "project" => "Accepting puts them on the team (its role and channels) and messages them.",
-        "idea" => "Accepting posts the idea in the ideas forum and messages them.",
-        "resource" => "Accepting posts the link in the resources forum and messages them.",
-        _ => "Accepting follows the feed and messages them.",
     }
 }
 
@@ -206,6 +203,7 @@ mod tests {
             lead: false,
             reason: None,
             pending: true,
+            told: false,
         };
         let said = super::said(failed).unwrap_err();
         assert!(said.starts_with("Accept didn't go through, so it's still waiting.") && !said.contains("Rejected"));
@@ -214,8 +212,17 @@ mod tests {
             "Accept didn't go through, so it's still waiting. Didn't give Treasurer.",
             "plain text"
         );
-        let rejected =
-            Decided { id: 1, accepted: false, outcome: Default::default(), lead: false, reason: None, pending: false };
-        assert_eq!(super::said(rejected).unwrap(), "Rejected.");
+        let mut rejected = Decided {
+            id: 1,
+            accepted: false,
+            outcome: Default::default(),
+            lead: false,
+            reason: None,
+            pending: false,
+            told: false,
+        };
+        assert_eq!(super::said(rejected.clone()).unwrap(), "Rejected.", "a partner's: nobody told");
+        rejected.told = true;
+        assert_eq!(super::said(rejected).unwrap(), "Rejected; they've been told by DM.");
     }
 }

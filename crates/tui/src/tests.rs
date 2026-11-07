@@ -401,6 +401,7 @@ async fn the_queue_rejects_with_a_reason_and_keeps_the_history() {
     let mut h = Harness::new().await;
     h.keys("0fay").await;
     h.fake().join(42);
+    h.fake().state.lock().unwrap().members.last_mut().unwrap()["user"]["username"] = serde_json::json!("ada");
     let store = h.store().await;
     let guild = h.app.cfg.as_ref().unwrap().guild().unwrap().to_string();
     let answers = r#"[{"question":"Why?","answer":"To help"}]"#;
@@ -409,14 +410,14 @@ async fn the_queue_rejects_with_a_reason_and_keeps_the_history() {
 
     h.keys("6").await;
     let s = h.screen();
-    assert_shows(&s, "unknown member (id …42) — Golem");
+    assert_shows(&s, "ada — Golem");
     assert_shows(&s, "To help");
     // j and k move; they never decide anything.
     h.keys("jk").await;
     assert!(h.app.overlay.is_none() && h.fake().dms_to(42).is_empty());
     h.keys("x").await;
     let s = h.screen();
-    assert_shows(&s, "Reject unknown member (id …42)'s application to join Golem");
+    assert_shows(&s, "Reject ada's application to join Golem");
     assert_shows(&s, "Enter  reject");
     h.keys("Full this term").await;
     h.key(KeyCode::Enter).await;
@@ -426,7 +427,7 @@ async fn the_queue_rejects_with_a_reason_and_keeps_the_history() {
 
     h.keys("h").await;
     let s = h.screen();
-    assert_shows(&s, "✗ unknown member (id …42) — Golem");
+    assert_shows(&s, "✗ ada — Golem");
     assert_shows(&s, "Reason       Full this term");
     assert!(!s.contains("make lead"), "only accepted project applicants");
     h.key(KeyCode::Esc).await;

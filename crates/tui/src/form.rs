@@ -138,6 +138,10 @@ impl Input {
         Self { hint, ..self }
     }
 
+    pub fn labelled(self, label: &'static str) -> Self {
+        Self { label, ..self }
+    }
+
     pub fn is_choice(&self) -> bool {
         !matches!(self.value, Value::Text(_))
     }

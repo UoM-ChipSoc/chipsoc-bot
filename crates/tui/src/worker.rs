@@ -216,7 +216,12 @@ impl<R: Rest + Clone + 'static> Worker<R> {
                 if d.pending {
                     bail!("Accept didn't go through, so it's still waiting. {}", d.outcome);
                 }
-                let mark = if d.accepted { "Accepted." } else { "Rejected; they've been told." };
+                let mark = match (d.accepted, d.told) {
+                    (true, true) => "Accepted; they've been told.",
+                    (true, false) => "Accepted.",
+                    (false, true) => "Rejected; they've been told.",
+                    (false, false) => "Rejected.",
+                };
                 let lead = if d.lead { " To make them a lead: h (history), then l." } else { "" };
                 format!("{mark} {}{lead}", d.outcome).replace("  ", " ")
             }

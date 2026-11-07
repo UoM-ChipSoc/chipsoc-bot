@@ -356,7 +356,9 @@ async fn a_window_s_applicants_wait_for_one_card() {
     for (user, token) in [(ADA, "tok-a"), (BEN, "tok-b")] {
         let form = interaction(user, token, 5, false, None);
         crate::review::submit(&ctx, &form, Form::Volunteer("secretary".into()), Values::default()).await;
-        assert!(said(&fake, token)["content"].as_str().unwrap().contains("Applications close on 1 January 2999"));
+        assert!(
+            said(&fake, token)["content"].as_str().unwrap().contains("Applications close on Tuesday 1 January 2999")
+        );
     }
     let review = ctx.cfg().desired.lock.channel("review").unwrap().to_string();
     let lines: Vec<Value> =
@@ -370,7 +372,7 @@ async fn a_window_s_applicants_wait_for_one_card() {
     ctx.set_cfg(Arc::new(cfg));
     let late = interaction(ADA, "tok-late", 5, false, None);
     crate::review::submit(&ctx, &late, Form::Volunteer("secretary".into()), Values::default()).await;
-    assert!(said(&fake, "tok-late")["content"].as_str().unwrap().contains("closed on 1 January 2020"));
+    assert!(said(&fake, "tok-late")["content"].as_str().unwrap().contains("closed on Wednesday 1 January 2020"));
 
     assert_eq!(chipsoc_admin::rounds::post_closed(&ctx).await.unwrap(), 1);
     let posted = card_last(&fake, &review);

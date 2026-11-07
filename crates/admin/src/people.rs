@@ -107,6 +107,27 @@ fn label(cfg: &Config, role: &str) -> String {
 
 /// Names for `ids`, from the server's member list: nickname, else display
 /// name, else username. Missing ones are left out.
+/// Those of `texts` that are Discord ids.
+pub fn ids<'a>(texts: impl IntoIterator<Item = &'a str>) -> BTreeSet<Snowflake> {
+    texts.into_iter().filter_map(|t| t.parse().ok()).collect()
+}
+
+/// The names of `ids`, for lists that keep people by id: one look at the
+/// member list.
+pub async fn names_of<H: Host>(h: &H, ids: &BTreeSet<Snowflake>) -> HashMap<Snowflake, String> {
+    names(h, ids).await
+}
+
+/// Someone kept by id (`text`) as people know them: their name if `names`
+/// has it, a partner by its name, else as written.
+pub fn named(cfg: &chipsoc_config::Config, names: &HashMap<Snowflake, String>, text: &str) -> String {
+    if let Some(peer) = text.strip_prefix("partner:") {
+        let name = cfg.federation.peers.iter().find(|p| p.id == peer).map_or(peer, |p| p.name.as_str());
+        return format!("{name} (partner)");
+    }
+    text.parse().ok().and_then(|id| names.get(&id).cloned()).unwrap_or_else(|| text.to_owned())
+}
+
 async fn names<H: Host>(h: &H, ids: &BTreeSet<Snowflake>) -> HashMap<Snowflake, String> {
     if ids.is_empty() {
         return HashMap::new();

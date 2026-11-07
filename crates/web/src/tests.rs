@@ -1218,7 +1218,7 @@ async fn the_queue_rejects_with_a_reason_and_keeps_history() {
 
     let done = b.submit("/queue/reject", &[("id", &id.to_string()), ("reason", "Elections are in May.")]).await;
     let page = b.follow(done).await;
-    assert!(page.body.contains("Rejected."), "{}", page.body);
+    assert!(page.body.contains("Rejected; they've been told by DM."), "{}", page.body);
     assert!(
         page.body.contains("Elections are in May.") && page.body.contains("Rejected"),
         "in the history: {}",
@@ -1865,14 +1865,17 @@ async fn the_history_names_who_and_only_the_owner_reverts() {
     b.cookies.clear();
     b.sign_in_with_discord("code-olive").await;
     let page = b.get("/changes/history").await;
-    assert!(page.body.contains("Revert") && page.body.contains("Rewind to here"), "{}", page.body);
+    assert!(page.body.contains("Revert…") && page.body.contains("Rewind to here…"), "{}", page.body);
+    assert!(
+        page.body.contains("Yes, rewind") && page.body.contains("Every later change is undone."),
+        "both ask first: {}",
+        page.body
+    );
     let latest = git_in(&dir, &["rev-parse", "--short", "HEAD"]);
     let done = b.submit("/changes/undo", &[("commit", &latest), ("how", "revert")]).await;
-    assert!(
-        done.body.contains("Saved as a new change: Revert") && done.body.contains("Plan: what would change"),
-        "{}",
-        done.body
-    );
+    assert_eq!(done.location.as_deref(), Some("/changes"), "redirected, so a reload doesn't go back again");
+    let next = b.get("/changes").await;
+    assert!(next.body.contains("Saved as a new change: Revert") && next.body.contains("See the plan"), "{}", next.body);
     assert!(b.projects_toml().contains("status = \"past\""), "the revert reverted");
 }
 

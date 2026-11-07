@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::fmt::plain;
-use crate::{Actor, AuditAction, Host, Said, accept_feed, add_lead, audit, dm, give, log_people, role_name};
+use crate::{Actor, AuditAction, Host, Said, accept_feed, audit, dm, give, log_people, role_name};
 
 /// One question on a form and what they wrote.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,6 +59,9 @@ pub struct Pending {
     /// What it's for, as people know it.
     pub what: String,
     pub user: String,
+    /// Who sent it, as people know them (see [`crate::people::named`]).
+    #[serde(default)]
+    pub from: String,
     pub answers: Vec<Answer>,
     pub as_lead: bool,
     pub created_at: i64,
@@ -71,7 +74,10 @@ pub struct Pending {
 pub async fn pending<H: Host>(h: &H) -> Result<Vec<Pending>> {
     let cfg = h.cfg();
     let apps = h.db().pending_applications().await?;
+    let ids = crate::people::ids(apps.iter().map(|a| a.user.as_str()));
+    let names = crate::people::names_of(h, &ids).await;
     let one = |a: Application| Pending {
+        from: crate::people::named(&cfg, &names, &a.user),
         id: a.id,
         kind: a.kind.as_str().to_owned(),
         what: what(&cfg, &a),
@@ -120,6 +126,9 @@ pub struct Decided {
     /// Accepting didn't go through (nothing was given), so it's waiting for a decision again.
     #[serde(default)]
     pub pending: bool,
+    /// Whether whoever sent it was told by DM (never, for a partner's).
+    #[serde(default)]
+    pub told: bool,
 }
 
 impl Decided {
@@ -154,9 +163,15 @@ pub struct Past {
     pub target: String,
     pub what: String,
     pub user: String,
+    /// Who sent it, as people know them (see [`crate::people::named`]).
+    #[serde(default)]
+    pub from: String,
     /// `accepted` or `rejected`.
     pub status: String,
     pub reviewed_by: Option<String>,
+    /// Who decided, as people know them.
+    #[serde(default)]
+    pub by: Option<String>,
     pub reviewed_at: Option<i64>,
     pub reason: Option<String>,
     pub created_at: i64,
@@ -169,7 +184,12 @@ pub struct Past {
 pub async fn history<H: Host>(h: &H, limit: i64) -> Result<Vec<Past>> {
     let cfg = h.cfg();
     let rows = h.db().decided_applications(limit).await?;
+    let ids =
+        crate::people::ids(rows.iter().flat_map(|d| [Some(d.app.user.as_str()), d.reviewed_by.as_deref()]).flatten());
+    let names = crate::people::names_of(h, &ids).await;
     let one = |d: chipsoc_store::Decision| Past {
+        from: crate::people::named(&cfg, &names, &d.app.user),
+        by: d.reviewed_by.as_deref().map(|b| crate::people::named(&cfg, &names, b)),
         id: d.app.id,
         kind: d.app.kind.as_str().to_owned(),
         what: what(&cfg, &d.app),
@@ -274,7 +294,7 @@ pub async fn settle_with<H: Host>(h: &H, app: &Application, accept: bool, why: O
             ),
         )
         .await;
-        return Decided { id: app.id, accepted: false, outcome, lead: false, reason: None, pending: true };
+        return Decided { id: app.id, accepted: false, outcome, lead: false, reason: None, pending: true, told: false };
     }
     let why = reason(why);
     if let Some(r) = &why
@@ -292,18 +312,22 @@ pub async fn settle_with<H: Host>(h: &H, app: &Application, accept: bool, why: O
     if !accept && app.kind.is_partner() {
         crate::shares::rejected(h, app).await;
     }
+    let mut was_told = false;
     if let Ok(user) = app.user.parse::<Snowflake>() {
         let mut msg = told(&cfg, app, accept, why.is_some(), link.as_deref(), waits);
         if let Some(r) = &why {
             msg.push_str(&format!("\n> {}", r.replace('\n', "\n> ")));
         }
-        if let Err(why) = dm(h, user, &msg, None).await {
-            // On the card, where the reviewer sees it, and in the log.
-            outcome = outcome.then(format!("(Couldn't DM them: {why}.)").as_str());
-            log_people(h, &format!("⚠️ Couldn't DM <@{user}> about what they sent: {why}.")).await;
+        match dm(h, user, &msg, None).await {
+            Ok(()) => was_told = true,
+            Err(why) => {
+                // On the card, where the reviewer sees it, and in the log.
+                outcome = outcome.then(format!("(Couldn't DM them: {why}.)").as_str());
+                log_people(h, &format!("⚠️ Couldn't DM <@{user}> about what they sent: {why}.")).await;
+            }
         }
     }
-    Decided { id: app.id, accepted: accept, outcome, lead, reason: why, pending: false }
+    Decided { id: app.id, accepted: accept, outcome, lead, reason: why, pending: false, told: was_told }
 }
 
 /// Who sent an application: a mention, or the partner that shared it.
@@ -388,6 +412,50 @@ fn told(
             _,
         ) => String::new(),
     }
+}
+
+/// What pressing Accept on an entry of `kind` does, and who's told: one
+/// sentence, the same on review cards' forms, the web, the TUI and the CLI.
+pub fn accept_says(kind: AppKind) -> &'static str {
+    match kind {
+        AppKind::Position => "Accepting gives them the role (recorded in the config) and tells them by DM.",
+        AppKind::Project => "Accepting puts them on the team (its role and channels) and tells them by DM.",
+        AppKind::Idea => "Accepting posts the idea in the ideas forum and tells them by DM.",
+        AppKind::Resource => "Accepting posts the link in the resources forum and tells them by DM.",
+        AppKind::Feed => "Accepting follows the feed and tells them by DM.",
+        AppKind::Event => "Accepting puts the event on the server's calendar and tells them by DM.",
+        AppKind::PartnerResource
+        | AppKind::PartnerQuestion
+        | AppKind::PartnerFeed
+        | AppKind::PartnerEvent
+        | AppKind::PartnerAnnouncement => "Accepting posts it here, as shown; the partner isn't told.",
+    }
+}
+
+/// What pressing Reject on an entry of `kind` does, and who's told (see [`accept_says`]).
+pub fn reject_says(kind: AppKind) -> &'static str {
+    if kind.is_partner() {
+        "Rejecting leaves it out; the partner isn't told, and a reason is only kept in the history."
+    } else {
+        "Rejecting tells them by DM, with your reason if you give one."
+    }
+}
+
+/// The label of Reject's reason box for an entry of `kind`: who reads it.
+pub fn reason_label(kind: AppKind) -> &'static str {
+    if kind.is_partner() { "Reason (optional, kept in the history)" } else { "Reason (optional, sent to them)" }
+}
+
+/// [`accept_says`], [`reject_says`] and [`reason_label`] for a kind as stored;
+/// one this doesn't know reads as a member's.
+pub fn says_of(kind: &str) -> (&'static str, &'static str, &'static str) {
+    let k = AppKind::of(kind);
+    let member = "Deciding tells them by DM.";
+    (
+        k.map_or(member, accept_says),
+        k.map_or(member, reject_says),
+        k.map_or("Reason (optional, sent to them)", reason_label),
+    )
 }
 
 /// Claim and settle, then mark the review card (for front ends other than its buttons).
@@ -634,25 +702,31 @@ pub async fn claim_lead<H: Host>(h: &H, id: i64) -> Result<(Application, String)
     }
 }
 
-/// Make a claimed applicant a lead; says what happened.
-pub async fn lead<H: Host>(h: &H, app: &Application, key: &str, by: &Actor) -> Said {
-    let Ok(user) = app.user.parse::<Snowflake>() else { return Said::new() };
+/// Make a claimed applicant a lead; says what happened. `Err`: they weren't
+/// (the Lead role is too powerful to give, say), so nobody is told.
+pub async fn lead<H: Host>(h: &H, app: &Application, key: &str, by: &Actor) -> Result<Said, Said> {
+    let Ok(user) = app.user.parse::<Snowflake>() else { return Err("That application has no member.".into()) };
     if let Some(why) = crate::too_powerful_to_give(h, key).await {
-        return why;
+        return Err(why);
     }
-    let said = match add_lead(h, &app.target, key, user).await {
+    let said = match crate::add_lead_unless(h, &app.target, key, user).await {
         Ok(said) => said,
-        Err(why) => crate::give_unrecorded(h, user, &[key.to_owned()], &why).await.0,
+        Err((why, true)) => return Err(why),
+        Err((why, false)) => match crate::give_unrecorded(h, user, &[key.to_owned()], &why).await {
+            (said, true) => said,
+            (said, false) => return Err(said),
+        },
     };
     audit(h, by, AuditAction::MadeLead, Some(&app.target), Some(&app.user)).await;
-    said.then(tell_lead(h, &app.target, user).await)
+    Ok(said.then(tell_lead(h, &app.target, user).await))
 }
 
 /// DM someone just made a lead of a project; says so if it couldn't.
 pub(crate) async fn tell_lead<H: Host>(h: &H, slug: &str, user: Snowflake) -> Said {
     let cfg = h.cfg();
     let name = cfg.projects.iter().find(|p| p.slug == slug).map_or_else(|| slug.to_owned(), |p| p.name.clone());
-    let text = format!("⭐ You're now a lead of **{name}** in {}. Thanks for taking it on!", cfg.bot.name);
+    let here = if cfg.bot.name.is_empty() { String::new() } else { format!(" in {}", cfg.bot.name) };
+    let text = format!("⭐ You're now a lead of **{name}**{here}. Thanks for taking it on!");
     match dm(h, user, &text, None).await {
         Ok(()) => Said::new(),
         Err(why) => Said::new().text(format!("(Couldn't DM them: {why}.)")),
@@ -706,7 +780,7 @@ pub fn made_lead(by: &Actor, said: &Said) -> String {
 /// Claim and make a lead, then mark the review card. Says what happened.
 pub async fn make_lead<H: Host>(h: &H, id: i64, by: &Actor) -> Result<Said, Said> {
     let (app, key) = claim_lead(h, id).await?;
-    let said = lead(h, &app, &key, by).await;
+    let said = lead(h, &app, &key, by).await?;
     if let Err(e) = mark_card(h, &app, &made_lead(by, &said)).await {
         tracing::warn!("marking the review card failed: {e:#}");
     }

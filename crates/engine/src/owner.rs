@@ -423,7 +423,7 @@ mod tests {
         role.admin_role = Some("member".into());
         assert_eq!(check(&admin, &Ask::Approve { old: &old, new: &role }, Some(OWNER)), Err(OwnerOnly::Trust));
         let mut drift = old.clone();
-        drift.drift = chipsoc_config::bot::DriftMode::Report;
+        drift.drift = chipsoc_config::bot::DriftMode::Undo;
         assert_eq!(check(&admin, &Ask::Approve { old: &old, new: &drift }, Some(OWNER)), Err(OwnerOnly::DriftMode));
         let mut held = old.clone();
         held.holders.insert("admin".into(), vec![OWNER]);

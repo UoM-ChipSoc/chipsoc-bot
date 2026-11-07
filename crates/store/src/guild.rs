@@ -164,6 +164,12 @@ impl AppKind {
         }
     }
 
+    /// A kind as stored (`"partner-resource"`), if it's one this knows.
+    pub fn of(kind: &str) -> Option<Self> {
+        let k = Self::parse(kind);
+        (k.as_str() == kind).then_some(k)
+    }
+
     /// [`AppKind::label`] for a kind as stored (`"partner-resource"`); one this doesn't know reads as it is.
     pub fn label_of(kind: &str) -> String {
         let k = Self::parse(kind);

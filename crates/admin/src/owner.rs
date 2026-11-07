@@ -71,6 +71,38 @@ pub fn undo_said(made: &Result<Option<Undid>, String>) -> crate::Said {
     }
 }
 
+/// What to ask before [`undo`]: change `short` (with its `subject`, if
+/// known), the same in every front end.
+pub fn undo_question(short: &str, subject: Option<&str>, how: Undo) -> crate::Said {
+    let mut what = crate::Said::new().code(short);
+    if let Some(s) = subject {
+        what = what.text(format!(" (\"{}\")", s.trim()));
+    }
+    let after = " It's saved as a new change, and Discord changes only when you apply it.";
+    match how {
+        Undo::Revert => crate::Said::new()
+            .text("Undo change ")
+            .then(what)
+            .text("? Only that change is undone; later ones stay.")
+            .text(after),
+        Undo::Rewind => crate::Said::new()
+            .text("Put the config back as it was right after ")
+            .then(what)
+            .text("? ")
+            .strong("Every later change is undone.")
+            .text(after),
+    }
+}
+
+/// [`undo_question`] for a commit id (or the start of one) in the config at `dir`.
+pub fn undo_question_for(dir: &std::path::Path, commit: &str, how: Undo) -> crate::Said {
+    let found = git::log(dir, 1000).into_iter().find(|c| !commit.is_empty() && c.id.starts_with(commit));
+    match found {
+        Some(c) => undo_question(&c.short, Some(&c.subject), how),
+        None => undo_question(commit, None, how),
+    }
+}
+
 /// One thing done through the bot, for `/server history` and the web's History page.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Done {

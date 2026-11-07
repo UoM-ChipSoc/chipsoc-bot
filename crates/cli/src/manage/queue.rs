@@ -12,16 +12,17 @@ pub enum QueueCmd {
         /// Its number in `queue list`.
         id: i64,
     },
-    /// Accept: they get the role (or join the team, or it's posted or followed) and a DM.
+    /// Accept: they get the role (or join the team, or it's posted or followed) and a DM;
+    /// a partner's is posted, and the partner isn't told.
     Accept {
         /// Its number in `queue list`.
         id: i64,
     },
-    /// Reject; they get a DM.
+    /// Reject; they get a DM (a partner isn't told).
     Reject {
         /// Its number in `queue list`.
         id: i64,
-        /// Reason (optional, sent to them).
+        /// Reason (optional): sent to them, or for a partner's, only kept in the history.
         #[arg(long)]
         reason: Option<String>,
     },
@@ -83,19 +84,21 @@ pub async fn queue<R: Rest + Clone>(c: &Ctx<'_, R>, cmd: QueueCmd) -> Result<()>
             Ok(())
         }
         QueueCmd::Reject { id, reason } => {
+            let kind = c.b.queue().await?.into_iter().find(|a| a.id == id).map(|a| a.kind).unwrap_or_default();
+            let (_, rejecting, label) = chipsoc_admin::says_of(&kind);
             let reason = match reason {
                 Some(r) => Some(r),
-                None if tty() && !c.yes => edits::optional(&Text::new("Reason, told to them (optional)").prompt()?),
+                None if tty() && !c.yes => edits::optional(&Text::new(label).prompt()?),
                 None => None,
             };
-            if !confirm(&format!("Reject application #{id}? They're told by DM."), c.yes)? {
+            if !confirm(&format!("Reject #{id}? {rejecting}"), c.yes)? {
                 return Ok(());
             }
             let d = c.b.decide(id, false, reason.as_deref()).await?;
             if c.json {
                 return print_json(&d);
             }
-            println!("✓ Rejected #{id}.");
+            println!("✓ Rejected #{id}.{}", if d.told { " They've been told by DM." } else { "" });
             Ok(())
         }
         QueueCmd::Lead { id } => c.done(&c.b.make_lead(id).await?),

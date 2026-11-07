@@ -105,7 +105,7 @@ impl Default for BotConfig {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Drift {
-    /// `undo` (default) or `report`.
+    /// `report` (default) or `undo`.
     #[serde(default)]
     pub mode: DriftMode,
 }
@@ -121,9 +121,9 @@ impl Drift {
 #[serde(rename_all = "lowercase")]
 pub enum DriftMode {
     /// Put back what the config says, and say so in the bot log.
-    #[default]
     Undo,
     /// Only report the difference.
+    #[default]
     Report,
 }
 
@@ -215,12 +215,12 @@ impl Position {
         self.open && self.closes_at(tz).ok().flatten().is_none_or(|at| now < at)
     }
 
-    /// When applications close, for people: "20 November 2026", or with the time if one was given.
+    /// When applications close, for people: "Friday 20 November 2026", or with the time if one was given.
     pub fn closes_label(&self) -> Option<String> {
         let text = self.closes.as_deref()?.trim();
         let (date, time) = text.split_once(' ').map_or((text, None), |(d, t)| (d, Some(t.trim())));
         let day = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?;
-        let day = day.format("%-d %B %Y").to_string();
+        let day = day.format("%A %-d %B %Y").to_string();
         Some(match time {
             Some(t) => format!("{day}, {t}"),
             None => day,
@@ -638,10 +638,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn drift_mode_defaults_to_undo() {
+    fn drift_mode_defaults_to_report() {
         let parse = |s: &str| toml::from_str::<BotConfig>(&format!("name = \"T\"\n{s}"));
-        assert_eq!(parse("").unwrap().drift.mode, DriftMode::Undo);
-        assert_eq!(parse("[drift]\nmode = \"report\"").unwrap().drift.mode, DriftMode::Report);
+        assert_eq!(parse("").unwrap().drift.mode, DriftMode::Report);
+        assert_eq!(parse("[drift]\nmode = \"undo\"").unwrap().drift.mode, DriftMode::Undo);
         assert!(parse("[drift]\nmode = \"ignore\"").is_err());
         assert!(!toml::to_string(&BotConfig::default()).unwrap().contains("drift"), "default isn't written");
     }
@@ -721,8 +721,8 @@ mod tests {
         assert!(p("2026-11-20").taking("Europe/London", 1_795_219_199));
         assert!(!p("2026-11-20").taking("Europe/London", 1_795_219_200), "closed");
         assert!(!Position { open: false, ..Position::default() }.taking("Europe/London", 0));
-        assert_eq!(p("2026-11-20").closes_label().as_deref(), Some("20 November 2026"));
-        assert_eq!(p("2026-11-20 18:00").closes_label().as_deref(), Some("20 November 2026, 18:00"));
+        assert_eq!(p("2026-11-20").closes_label().as_deref(), Some("Friday 20 November 2026"));
+        assert_eq!(p("2026-11-20 18:00").closes_label().as_deref(), Some("Friday 20 November 2026, 18:00"));
         let parsed: BotConfig =
             toml::from_str("name = \"T\"\n[[position]]\nrole = \"r\"\ncloses = \"2026-11-20\"\n").unwrap();
         assert_eq!(parsed.positions[0].closes.as_deref(), Some("2026-11-20"));

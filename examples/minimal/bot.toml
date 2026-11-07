@@ -15,3 +15,8 @@ intro = "Help plan events and look after the server."
 [review]
 # Where applications and suggestions wait for Accept or Reject.
 channel = "bot"
+
+# What drift watch does about changes made in Discord instead of the config:
+# "report" (the default) says so in the bot log; "undo" puts them back.
+# [drift]
+# mode = "undo"

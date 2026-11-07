@@ -545,7 +545,7 @@ async fn confirm(ctx: &Ctx, i: &Interaction, j: &Join, d: Draft) {
         text.push_str(&format!("\n⚠️ {problem}"));
     }
     let let_in = access.is_some_and(|a| done.added.contains(&a));
-    if let Some(next) = done_message(j, let_in) {
+    if let Some(next) = done_message(j, let_in, &ctx.cfg().desired.lock) {
         text.push_str(&format!("\n{next}"));
     }
     text.push_str("\nTo change anything later, press the button again or use `/profile`.");
@@ -554,10 +554,14 @@ async fn confirm(ctx: &Ctx, i: &Interaction, j: &Join, d: Draft) {
     ctx.edit_response(i, &text, &[]).await;
 }
 
-/// What to do next, after Confirm: `done_message`, else (when the gate
-/// just let them in) that the server is open.
-fn done_message(j: &Join, let_in: bool) -> Option<String> {
-    j.done_message.clone().or_else(|| (j.gate && let_in).then(|| "The rest of the server is open now.".to_owned()))
+/// What to do next, after Confirm: that the server is open (when the gate
+/// just let them in), then `done_message` with its `{#key}` and `{@key}`
+/// mentions filled in.
+fn done_message(j: &Join, let_in: bool, lock: &chipsoc_config::Lock) -> Option<String> {
+    let open = (j.gate && let_in).then(|| "The rest of the server is open now.".to_owned());
+    let said = j.done_message.as_deref().map(|m| chipsoc_config::template::render(m, lock).content);
+    let lines: Vec<String> = open.into_iter().chain(said.filter(|m| !m.is_empty())).collect();
+    (!lines.is_empty()).then(|| lines.join(" "))
 }
 
 /// "Still right" on the yearly DM.
@@ -867,13 +871,21 @@ mod tests {
         j.access_role = Some("joined".into());
         assert_eq!(you_get(&j, &["EEE".into()]).as_deref(), Some("You'll get: EEE."));
         assert_eq!(you_get(&j, &[]), None);
-        assert_eq!(done_message(&j, true), None, "no gate, no message set: nothing to say");
+        let mut lock = chipsoc_config::Lock::default();
+        lock.channels.insert("intros".into(), Snowflake(55));
+        lock.roles.insert("committee".into(), Snowflake(66));
+        assert_eq!(done_message(&j, true, &lock), None, "no gate, no message set: nothing to say");
         j.gate = true;
         assert_eq!(you_get(&j, &["EEE".into()]).as_deref(), Some("You'll get: EEE, and the rest of the server."));
-        assert_eq!(done_message(&j, true).as_deref(), Some("The rest of the server is open now."));
-        assert_eq!(done_message(&j, false), None, "they were in already");
-        j.done_message = Some("Say hi in #introductions.".into());
-        assert_eq!(done_message(&j, false).as_deref(), Some("Say hi in #introductions."));
+        assert_eq!(done_message(&j, true, &lock).as_deref(), Some("The rest of the server is open now."));
+        assert_eq!(done_message(&j, false, &lock), None, "they were in already");
+        j.done_message = Some("Say hi in {#intros}, or ask the {@committee}.".into());
+        assert_eq!(done_message(&j, false, &lock).as_deref(), Some("Say hi in <#55>, or ask the <@&66>."));
+        assert_eq!(
+            done_message(&j, true, &lock).as_deref(),
+            Some("The rest of the server is open now. Say hi in <#55>, or ask the <@&66>."),
+            "a done_message never hides that the gate just opened"
+        );
     }
 
     #[test]

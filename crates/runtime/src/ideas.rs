@@ -21,19 +21,23 @@ pub fn ready(ctx: &Ctx) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether `tag` is one the bot puts on ideas itself, never a member's pick.
+fn bot_tag(i: &chipsoc_config::bot::Ideas, tag: &str) -> bool {
+    [&i.needs_lead_tag, &i.closed_tag].into_iter().flatten().any(|t| t.eq_ignore_ascii_case(tag))
+}
+
 /// The form `[ideas] questions` asks (by default: name, one-line
 /// description, area, what it would do, and whether they'd lead it).
 pub fn form(ctx: &Ctx) -> (String, Vec<Component>) {
     let cfg = ctx.cfg();
     let areas = cfg.bot.projects.as_ref().map(|p| p.areas.join(", ")).unwrap_or_default();
     let lead: Vec<(String, String)> = Lead::ALL.iter().map(|l| (l.label().to_owned(), l.key().to_owned())).collect();
-    // The area becomes a tag on the post: a menu of the forum's tags, if it has any.
+    // The area becomes a tag on the post: a menu of the forum's tags, if it
+    // has any, but not those the bot sets itself (needs a lead, closed).
     let ideas = cfg.bot.ideas.as_ref();
     let tags: Vec<(String, String)> = ideas
         .and_then(|i| cfg.desired.channel(&i.forum).map(|f| (i, f)))
-        .map(|(i, f)| {
-            f.tags.iter().filter(|t| i.needs_lead_tag.as_ref() != Some(*t)).map(|t| (t.clone(), t.clone())).collect()
-        })
+        .map(|(i, f)| f.tags.iter().filter(|t| !bot_tag(i, t)).map(|t| (t.clone(), t.clone())).collect())
         .unwrap_or_default();
     let questions = ideas.map_or_else(default_idea_questions, |i| i.questions.clone());
     let fields = questions
@@ -80,4 +84,17 @@ pub fn vet(ctx: &Ctx, v: &Values) -> Vetted {
     let mut f = Filing::new(AppKind::Idea, &idea.name, format!("{} · {name}", AppKind::Idea.label()), answers, thanks);
     f.lead = idea.lead == Lead::Lead;
     Vetted::Review(f)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_area_menu_leaves_out_the_tags_the_bot_sets() {
+        let i: chipsoc_config::bot::Ideas =
+            toml::from_str("forum = \"ideas\"\nneeds_lead_tag = \"needs-lead\"\nclosed_tag = \"Closed\"").unwrap();
+        assert!(bot_tag(&i, "needs-lead") && bot_tag(&i, "closed") && bot_tag(&i, "CLOSED"));
+        assert!(!bot_tag(&i, "cpu"));
+    }
 }

@@ -55,15 +55,24 @@ pub struct Config {
 /// What `{positions}` and `{projects:open}` list: positions open in
 /// `/volunteer` (label, first line of the intro) and projects taking
 /// applications (name, blurb). Kept in step with bot.toml and projects.toml.
-fn open_lists(bot: &BotConfig, projects: &[Project], desired: &Snapshot) -> (Vec<template::Item>, Vec<template::Item>) {
-    let positions = bot
-        .positions
+/// When every open position closes at the same time, that's said once under
+/// the list; otherwise each says when it closes.
+fn open_lists(bot: &BotConfig, projects: &[Project], desired: &Snapshot) -> template::Open {
+    let open: Vec<&bot::Position> = bot.positions.iter().filter(|p| p.open).collect();
+    let closes: Vec<Option<String>> = open.iter().map(|p| p.closes_label()).collect();
+    let shared = match closes.as_slice() {
+        [Some(first), rest @ ..] if open.len() > 1 && rest.iter().all(|c| c.as_ref() == Some(first)) => {
+            Some(first.clone())
+        }
+        _ => None,
+    };
+    let positions = open
         .iter()
-        .filter(|p| p.open)
-        .map(|p| {
+        .zip(&closes)
+        .map(|(p, closes)| {
             let name = p.label.clone().or_else(|| desired.role(&p.role).map(|r| r.name.clone()));
             let mut about = p.intro.as_deref().map(template::short_line).unwrap_or_default();
-            if let Some(day) = p.closes_label() {
+            if let Some(day) = closes.as_ref().filter(|_| shared.is_none()) {
                 let closes = format!("applications close {day}");
                 about = if about.is_empty() { closes } else { format!("{about} ({closes})") };
             }
@@ -75,7 +84,7 @@ fn open_lists(bot: &BotConfig, projects: &[Project], desired: &Snapshot) -> (Vec
         .filter(|p| p.application.open && p.is_live())
         .map(|p| (p.name.clone(), template::short_line(&p.blurb)))
         .collect();
-    (positions, projects)
+    template::Open { positions, positions_note: shared.map(|day| format!("Applications close {day}.")), projects }
 }
 
 impl Config {
@@ -92,8 +101,7 @@ impl Config {
     /// A post's text with `{positions}` and `{projects:open}` filled in, as
     /// [`Config::load`] does for managed posts (for previews).
     pub fn fill_lists(&self, body: &str) -> String {
-        let (positions, projects) = open_lists(&self.bot, &self.projects, &self.desired);
-        template::lists(body, &positions, &projects)
+        template::lists(body, &open_lists(&self.bot, &self.projects, &self.desired))
     }
 
     pub fn load(dir: &Path) -> Result<Self> {
@@ -124,10 +132,10 @@ impl Config {
             .filter(|p| !(p.application.open && p.is_live()))
             .map(|p| format!("apply:{}", p.slug))
             .collect();
-        let (open_positions, open_projects) = open_lists(&bot, &projects, &desired);
+        let open = open_lists(&bot, &projects, &desired);
         for (key, path) in post_files {
             let body = read_text(&inside(dir, &path)?)?.with_context(|| format!("post file {path} not found"))?;
-            let body = template::lists(&body, &open_positions, &open_projects);
+            let body = template::lists(&body, &open);
             for a in template::button_actions(&body).into_iter().filter(|a| closed.contains(a)) {
                 notes.push(format!("{path}: the `{a}` button is left off while the project isn't taking applications"));
             }
@@ -139,7 +147,7 @@ impl Config {
             .collect();
         for (key, path) in thread_files {
             let body = read_text(&inside(dir, &path)?)?.with_context(|| format!("post file {path} not found"))?;
-            let body = template::lists(&body, &open_positions, &open_projects);
+            let body = template::lists(&body, &open);
             desired.threads.insert(key, template::without_buttons(&body, |a| closed.iter().any(|c| c == a)));
         }
         for p in &projects {

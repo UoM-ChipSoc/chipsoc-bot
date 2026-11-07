@@ -274,9 +274,19 @@ pub const OPEN_PROJECTS: &str = "{projects:open}";
 /// One entry of a [`lists`] list: a name and a short line about it.
 pub type Item = (String, String);
 
+/// What [`lists`] fills in.
+#[derive(Debug, Clone, Default)]
+pub struct Open {
+    pub positions: Vec<Item>,
+    /// A line under the positions (when they all close at once, say).
+    pub positions_note: Option<String>,
+    pub projects: Vec<Item>,
+}
+
 /// Fill in `{positions}` and `{projects:open}` with a bullet per item
 /// ("- **Name**: about"), or a line saying nothing is open.
-pub fn lists(src: &str, positions: &[Item], projects: &[Item]) -> String {
+pub fn lists(src: &str, open: &Open) -> String {
+    let (positions, projects) = (&open.positions, &open.projects);
     let list = |items: &[Item]| {
         if items.is_empty() {
             return "Nothing open right now.".to_owned();
@@ -288,7 +298,11 @@ pub fn lists(src: &str, positions: &[Item], projects: &[Item]) -> String {
     };
     let mut out = src.to_owned();
     if out.contains(POSITIONS) {
-        out = out.replace(POSITIONS, &list(positions));
+        let mut l = list(positions);
+        if let Some(note) = open.positions_note.as_ref().filter(|_| !positions.is_empty()) {
+            l.push_str(&format!("\n{note}"));
+        }
+        out = out.replace(POSITIONS, &l);
     }
     if out.contains(OPEN_PROJECTS) {
         out = out.replace(OPEN_PROJECTS, &list(projects));
@@ -362,13 +376,20 @@ mod tests {
 
     #[test]
     fn lists_of_what_is_open() {
-        let positions = [("Treasurer".to_owned(), "Keeps the books".to_owned()), ("Helper".to_owned(), String::new())];
+        let positions =
+            vec![("Treasurer".to_owned(), "Keeps the books".to_owned()), ("Helper".to_owned(), String::new())];
+        let mut open = Open { positions, ..Default::default() };
         let src = "Open roles:\n{positions}\n\nProjects:\n{projects:open}\n";
         assert_eq!(
-            lists(src, &positions, &[]),
+            lists(src, &open),
             "Open roles:\n- **Treasurer**: Keeps the books\n- **Helper**\n\nProjects:\nNothing open right now.\n"
         );
-        assert_eq!(lists("no lists", &positions, &[]), "no lists");
+        assert_eq!(lists("no lists", &open), "no lists");
+        open.positions_note = Some("Applications close Friday.".into());
+        assert_eq!(
+            lists("{positions}", &open),
+            "- **Treasurer**: Keeps the books\n- **Helper**\nApplications close Friday."
+        );
         assert_eq!(short_line("\n  First line.\nSecond."), "First line.");
         assert_eq!(short_line(&"x".repeat(200)).chars().count(), 120);
     }

@@ -32,6 +32,9 @@ pub struct FeedInfo {
     /// Channel key its items are posted in.
     pub channel: String,
     pub added_by: Option<String>,
+    /// Who added it, as people know them.
+    #[serde(default)]
+    pub added_by_name: Option<String>,
     pub added_at: i64,
     /// Not checked for new items while paused.
     pub paused: bool,
@@ -39,7 +42,11 @@ pub struct FeedInfo {
 
 pub async fn feeds<H: Host>(h: &H) -> Result<Vec<FeedInfo>> {
     let all = h.db().feeds().await?;
+    let ids = crate::people::ids(all.iter().filter_map(|f| f.added_by.as_deref()));
+    let names = crate::people::names_of(h, &ids).await;
+    let cfg = h.cfg();
     let info = |f: chipsoc_store::Feed| FeedInfo {
+        added_by_name: f.added_by.as_deref().map(|b| crate::people::named(&cfg, &names, b)),
         id: f.id,
         url: f.url,
         channel: f.channel_key,

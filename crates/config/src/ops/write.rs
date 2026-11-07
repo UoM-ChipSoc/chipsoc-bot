@@ -563,7 +563,7 @@ fn section_table(s: &Section) -> Result<(&'static str, Option<Table>)> {
         Section::Profile(v) => ("profile", t(v)?),
         Section::Resources(v) => ("resources", t(v)?),
         Section::Web(v) => ("web", t(v)?),
-        Section::Drift(DriftMode::Undo) => ("drift", None),
+        Section::Drift(DriftMode::Report) => ("drift", None),
         Section::Drift(mode) => ("drift", Some(to_table(&crate::bot::Drift { mode: *mode })?)),
     })
 }

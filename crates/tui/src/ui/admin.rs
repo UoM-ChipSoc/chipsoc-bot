@@ -34,16 +34,16 @@ pub fn queue(f: &mut Frame, area: Rect, app: &App) {
             .iter()
             .map(|p| {
                 let mark = if p.status == "accepted" { Span::from("✓ ").green() } else { Span::from("✗ ").red() };
-                Line::from(vec![mark, Span::raw(format!("{} — {}", lists::member(&p.user), p.what))])
+                Line::from(vec![mark, Span::raw(format!("{} — {}", lists::sender(&p.user, &p.from), p.what))])
             })
             .collect();
         let mut details = Vec::new();
         if let Some(p) = h.get(app.sel()) {
             let decision = if p.status == "accepted" { "Accepted" } else { "Rejected" };
             details = vec![
-                Line::from(format!("{}: {}", lists::member(&p.user), lists::item(&p.kind, &p.what))).bold(),
+                Line::from(format!("{}: {}", lists::sender(&p.user, &p.from), lists::item(&p.kind, &p.what))).bold(),
                 field("Decision", decision),
-                field("By", p.reviewed_by.clone().unwrap_or_else(|| "-".into())),
+                field("By", p.by.clone().or_else(|| p.reviewed_by.clone()).unwrap_or_else(|| "-".into())),
                 field("When", p.reviewed_at.map(when).unwrap_or_default()),
                 field("Reason", p.reason.clone().unwrap_or_else(|| "none given".into())),
                 field("Sent", when(p.created_at)),
@@ -76,10 +76,11 @@ pub fn queue(f: &mut Frame, area: Rect, app: &App) {
         )];
         return text(f, area, "Review queue", lines, 0);
     }
-    let labels = q.iter().map(|p| Line::from(format!("{} — {}", lists::member(&p.user), p.what))).collect();
+    let labels = q.iter().map(|p| Line::from(format!("{} — {}", lists::sender(&p.user, &p.from), p.what))).collect();
     let mut details = Vec::new();
     if let Some(p) = q.get(app.sel()) {
-        details.push(Line::from(format!("{}: {}", lists::member(&p.user), lists::item(&p.kind, &p.what))).bold());
+        details
+            .push(Line::from(format!("{}: {}", lists::sender(&p.user, &p.from), lists::item(&p.kind, &p.what))).bold());
         details.push(field("Kind", lists::kind_label(&p.kind)));
         details.push(field("Sent", when(p.created_at)));
         details.push(field("Discord id", p.user.clone()).italic());
@@ -189,7 +190,7 @@ pub fn feeds(f: &mut Frame, area: Rect, app: &App) {
             Line::from(x.url.clone()).bold(),
             field("Posts in", format!("#{}", x.channel)),
             field("State", if x.paused { "paused" } else { "following" }),
-            field("Added by", x.added_by.clone().unwrap_or_else(|| "-".into())),
+            field("Added by", x.added_by_name.clone().or_else(|| x.added_by.clone()).unwrap_or_else(|| "-".into())),
             field("Added", when(x.added_at)),
         ];
     }

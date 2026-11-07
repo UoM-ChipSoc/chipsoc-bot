@@ -70,7 +70,7 @@ pub fn command(cfg: &Config) -> Command {
         ),
         subcommand(
             "revert",
-            "Undo a config change, then apply it (the server owner only)",
+            "Undo a config change, then apply it (the server owner only; asks first)",
             vec![
                 text("change", "Its id, from /server history"),
                 CommandOption {
@@ -196,8 +196,8 @@ pub fn command(cfg: &Config) -> Command {
             "Project ideas in the ideas forum",
             vec![subcommand(
                 "close",
-                "Close an idea's post: tagged closed, archived and locked",
-                vec![text("thread", "Its link or id"), optional("reason", "Why (optional, posted in it)")],
+                "Close an idea's post: locked and archived, never deleted (asks first)",
+                vec![text("post", "Its link or id"), optional("reason", "Why (optional, posted in it)")],
             )],
         ));
     }

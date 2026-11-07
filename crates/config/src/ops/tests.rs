@@ -395,7 +395,7 @@ fn ops() -> Vec<(Op, Check)> {
         ),
         (section(Section::Resources(Some(Resources { forum: s("resources") }))), |c| c.bot.resources.is_some()),
         (section(Section::Web(Some(Web { url: s("https://x"), share_device: None }))), |c| c.bot.web.is_some()),
-        (section(Section::Drift(DriftMode::Report)), |c| c.bot.drift.mode == DriftMode::Report),
+        (section(Section::Drift(DriftMode::Undo)), |c| c.bot.drift.mode == DriftMode::Undo),
         (Op::SetFederation { set: FederationField::Name(s("them")) }, |c| c.federation.name == "them"),
         (Op::SetFederation { set: FederationField::Inbox(Some(s("rules"))) }, |c| c.federation.inbox.is_some()),
         (Op::SetFederation { set: FederationField::Publish(strings(&["general"])) }, |c| {

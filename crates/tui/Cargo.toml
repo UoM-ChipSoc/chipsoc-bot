@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+chipsoc-admin.workspace = true
 chipsoc-client.workspace = true
 chipsoc-config.workspace = true
 chipsoc-discord.workspace = true
