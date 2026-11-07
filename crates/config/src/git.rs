@@ -537,16 +537,28 @@ pub fn log(dir: &Path, limit: usize) -> Vec<Commit> {
     out.split('\x1e').filter_map(commit).collect()
 }
 
-/// Who made the commits that changed any of `paths` (as [`Commit::who`]):
-/// those after `since` when this checkout has it, else just the latest. At most 50.
-pub fn authors(dir: &Path, since: Option<&str>, paths: &[&str]) -> Vec<String> {
+/// What tells a commit apart through rebases: its author time and whole
+/// message, hashed (a rebase keeps both; its id changes). The bot keeps
+/// this for each commit it makes, with who asked for it, so who made a
+/// change is known from its own records, never from what a commit says.
+pub fn fingerprint(dir: &Path, commit: &str) -> Option<String> {
+    if commit != "HEAD" && !(commit.bytes().all(|b| b.is_ascii_hexdigit()) && !commit.is_empty()) {
+        return None;
+    }
+    let out = git(dir, &["log", "-1", "--format=%at%x1f%B", commit, "--"]).ok()?;
+    Some(chipsoc_model::stable_hash(out.trim()))
+}
+
+/// The commits that changed any of `paths`, as [`fingerprint`]s: those after
+/// `since` when this checkout has it, else just the latest. At most 50.
+pub fn changed(dir: &Path, since: Option<&str>, paths: &[&str]) -> Vec<String> {
     let range = since.filter(|c| contains(dir, c)).map(|c| format!("{c}..HEAD"));
-    let mut args = vec!["log", LOG_FORMAT, "--name-only", if range.is_some() { "-n50" } else { "-n1" }];
+    let mut args = vec!["log", "--format=%x1e%at%x1f%B", if range.is_some() { "-n50" } else { "-n1" }];
     args.extend(range.as_deref());
     args.push("--");
     args.extend(paths);
     let out = git(dir, &args).unwrap_or_default();
-    out.split('\x1e').filter_map(commit).map(|c| c.who).collect()
+    out.split('\x1e').map(str::trim).filter(|r| !r.is_empty()).map(chipsoc_model::stable_hash).collect()
 }
 
 fn commit(record: &str) -> Option<Commit> {
@@ -735,6 +747,33 @@ mod tests {
         assert_eq!(read(&b.join("server.toml")), "y");
         assert!(!pull(&b).unwrap());
         assert_eq!(upstream_state(&b), Upstream::Current);
+    }
+
+    /// A commit's fingerprint stays through a rebase (its id doesn't), and
+    /// `changed` lists what touched the given files since a commit.
+    #[test]
+    fn fingerprints_survive_a_rebase() {
+        let (_root, _, a, b) = repos();
+        put(a.join("server.toml"), "x");
+        save(&a, "first").unwrap();
+        pull(&b).unwrap();
+        put(b.join("roles.toml"), "r");
+        // Committed, not pushed yet (offline, say)...
+        assert!(commit_config(&b, "Roles by ada\n\nDiscord-User: 7").unwrap());
+        let (id, fp) = (head_full(&b).unwrap(), fingerprint(&b, "HEAD").unwrap());
+        // ...while a's checkout pushes: b's next save rebases its commit.
+        put(a.join("server.toml"), "y");
+        save(&a, "second").unwrap();
+        put(b.join("members.toml"), "m");
+        save(&b, "Members by ada").unwrap();
+        let rebased = git(&b, &["log", "--format=%H", "--grep=Roles by ada"]).unwrap();
+        assert_ne!(rebased.trim(), id, "rebased");
+        assert_eq!(fingerprint(&b, rebased.trim()).as_deref(), Some(fp.as_str()));
+        assert!(changed(&b, None, &["roles.toml"]).contains(&fp));
+        let first = git(&b, &["rev-list", "--max-parents=0", "HEAD"]).unwrap();
+        let since = changed(&b, Some(first.trim()), &["roles.toml", "members.toml"]);
+        assert_eq!(since.len(), 2, "{since:?}");
+        assert_eq!(fingerprint(&b, "--all"), None, "only ids reach git");
     }
 
     /// Commit `files` in `a` as the bot would, signed by `who`.

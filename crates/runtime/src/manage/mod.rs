@@ -117,6 +117,8 @@ pub enum Cmd {
     },
     /// `history`: the config's latest changes, or what one admin did this week.
     Changes(Option<Snowflake>),
+    /// `approvals`: what waits for an Approve, with its card posted again.
+    Approvals,
     /// `revert`: go back on a config change (the server owner only).
     Undo {
         commit: String,
@@ -348,6 +350,7 @@ pub fn parse(options: &[CommandDataOption]) -> Result<Cmd, String> {
         (None, "web") => Cmd::Basic(Basic::Web),
         (None, "help") => Cmd::Basic(Basic::Help),
         (None, "history") => Cmd::Changes(args.maybe_user("admin")),
+        (None, "approvals") => Cmd::Approvals,
         (None, "revert") => {
             let commit = args.need("change")?;
             if commit.len() > 40 || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -661,6 +664,7 @@ async fn run(ctx: &Ctx, cmd: &Cmd, by: &Actor) -> (String, Vec<Component>) {
         Cmd::History => history(ctx).await,
         Cmd::Changes(user) => changes(ctx, *user).await,
         Cmd::Undo { commit, how } => return undo(ctx, commit, *how, by).await,
+        Cmd::Approvals => crate::trust::approvals(ctx).await,
         Cmd::Decide { id, accept, reason } => {
             return match chipsoc_admin::decide_with(ctx, *id, *accept, reason.as_deref(), by).await {
                 Ok(d) if d.pending => (
@@ -1151,7 +1155,7 @@ mod tests {
         });
         assert!(shares_on_demand(&cfg));
         let text = help(&cfg);
-        assert!(text.chars().count() <= ui::MAX_CONTENT - 1, "{} characters: {text}", text.chars().count());
+        assert!(text.chars().count() < ui::MAX_CONTENT, "{} characters: {text}", text.chars().count());
         assert!(text.ends_with("then any command."), "nothing cut: {text}");
         for cmd in ["/record start|stop", "/server feed", "/server idea close", "/server resource", "approvals"] {
             assert!(text.contains(cmd), "{cmd} missing: {text}");

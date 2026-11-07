@@ -41,6 +41,8 @@ pub async fn watch(ctx: Arc<Ctx>, dir: PathBuf) {
                     let commit = reload::last_commit(&dir).await;
                     control::announce(&ctx, &headline(commit.as_deref().unwrap_or(&head))).await;
                 }
+                // An approval card that couldn't be posted (or was deleted) goes up again.
+                crate::trust::review(&ctx, &dir).await;
             }
             Err(e) => {
                 tracing::warn!("syncing the config failed: {e:#}");

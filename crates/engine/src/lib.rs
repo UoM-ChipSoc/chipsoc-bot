@@ -79,6 +79,14 @@ pub trait Baseline: Send + Sync {
         Box::pin(async { Ok(()) })
     }
 
+    /// Note that the person with Discord id `by` made the config commit
+    /// with this [`git::fingerprint`] (through the bot, the web UI or the
+    /// CLI on the bot's machine), so approvals know who made a change from
+    /// the bot's own records, never from what a pushed commit claims.
+    fn made<'a>(&'a self, _fingerprint: &'a str, _by: Snowflake) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
     /// Note in the audit log of server `guild` that `by` (an id, else a
     /// name) did `action`; `detail` says what.
     fn audit<'a>(
@@ -237,13 +245,26 @@ impl<R: Rest> Engine<R> {
         Ok(())
     }
 
-    /// Commit and push the config, if this engine saves. Returns whether it committed.
-    async fn commit(&self, message: &str) -> Result<bool> {
+    /// Commit and push the config as `by`, if this engine saves. Returns whether it committed.
+    async fn commit(&self, message: &str, by: &By) -> Result<bool> {
         if !self.autosave {
             return Ok(false);
         }
         let held = WriteLock::take_async(&self.cfg.dir).await?;
-        git::save_locked_async(&self.cfg.dir, message, &held).await
+        let before = git::head_full(&self.cfg.dir);
+        let saved = git::save_locked_async(&self.cfg.dir, message, &held).await;
+        let fingerprint = committed_since(&self.cfg.dir, before.as_deref());
+        drop(held);
+        self.made(fingerprint, by).await;
+        saved
+    }
+
+    /// Keep who made the commit with `fingerprint` (see [`Baseline::made`]).
+    async fn made(&self, fingerprint: Option<String>, by: &By) {
+        let (Some((baseline, _)), Some(id), Some(fp)) = (&self.trust, by.id, fingerprint) else { return };
+        if let Err(e) = baseline.made(&fp, id).await {
+            tracing::warn!("noting who made a config commit failed: {e:#}");
+        }
     }
 
     /// Edit the config with `op` (tried on a copy and checked first, see
@@ -334,16 +355,18 @@ impl<R: Rest> Engine<R> {
     ) -> Result<(T, Result<bool>)> {
         let held = WriteLock::take_async(&self.cfg.dir).await?;
         let (dir, autosave, signer) = (self.cfg.dir.clone(), self.autosave, by.clone());
-        let (value, saved, message) = blocking(move || {
+        let (value, saved, message, fingerprint) = blocking(move || {
             let (value, message) = f(&dir)?;
+            let before = git::head_full(&dir);
             let saved = match &message {
                 Some(m) if autosave => git::save_locked(&dir, &signed(m.clone(), &signer)),
                 _ => Ok(false),
             };
-            Ok((value, saved, message))
+            Ok((value, saved, message, committed_since(&dir, before.as_deref())))
         })
         .await?;
         drop(held);
+        self.made(fingerprint, by).await;
         if let Err(e) = self.refresh().await {
             tracing::warn!("the config doesn't load after an edit: {e:#}");
         }
@@ -392,10 +415,19 @@ impl<R: Rest> Engine<R> {
                 let new: Vec<String> = after.errors.into_iter().filter(|e| !before.contains(e)).collect();
                 if new.is_empty() { Ok(()) } else { Err(Problems(new).into()) }
             };
-            git::undo_locked(&dir, &commit, how, message, check, push)
+            let before = git::head_full(&dir);
+            let made = git::undo_locked(&dir, &commit, how, message, check, push);
+            made.map(|m| (m, committed_since(&dir, before.as_deref())))
         })
         .await;
         drop(held);
+        let made = match made {
+            Ok((m, fingerprint)) => {
+                self.made(fingerprint, by).await;
+                Ok(m)
+            }
+            Err(e) => Err(e),
+        };
         if let Err(e) = self.refresh().await {
             tracing::warn!("the config doesn't load after going back on a commit: {e:#}");
         }
@@ -585,7 +617,7 @@ impl<R: Rest> Engine<R> {
             tracing::warn!("saving the lockfile after apply failed: {e:#}");
         }
         let done = report.outcomes.iter().filter(|o| o.result.is_ok()).count();
-        if let Err(e) = self.commit(&signed(format!("Apply {done} change(s)"), by)).await {
+        if let Err(e) = self.commit(&signed(format!("Apply {done} change(s)"), by), by).await {
             tracing::warn!("saving the config after apply failed: {e:#}");
         }
         let failed = report.outcomes.len() - done;
@@ -850,6 +882,14 @@ fn sweep_guard(cfg: &Config, plan: &Plan) -> Result<()> {
         "{why}. If lock.toml was lost, restore it (cp lock.toml.bak lock.toml, or from git history); \
          otherwise apply without --sweep first, so what's already there is matched by name, then sweep"
     )
+}
+
+/// The [`git::fingerprint`] of HEAD if it moved from `before` (a commit
+/// was made here, maybe rebased onto the remote's since: then it's still
+/// HEAD).
+fn committed_since(dir: &Path, before: Option<&str>) -> Option<String> {
+    let now = git::head_full(dir)?;
+    (Some(now.as_str()) != before).then(|| git::fingerprint(dir, &now)).flatten()
 }
 
 /// A commit message, with `by <who>` when someone is named, and their

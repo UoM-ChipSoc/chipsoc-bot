@@ -64,22 +64,41 @@ async fn pending(ctx: &Ctx, dir: &Path) -> Result<Pending> {
     })
 }
 
-/// Names of whoever made the commits changing sensitive files since the
-/// last approval (the Discord names the bot and web UI sign them with, else
-/// git's author), lowercase.
-async fn authors(ctx: &Ctx, dir: &Path) -> Vec<String> {
-    let since = kept::approved_at(&ctx.store, &kept::scope(dir)).await.ok().flatten();
-    let mut who: Vec<String> = chipsoc_config::git::authors(dir, since.as_deref(), FILES)
-        .iter()
-        .map(|w| w.trim().to_lowercase())
-        .filter(|w| !w.is_empty())
-        .collect();
-    who.sort();
-    who.dedup();
+/// Who made the commits changing sensitive files since the last approval,
+/// by Discord id, from the bot's own records (see [`kept::made`]): what a
+/// commit says about its author is never taken on trust.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct Authors {
+    /// Those who made some of them through the bot, the web UI or the CLI on the bot's machine.
+    ids: Vec<chipsoc_model::Snowflake>,
+    /// Whether some were pushed to the repo another way (nobody knows by whom).
+    pushed: bool,
+}
+
+async fn authors(ctx: &Ctx, dir: &Path) -> Authors {
+    let scope = kept::scope(dir);
+    let since = kept::approved_at(&ctx.store, &scope).await.ok().flatten();
+    let (d, files) = (dir.to_owned(), FILES);
+    let changed = chipsoc_config::git::blocking(move || Ok(chipsoc_config::git::changed(&d, since.as_deref(), files)))
+        .await
+        .unwrap_or_default();
+    let mut who = Authors::default();
+    for fp in changed {
+        match kept::made_by(&ctx.store, &scope, &fp).await {
+            Ok(Some(id)) => who.ids.push(id),
+            Ok(None) => who.pushed = true,
+            Err(e) => {
+                tracing::warn!("reading who made a config commit failed: {e:#}");
+                who.pushed = true;
+            }
+        }
+    }
+    who.ids.sort();
+    who.ids.dedup();
     who
 }
 
-fn text(cfg: &Config, p: &Pending, authors: &[String], owner: Option<chipsoc_model::Snowflake>) -> String {
+fn text(cfg: &Config, p: &Pending, authors: &Authors, owner: Option<chipsoc_model::Snowflake>) -> String {
     let names = fmt::Names::new(cfg);
     let (role, channel) = (|k: &str| names.role(k), |k: &str| names.channel(k));
     let mut out = Vec::new();
@@ -101,10 +120,17 @@ fn text(cfg: &Config, p: &Pending, authors: &[String], owner: Option<chipsoc_mod
             .new
             .as_ref()
             .and_then(|new| chipsoc_engine::owner_only(&chipsoc_engine::Ask::Approve { old: &p.approved, new }, owner));
+        let made: Vec<String> = authors.ids.iter().map(|id| format!("<@{id}>")).collect();
         out.push(match owner_only {
             Some(why) => format!("{why}."),
-            None if authors.is_empty() => "Any admin but whoever made them can approve.".to_owned(),
-            None => format!("Made by {}, so another admin approves.", authors.join(", ")),
+            None if made.is_empty() => {
+                "Pushed to the config repo, not made through the bot, so any admin can approve.".to_owned()
+            }
+            None if authors.pushed => format!(
+                "Made by {} (and partly pushed to the config repo), so another admin approves.",
+                fmt::collapse(&made, 5)
+            ),
+            None => format!("Made by {}, so another admin approves.", fmt::collapse(&made, 5)),
         });
     }
     if !p.refused.is_empty() {
@@ -120,7 +146,12 @@ fn text(cfg: &Config, p: &Pending, authors: &[String], owner: Option<chipsoc_mod
     ui::truncate(&out.join("\n"), ui::MAX_CONTENT - 1)
 }
 
-/// After the config loads: say in the bot log what's held back, once per change.
+/// Where the last approval card went: `channel/message`.
+const CARD_AT: &str = "prompted_at";
+
+/// After the config loads, and on every sync: say in the bot log what's
+/// held back, once per change. A card is remembered only once it's posted,
+/// so one that couldn't be (or was deleted since) is posted again.
 pub async fn review(ctx: &Ctx, dir: &Path) {
     let p = match pending(ctx, dir).await {
         Ok(p) => p,
@@ -128,16 +159,38 @@ pub async fn review(ctx: &Ctx, dir: &Path) {
     };
     let scope = kept::scope(dir);
     let hash = p.hash();
-    if p.is_empty() || kept::prompted(&ctx.store, &scope).await.ok().flatten().as_deref() == Some(hash.as_str()) {
+    if p.is_empty() {
         return;
     }
-    ctx.log_err(kept::set_prompted(&ctx.store, &scope, &hash).await, "remembering an approval card");
-    let Some(ch) = ctx.bot_log() else { return };
+    if kept::prompted(&ctx.store, &scope).await.ok().flatten().as_deref() == Some(hash.as_str())
+        && (!p.needs_approval() || card_still_there(ctx, &scope).await)
+    {
+        return;
+    }
+    post_card(ctx, dir, &p).await;
+}
+
+/// Whether the last card posted is still in the bot log (true if that can't be told).
+async fn card_still_there(ctx: &Ctx, scope: &str) -> bool {
+    let Ok(Some(at)) = ctx.store.trusted(scope, CARD_AT).await else { return true };
+    let Some((channel, message)) = at.split_once('/') else { return true };
+    match ctx.call(chipsoc_discord::Method::Get, &format!("channels/{channel}/messages/{message}"), None).await {
+        Ok(_) => true,
+        Err(e) => chipsoc_discord::ApiError::status_of(&e) != Some(404),
+    }
+}
+
+/// Post the card for `p` in the bot log; once it's there, remember it.
+/// False if it couldn't be posted.
+async fn post_card(ctx: &Ctx, dir: &Path, p: &Pending) -> bool {
+    let scope = kept::scope(dir);
+    let hash = p.hash();
+    let Some(ch) = ctx.bot_log() else { return false };
     let owner = if p.needs_approval() { chipsoc_admin::owner_id(ctx).await.ok() } else { None };
-    let body = text(&ctx.cfg(), &p, &authors(ctx, dir).await, owner);
+    let body = text(&ctx.cfg(), p, &authors(ctx, dir).await, owner);
     let buttons = if p.needs_approval() {
         let ok = CustomId::Trust { approve: true, hash: hash.clone() }.to_string();
-        let no = CustomId::Trust { approve: false, hash }.to_string();
+        let no = CustomId::Trust { approve: false, hash: hash.clone() }.to_string();
         vec![ui::row(vec![
             ui::button(&ok, "Approve", ButtonStyle::Success),
             ui::button(&no, "Reject", ButtonStyle::Danger),
@@ -145,7 +198,49 @@ pub async fn review(ctx: &Ctx, dir: &Path) {
     } else {
         Vec::new()
     };
-    ctx.say_with(ch, &body, &buttons).await;
+    let sent = async {
+        let message = Ctx::message(&body, Some(&buttons))?;
+        ctx.call(chipsoc_discord::Method::Post, &format!("channels/{ch}/messages"), Some(message)).await
+    };
+    let posted = match sent.await {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!("posting an approval card failed (tried again on the next sync): {e:#}");
+            return false;
+        }
+    };
+    ctx.log_err(kept::set_prompted(&ctx.store, &scope, &hash).await, "remembering an approval card");
+    if let Some(id) = posted["id"].as_str() {
+        ctx.log_err(
+            ctx.store.set_trusted(&scope, CARD_AT, &format!("{ch}/{id}")).await,
+            "remembering an approval card",
+        );
+    }
+    true
+}
+
+/// `/server approvals`: what waits for an Approve, with the card posted
+/// again in the bot log (for one lost or buried there).
+pub async fn approvals(ctx: &Ctx) -> String {
+    let dir = ctx.cfg().dir.clone();
+    let p = match pending(ctx, &dir).await {
+        Ok(p) => p,
+        Err(e) => return format!("{} **Couldn't read the config:** {}", fmt::ATTENTION, fmt::error(&e)),
+    };
+    if p.is_empty() {
+        return "Nothing waits for an Approve: the bot uses the config's settings as they are.".to_owned();
+    }
+    let Some(ch) = ctx.bot_log() else {
+        return format!("{} There's no bot log channel to post the card in (`[log] bot`).", fmt::ATTENTION);
+    };
+    if !post_card(ctx, &dir, &p).await {
+        return format!("{} Couldn't post the card in <#{ch}>; is the bot allowed to post there?", fmt::ATTENTION);
+    }
+    if p.needs_approval() {
+        format!("{} Posted the card again in <#{ch}>: press **Approve** or **Reject** there.", fmt::DONE)
+    } else {
+        format!("{} Nothing waits for an Approve; the card in <#{ch}> says what the bot refused.", fmt::DONE)
+    }
 }
 
 /// Approve or Reject under a card. Only admins under the approved settings,
@@ -177,14 +272,12 @@ pub async fn button(ctx: &Ctx, i: &Interaction, approve: bool, hash: &str) {
     if !approve {
         ctx.audit(Some(&user.id.to_string()), "reject_config_change", None, Some(hash)).await;
         let note = format!(
-            "\n\n{} **Rejected by {me}.** The bot keeps the approved settings; change the config back.",
+            "\n\n{} **Rejected by {me}.** The bot keeps the approved settings; undo the commit in the config repo, or the owner can `/server revert` it.",
             fmt::FAILED
         );
         let done = fmt::with_note(&original, &note);
         return ctx.respond(i, &ui::update(&done)).await;
     }
-    let names: Vec<String> =
-        [Some(&user.name), user.global_name.as_ref()].into_iter().flatten().map(|n| n.to_lowercase()).collect();
     let owner_id = chipsoc_admin::owner_id(ctx).await.ok();
     if let Some(new) = &p.new {
         let ask = chipsoc_engine::Ask::Approve { old: &p.approved, new };
@@ -194,8 +287,8 @@ pub async fn button(ctx: &Ctx, i: &Interaction, approve: bool, hash: &str) {
         }
     }
     // The owner may approve their own change: they could make it in Discord anyway.
-    let owner = owner_id == Some(chipsoc_model::Snowflake(user.id.get()));
-    if !owner && authors(ctx, &dir).await.iter().any(|a| names.contains(a)) {
+    let me_id = chipsoc_model::Snowflake(user.id.get());
+    if owner_id != Some(me_id) && authors(ctx, &dir).await.ids.contains(&me_id) {
         let why = "You made this change, so another admin has to approve it.";
         return ctx.respond(i, &ui::ephemeral(why)).await;
     }
@@ -284,7 +377,8 @@ mod tests {
             |k: &str, n: &str| chipsoc_config::schema::Role { key: k.into(), name: n.into(), ..Default::default() };
         cfg.desired.roles.roles = vec![role("admin", "Committee"), role("member", "Member")];
         cfg.desired.lock.roles.insert("admin".into(), chipsoc_model::Snowflake(70));
-        let t = text(&cfg, &p, &["ada".into()], Some(chipsoc_model::Snowflake(1)));
+        let ada = Authors { ids: vec![chipsoc_model::Snowflake(7)], pushed: false };
+        let t = text(&cfg, &p, &ada, Some(chipsoc_model::Snowflake(1)));
         assert_eq!(
             t,
             "🔒 **These config changes wait for an Approve.**
@@ -299,14 +393,27 @@ Only the server owner can approve changes to who's an admin (`admin_role`, admin
         let mut holders = p.approved.clone();
         holders.holders.insert("admin".into(), vec![chipsoc_model::Snowflake(5)]);
         let p2 = Pending { approved: p.approved.clone(), new: Some(holders), ..Default::default() };
-        assert!(text(&cfg, &p2, &[], None).ends_with("Any admin but whoever made them can approve."));
-        assert!(text(&cfg, &p2, &["ada".into()], None).ends_with("Made by ada, so another admin approves."));
+        let pushed = Authors { ids: Vec::new(), pushed: true };
+        assert!(
+            text(&cfg, &p2, &pushed, None)
+                .ends_with("Pushed to the config repo, not made through the bot, so any admin can approve.")
+        );
+        assert!(text(&cfg, &p2, &ada, None).ends_with("Made by <@7>, so another admin approves."));
+        let both = Authors { pushed: true, ..ada.clone() };
+        assert!(
+            text(&cfg, &p2, &both, None)
+                .ends_with("Made by <@7> (and partly pushed to the config repo), so another admin approves.")
+        );
         // Taking the admin role from the owner is the owner's to approve, and the card says so.
         let p3 = Pending { approved: p2.new.clone().unwrap(), new: Some(p.approved.clone()), ..Default::default() };
         let owner = Some(chipsoc_model::Snowflake(5));
         let someone_else = Some(chipsoc_model::Snowflake(1));
-        assert!(text(&cfg, &p3, &[], someone_else).ends_with("Any admin but whoever made them can approve."));
-        assert!(text(&cfg, &p3, &[], owner).contains("Only the server owner"), "{}", text(&cfg, &p3, &[], owner));
+        assert!(text(&cfg, &p3, &pushed, someone_else).ends_with("so any admin can approve."));
+        assert!(
+            text(&cfg, &p3, &pushed, owner).contains("Only the server owner"),
+            "{}",
+            text(&cfg, &p3, &pushed, owner)
+        );
 
         let only_refused = Pending { refused: vec!["roles.x".into()], ..Default::default() };
         assert!(!only_refused.needs_approval() && !only_refused.is_empty());

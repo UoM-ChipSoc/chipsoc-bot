@@ -68,6 +68,7 @@ pub fn command(cfg: &Config) -> Command {
             "The latest config changes, or what one admin did this week",
             vec![option(CommandOptionType::User, "admin", "Whose changes")],
         ),
+        subcommand("approvals", "Config changes waiting for an Approve; posts their card again", vec![]),
         subcommand(
             "revert",
             "Undo a config change, then apply it (the server owner only; asks first)",

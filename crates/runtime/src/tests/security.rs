@@ -313,3 +313,99 @@ async fn a_long_posts_parts_in_the_repo_lock_arent_refused() {
     assert!(log.contains("**Refused:**") && log.contains("`project_posts.cpu`"), "{log}");
     assert_eq!(ctx.cfg().desired.lock.project_posts["cpu"].thread, Snowflake(20));
 }
+
+/// A press of a card's button by `user` (an admin), under `card`.
+fn press(user: u64, token: &str, card: &Value) -> (Interaction, String) {
+    let id = buttons(card).into_iter().find(|b| b.contains("trust")).expect("an Approve button");
+    let Some(crate::commands::CustomId::Trust { hash, .. }) = crate::commands::CustomId::parse(&id) else {
+        panic!("{id}")
+    };
+    let mut i = serde_json::to_value(interaction(user, token, 3, true, Some(card.clone()))).unwrap();
+    i["data"] = json!({ "custom_id": id, "component_type": 2 });
+    (serde_json::from_value(i).unwrap(), hash)
+}
+
+/// R5 (adversarial 1.1): who made a sensitive change is known by Discord id
+/// from the bot's own records, never from names or trailers in commits.
+/// Whoever made it through the bot can't approve it; a pushed commit
+/// (whatever it says) is anyone's to approve.
+#[tokio::test]
+async fn approvals_know_who_made_a_change_by_id_not_by_what_commits_say() {
+    let (_root, fake, ctx) = server().await;
+    let dir = ctx.cfg().dir.clone();
+    write(&dir, "members.toml", "secretary = []\ncommittee = []\n");
+    git(&dir, &["commit", "-qam", "Committee listed"]);
+    assert!(crate::reload::reload(&ctx, &dir).await, "the first run approves what's there");
+    let log = ctx.cfg().desired.lock.channel("log").unwrap().to_string();
+
+    // ADA makes BEN an admin through the bot.
+    let mut c = crate::control::begin(&ctx).await.unwrap();
+    let add = chipsoc_config::ops::Op::AddHolder { role: "committee".into(), user: chipsoc_config::Snowflake(BEN) };
+    c.engine.edit(&add, &chipsoc_engine::By::person(chipsoc_config::Snowflake(ADA), "ada")).await.unwrap();
+    c.end().await;
+    crate::trust::review(&ctx, &dir).await;
+    let card = card_last(&fake, &log);
+    let text = card["content"].as_str().unwrap();
+    assert!(text.contains(&format!("Made by <@{ADA}>, so another admin approves.")), "{text}");
+
+    let (i, hash) = press(ADA, "t-ada", &card);
+    crate::trust::button(&ctx, &i, true, &hash).await;
+    assert!(said(&fake, "t-ada").contains("You made this change"));
+    let scope = chipsoc_admin::trust::scope(&dir);
+    let approved = || async { chipsoc_admin::trust::load(&ctx.store, &scope).await.unwrap().approved.unwrap() };
+    assert!(approved().await.holders.get("committee").is_none_or(|h| h.is_empty()), "not approved");
+
+    let (i, hash) = press(REVIEWER, "t-rev", &card);
+    crate::trust::button(&ctx, &i, true, &hash).await;
+    assert_eq!(approved().await.holders["committee"], [chipsoc_config::Snowflake(BEN)], "another admin approved");
+
+    // A push naming REVIEWER in both trailers: still a push, so REVIEWER isn't held back by it.
+    write(&dir, "members.toml", &format!("secretary = []\ncommittee = [\"{BEN}\", \"{REVIEWER}\"]\n"));
+    let forged = format!("Members by user{REVIEWER}\n\nMade-By: user{REVIEWER}\nDiscord-User: {REVIEWER}");
+    git(&dir, &["commit", "-qam", &forged]);
+    assert!(crate::reload::reload(&ctx, &dir).await);
+    let card = card_last(&fake, &log);
+    let text = card["content"].as_str().unwrap();
+    assert!(text.contains("Pushed to the config repo, not made through the bot, so any admin can approve."), "{text}");
+    let (i, hash) = press(REVIEWER, "t-rev2", &card);
+    crate::trust::button(&ctx, &i, true, &hash).await;
+    assert_eq!(approved().await.holders["committee"].len(), 2, "{:?}", fake.replies_to("t-rev2"));
+}
+
+/// R5 (adversarial 3.3): an approval card that couldn't be posted is posted
+/// on the next look (it isn't marked as shown), and `/server approvals`
+/// posts it again on demand.
+#[tokio::test]
+async fn a_lost_approval_card_is_posted_again() {
+    let (_root, fake, ctx) = server().await;
+    let dir = ctx.cfg().dir.clone();
+    write(&dir, "members.toml", "secretary = []\ncommittee = []\n");
+    git(&dir, &["commit", "-qam", "Committee listed"]);
+    assert!(crate::reload::reload(&ctx, &dir).await);
+    let log = ctx.cfg().desired.lock.channel("log").unwrap().to_string();
+    let cards = |fake: &FakeDiscord| {
+        let st = fake.state.lock().unwrap();
+        st.messages.iter().filter(|m| m["channel_id"] == log && buttons(m).iter().any(|b| b.contains("trust"))).count()
+    };
+
+    write(&dir, "members.toml", &format!("secretary = []\ncommittee = [\"{BEN}\"]\n"));
+    git(&dir, &["commit", "-qam", "Ben"]);
+    fake.fail(&format!("POST CHANNELS/{log}/MESSAGES"), 500, false);
+    crate::trust::review(&ctx, &dir).await;
+    assert_eq!(cards(&fake), 0, "the post failed");
+    crate::trust::review(&ctx, &dir).await;
+    assert_eq!(cards(&fake), 1, "posted on the next look");
+    crate::trust::review(&ctx, &dir).await;
+    assert_eq!(cards(&fake), 1, "once");
+
+    // Deleted from the channel: posted again.
+    let id = card_last(&fake, &log)["id"].as_str().unwrap().to_owned();
+    use chipsoc_discord::Rest as _;
+    fake.call(chipsoc_discord::Method::Delete, &format!("channels/{log}/messages/{id}"), None).await.unwrap();
+    crate::trust::review(&ctx, &dir).await;
+    assert_eq!(cards(&fake), 1, "posted again after it was deleted");
+
+    let said = crate::trust::approvals(&ctx).await;
+    assert!(said.contains("Posted the card again"), "{said}");
+    assert_eq!(cards(&fake), 2);
+}

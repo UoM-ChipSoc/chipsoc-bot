@@ -64,6 +64,10 @@ impl Baseline for StoreBaseline {
         })
     }
 
+    fn made<'a>(&'a self, fingerprint: &'a str, by: Snowflake) -> BoxFuture<'a, Result<()>> {
+        Box::pin(made(&self.store, &self.scope, fingerprint, by))
+    }
+
     fn audit<'a>(
         &'a self,
         guild: Snowflake,
@@ -103,6 +107,23 @@ pub async fn approve(store: &Store, scope: &str, s: &Sensitive, at: Option<&str>
 /// The commit the approved settings date from, if known.
 pub async fn approved_at(store: &Store, scope: &str) -> Result<Option<String>> {
     Ok(store.trusted(scope, APPROVED_AT).await?.filter(|c| !c.is_empty()))
+}
+
+/// What a config commit's maker is kept under (see [`chipsoc_config::git::fingerprint`]).
+fn made_key(fingerprint: &str) -> String {
+    format!("made:{fingerprint}")
+}
+
+/// Keep that the person `by` made the config commit with `fingerprint`
+/// (through the bot, the web UI or the CLI on the bot's machine).
+pub async fn made(store: &Store, scope: &str, fingerprint: &str, by: Snowflake) -> Result<()> {
+    store.set_trusted(scope, &made_key(fingerprint), &by.to_string()).await
+}
+
+/// Who made the config commit with `fingerprint`, if the bot made it for
+/// them. `None`: pushed to the repo some other way, so nobody knows who.
+pub async fn made_by(store: &Store, scope: &str, fingerprint: &str) -> Result<Option<Snowflake>> {
+    Ok(store.trusted(scope, &made_key(fingerprint)).await?.and_then(|b| b.parse().ok()))
 }
 
 pub async fn prompted(store: &Store, scope: &str) -> Result<Option<String>> {
