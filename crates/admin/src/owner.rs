@@ -154,13 +154,18 @@ pub async fn history_of<H: Host>(h: &H, user: Option<Snowflake>, limit: usize) -
         commits.into_iter().filter(|c| c.who_id == Some(user) && c.config && c.at >= since).map(from_commit).collect();
     // Edits and reverts are commits too: listed once, as those.
     let committed = ["config_edit", "revert", "rewind"];
-    for e in h.db().audit_by(&user.to_string(), since, limit as i64).await? {
+    let entries = h.db().audit_by(&user.to_string(), since, limit as i64).await?;
+    // Whom they did it to, by name, not Discord id.
+    let parts = |e: &chipsoc_store::AuditEntry| [e.target.clone(), e.detail.clone()].into_iter().flatten();
+    let ids = crate::people::ids(entries.iter().flat_map(|e| [e.target.as_deref(), e.detail.as_deref()]).flatten());
+    let names = crate::people::names_of(h, &ids).await;
+    for e in entries {
         if in_git && committed.contains(&e.action.as_str()) {
             continue;
         }
         let mut what = fmt::did(&e.action);
-        for part in [&e.target, &e.detail].into_iter().flatten().filter(|p| !p.is_empty()) {
-            what.push_str(&format!(" · {part}"));
+        for part in parts(&e).filter(|p| !p.is_empty()) {
+            what.push_str(&format!(" · {}", crate::people::named(&h.cfg(), &names, &part)));
         }
         out.push(Done { at: e.ts, who: name.clone(), who_id: Some(user), what, commit: None, revertible: false });
     }

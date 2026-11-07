@@ -284,8 +284,12 @@ pub async fn activity<R: Rest + Clone>(c: &Ctx<'_, R>, limit: usize) -> Result<(
     Ok(())
 }
 
-/// `history [--admin <id>]`.
-pub async fn history<R: Rest + Clone>(c: &Ctx<'_, R>, admin: Option<Snowflake>, limit: usize) -> Result<()> {
+/// `history [--admin <who>]`.
+pub async fn history<R: Rest + Clone>(c: &Ctx<'_, R>, admin: Option<&str>, limit: usize) -> Result<()> {
+    let admin = match admin {
+        Some(typed) => Some(c.b.user(typed).await?),
+        None => None,
+    };
     let done = c.b.changes(admin, limit).await?;
     if c.json {
         return print_json(&done);

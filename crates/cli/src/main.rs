@@ -166,12 +166,9 @@ enum Cmd {
         #[arg(long)]
         to: Option<String>,
     },
-    /// The newest project ideas.
-    Ideas {
-        /// How many.
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
-    },
+    /// Project ideas: list the newest, close one.
+    #[command(subcommand, alias = "ideas")]
+    Idea(manage::IdeaCmd),
     /// Posts the bot keeps in channels (rules, welcome, …).
     #[command(subcommand)]
     Post(manage::PostCmd),
@@ -186,9 +183,9 @@ enum Cmd {
     },
     /// The config's latest changes and who made them; with `--admin`, what they did this week.
     History {
-        /// Their Discord id.
+        /// Who: their @username, server name or Discord id.
         #[arg(long)]
-        admin: Option<Snowflake>,
+        admin: Option<String>,
         /// How many to show.
         #[arg(long, default_value_t = 30)]
         limit: usize,
@@ -437,7 +434,7 @@ async fn run(cli: Cli, env_file: Option<PathBuf>) -> Result<()> {
         | Cmd::Resource(_)
         | Cmd::Join(_)
         | Cmd::Share { .. }
-        | Cmd::Ideas { .. }
+        | Cmd::Idea(_)
         | Cmd::Post(_)
         | Cmd::Onboarding(_)
         | Cmd::Activity { .. }
@@ -497,11 +494,11 @@ async fn manage(ctx: &manage::Ctx<'_, manage::CliRest>, cmd: Cmd) -> Result<()> 
         Cmd::Resource(x) => manage::resource(ctx, x).await,
         Cmd::Join(x) => manage::join(ctx, x).await,
         Cmd::Share { what, item, to } => manage::share(ctx, what, item, to).await,
-        Cmd::Ideas { limit } => manage::ideas(ctx, limit).await,
+        Cmd::Idea(x) => manage::idea(ctx, x).await,
         Cmd::Post(x) => manage::post(ctx, x).await,
         Cmd::Onboarding(x) => manage::onboarding(ctx, x).await,
         Cmd::Activity { limit } => manage::activity(ctx, limit).await,
-        Cmd::History { admin, limit } => manage::history(ctx, admin, limit).await,
+        Cmd::History { admin, limit } => manage::history(ctx, admin.as_deref(), limit).await,
         Cmd::Revert { change, rewind } => manage::revert(ctx, &change, rewind).await,
         Cmd::Op { json } => manage::raw_op(ctx, &json).await,
         Cmd::Schema => manage::schema(ctx).await,
