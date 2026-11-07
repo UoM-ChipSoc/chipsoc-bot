@@ -963,7 +963,7 @@ async fn nobody_but_the_owner_takes_the_owners_roles() {
     unappoint(&h, "treasurer", Snowflake(ADA), &ada).await.unwrap();
     assert!(!h.holds(ADA, "treasurer"));
     // Nor can anyone but the owner revert config changes.
-    let err = undo(&h, "abc1234", chipsoc_config::git::Undo::Revert, &reviewer()).await.unwrap_err();
+    let err = undo(&h, "abc1234", chipsoc_engine::git::Undo::Revert, &reviewer()).await.unwrap_err();
     assert!(err.owner_only() && err.starts_with("Only the server owner can revert"), "{err}");
 }
 

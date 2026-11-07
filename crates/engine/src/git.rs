@@ -6,20 +6,17 @@
 //! and a pull never runs under a write. Only config files are ever committed.
 
 use std::collections::HashMap;
-use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-
-use crate::LOCK_FILE;
+use chipsoc_config::files::take_written;
+use chipsoc_config::{LOCK_FILE, WriteLock, blocking};
 
 /// How long a fetch or push may take before it's given up.
 const NETWORK: Duration = Duration::from_secs(30);
-/// How long to wait for another writer to finish.
-const WAIT: Duration = Duration::from_secs(60);
 /// A fetch this recent is good enough for checking whether we're behind.
 const FRESH: Duration = Duration::from_secs(30);
 
@@ -83,61 +80,6 @@ fn git_net(dir: &Path, args: &[&str]) -> Result<String> {
         std::thread::sleep(Duration::from_millis(50));
     }
     checked(args, child.wait_with_output()?)
-}
-
-/// Held while changing a config directory's files or its git state, across
-/// processes (the bot and the web UI share a checkout). Kept inside `.git`
-/// when there is one, so it's never committed.
-pub struct WriteLock(#[allow(dead_code)] File);
-
-impl WriteLock {
-    fn open(dir: &Path) -> Result<File> {
-        let path = if dir.join(".git").is_dir() { dir.join(".git/config-write.lock") } else { dir.join(".write.lock") };
-        File::options()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(&path)
-            .with_context(|| format!("opening {}", path.display()))
-    }
-
-    /// Wait (up to a minute) for anyone else writing to `dir` to finish.
-    pub fn take(dir: &Path) -> Result<Self> {
-        let f = Self::open(dir)?;
-        let until = Instant::now() + WAIT;
-        loop {
-            if f.try_lock().is_ok() {
-                return Ok(Self(f));
-            }
-            if Instant::now() > until {
-                bail!("{BUSY}");
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-    }
-
-    /// [`WriteLock::take`] for async code: waits without holding up a thread.
-    pub async fn take_async(dir: &Path) -> Result<Self> {
-        let f = Self::open(dir)?;
-        let until = Instant::now() + WAIT;
-        loop {
-            if f.try_lock().is_ok() {
-                return Ok(Self(f));
-            }
-            if Instant::now() > until {
-                bail!("{BUSY}");
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
-}
-
-const BUSY: &str = "something else has been changing this config for a minute; try again later";
-
-/// Run blocking work (git, file locks, copying the config) on a thread kept
-/// for that, so it never holds up the async runtime's own threads.
-pub async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T> + Send + 'static) -> Result<T> {
-    tokio::task::spawn_blocking(f).await.context("a background task stopped")?
 }
 
 /// [`sync`] off the async runtime's threads.
@@ -324,7 +266,7 @@ pub fn recover(dir: &Path) -> Result<bool> {
 }
 
 /// Rebase this checkout's commits onto its upstream. Where both changed
-/// `lock.toml`, the two are merged key by key ([`crate::merge_lock`]); a clash
+/// `lock.toml`, the two are merged key by key ([`chipsoc_config::merge_lock`]); a clash
 /// in any other file aborts the rebase, leaving the checkout as it was.
 fn rebase_merging_lock(dir: &Path) -> Result<()> {
     let mut step = git(dir, &["rebase", "--quiet", "@{upstream}"]);
@@ -346,14 +288,14 @@ fn rebase_merging_lock(dir: &Path) -> Result<()> {
         }
         // While rebasing, stage 2 is the remote's side and 3 is ours being replayed.
         let stage = |n: u8| git(dir, &["show", &format!(":{n}:{LOCK_FILE}")]).unwrap_or_default();
-        let merged = match crate::merge_lock(&stage(1), &stage(3), &stage(2)) {
+        let merged = match chipsoc_config::merge_lock(&stage(1), &stage(3), &stage(2)) {
             Ok(m) => m,
             Err(err) => {
                 let _ = git(dir, &["rebase", "--abort"]);
                 return Err(err.context("merging lock.toml"));
             }
         };
-        crate::write_atomic(&dir.join(LOCK_FILE), &merged)?;
+        chipsoc_config::write_atomic(&dir.join(LOCK_FILE), &merged)?;
         git(dir, &["add", "--", LOCK_FILE])?;
         // Nothing of ours left in this commit: drop it.
         step = if succeeds(dir, &["diff", "--cached", "--quiet"]) {
@@ -420,34 +362,6 @@ pub fn uncommitted(dir: &Path) -> Vec<String> {
     }
     let Ok(out) = git(dir, &["status", "--porcelain", "--untracked-files=all"]) else { return Vec::new() };
     out.lines().filter_map(|l| l.get(3..)).filter(|f| is_config_path(f)).map(str::to_owned).collect()
-}
-
-/// Files this program wrote or removed in config directories, waiting to be committed.
-fn written() -> &'static Mutex<std::collections::BTreeSet<PathBuf>> {
-    static W: std::sync::OnceLock<Mutex<std::collections::BTreeSet<PathBuf>>> = std::sync::OnceLock::new();
-    W.get_or_init(Default::default)
-}
-
-/// Note that this program wrote (or removed) `path`, so the next save of its
-/// config commits it. Nothing else but `lock.toml` is ever committed.
-pub fn wrote(path: &Path) {
-    if let Ok(p) = std::path::absolute(path) {
-        written().lock().unwrap_or_else(|e| e.into_inner()).insert(p);
-    }
-}
-
-/// The files under `dir` this program wrote since the last save (relative,
-/// `/`-separated), forgetting them; also forgets ones in directories gone since
-/// (scratch copies).
-fn take_written(dir: &Path) -> Vec<String> {
-    let Ok(root) = std::path::absolute(dir) else { return Vec::new() };
-    let mut all = written().lock().unwrap_or_else(|e| e.into_inner());
-    let mine: Vec<PathBuf> = all.iter().filter(|p| p.starts_with(&root)).cloned().collect();
-    all.retain(|p| !p.starts_with(&root) && p.parent().is_some_and(Path::exists));
-    mine.iter()
-        .filter_map(|p| p.strip_prefix(&root).ok())
-        .map(|r| r.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/"))
-        .collect()
 }
 
 /// Commit `lock.toml` and the config files this program wrote (if any changed)
@@ -520,7 +434,7 @@ pub struct Commit {
     /// Who: the name the bot signed it with (see [`NAME_TRAILER`]), else git's author.
     pub who: String,
     /// Their Discord id, when the bot knew it.
-    pub who_id: Option<crate::Snowflake>,
+    pub who_id: Option<chipsoc_config::Snowflake>,
     /// Whether it changed config files other than `lock.toml` (so reverting it changes something).
     pub config: bool,
 }
@@ -729,7 +643,7 @@ mod tests {
 
     /// Write a file as the bot does, so its next save commits it.
     fn put(p: PathBuf, body: impl AsRef<str>) {
-        crate::write_atomic(&p, body.as_ref()).unwrap();
+        chipsoc_config::write_atomic(&p, body.as_ref()).unwrap();
     }
 
     #[test]
@@ -802,7 +716,7 @@ mod tests {
         commit_as(&a, &[("roles.toml", "r2"), ("members.toml", "m")], "Roles by max\n\nMade-By: max");
         let made = log(&a, 10);
         assert_eq!(made[1].short, ada);
-        assert_eq!((made[1].who.as_str(), made[1].who_id), ("ada", Some(crate::Snowflake(7))));
+        assert_eq!((made[1].who.as_str(), made[1].who_id), ("ada", Some(chipsoc_config::Snowflake(7))));
         assert_eq!(made[0].who, "max");
         commit_as(&a, &[("roles.toml", "r3")], "Sort roles by year");
         assert_eq!(log(&a, 1)[0].who, "t", "\"by year\" isn't a person: the bot didn't sign it");
@@ -944,7 +858,7 @@ mod tests {
         put(server.join("lock.toml"), format!("{BASE}\n[channels]\ngeneral = \"20\"\n"));
         assert!(save(&server, "server apply").unwrap());
 
-        let lock: crate::Lock = toml::from_str(&read(&server.join("lock.toml"))).unwrap();
+        let lock: chipsoc_config::Lock = toml::from_str(&read(&server.join("lock.toml"))).unwrap();
         assert_eq!(lock.roles.len(), 2, "the laptop's role is kept: {lock:?}");
         assert_eq!(lock.channels["general"].0, 20, "the server's channel is kept");
         assert_eq!(read(&server.join("server.toml")), "y");

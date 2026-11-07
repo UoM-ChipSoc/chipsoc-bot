@@ -96,7 +96,12 @@ pub(crate) async fn set_status<R: Rest + Clone + 'static>(
     }
 }
 
-pub(crate) async fn save_status<R: Rest>(app: &App<R>, s: &Session, slug: &str, status: ProjectStatus) -> Result<()> {
+pub(crate) async fn save_status<R: Rest + 'static>(
+    app: &Arc<App<R>>,
+    s: &Session,
+    slug: &str,
+    status: ProjectStatus,
+) -> Result<()> {
     let op = Op::SetProject { slug: slug.to_owned(), set: ProjectField::Status(status) };
     app.edit(s, &op).await.map(drop)
 }
@@ -113,7 +118,12 @@ pub(crate) async fn set_applications<R: Rest + Clone + 'static>(
     }
 }
 
-pub(crate) async fn save_applications<R: Rest>(app: &App<R>, s: &Session, slug: &str, open: bool) -> Result<()> {
+pub(crate) async fn save_applications<R: Rest + 'static>(
+    app: &Arc<App<R>>,
+    s: &Session,
+    slug: &str,
+    open: bool,
+) -> Result<()> {
     let op = Op::SetProject { slug: slug.to_owned(), set: ProjectField::Applications(open) };
     app.edit(s, &op).await.map(drop)
 }
@@ -135,7 +145,7 @@ pub(crate) async fn add<R: Rest + Clone + 'static>(
 }
 
 /// Add the project `d` describes; its slug.
-pub(crate) async fn save_new<R: Rest>(app: &App<R>, s: &Session, d: &Draft) -> Result<String> {
+pub(crate) async fn save_new<R: Rest + 'static>(app: &Arc<App<R>>, s: &Session, d: &Draft) -> Result<String> {
     if d.name.trim().is_empty() {
         bail!("Give the project a name.");
     }

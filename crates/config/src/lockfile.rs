@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use toml::{Table, Value};
 
-use crate::{Applied, LOCK_FILE, Lock, git, write_atomic};
+use crate::{Applied, LOCK_FILE, Lock, write_atomic};
 
 /// The copy of `lock.toml` kept from before the last save. Not committed.
 pub const LOCK_BACKUP: &str = "lock.toml.bak";
@@ -48,7 +48,7 @@ impl<'de> Deserialize<'de> for Applied {
 /// Write `lock.toml`, first copying the one there to `lock.toml.bak`, unless
 /// the one there looks lost (far emptier than the backup).
 pub fn save(dir: &Path, lock: &Lock) -> Result<()> {
-    let _w = git::WriteLock::take(dir)?;
+    let _w = crate::WriteLock::take(dir)?;
     backup(dir);
     let body = toml::to_string_pretty(lock).context("serialising lock.toml")?;
     write_atomic(&dir.join(LOCK_FILE), &body)

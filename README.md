@@ -67,10 +67,11 @@ GitHub organisation and Discord's 2FA requirement for moderation.
 ## Development
 
 Crates: `model` (shared types), `config` (files, `check`, edits and `ops`,
-trust), `diff` (pure planner), `discord` (REST, export, fake), `engine`
-(plan/apply/pull), `store` (SQLite), `admin` (review queue, people, feeds,
-resources, join, audit log: the shared backend), `client` (the CLI and TUI's
-way to the web API, or to local files), `fedproto` (signed messages),
+trust, the write lock), `diff` (pure planner), `discord` (REST, export,
+fake), `engine` (plan/apply/pull, git), `store` (SQLite), `admin` (review
+queue, people, feeds, resources, join, audit log: the shared backend), `api`
+(the web API's types), `client` (the CLI and TUI's way to the web API, or to
+local files), `fedproto` (signed messages),
 `voice` (call capture, Opus/Ogg files, transcripts), `runtime` (the bot),
 `tui`, `web`, `cli` (the `chipsoc-bot` binary).
 

@@ -72,7 +72,8 @@ Anyone who can push to the config repo can propose anything, but:
   model. Approved changes to who holds admin roles are applied at once.
   **Reject** keeps the approved settings until the files are changed back.
   A card is remembered only once it's posted: one that couldn't be posted,
-  or was deleted, goes up again on the next sync (every 2 minutes), and
+  or was deleted, goes up again within 2 minutes (whether or not the config
+  is a git checkout), and
   `/server approvals` posts it again on demand.
 - The first run (and a fresh database) approves what's there only if the
   config's admins are who Discord says: each admin role (`admin_role`,
