@@ -2,6 +2,8 @@
 //! with what was wrong next to each field, the inputs that do that, confirm
 //! boxes for destructive steps, and running config edits with a flash after.
 
+use std::sync::Arc;
+
 use anyhow::Result;
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
@@ -387,7 +389,7 @@ pub(crate) fn summary_label(label: &str) -> String {
 /// Run config edits as `s`, as one change: one check and one commit, all
 /// or nothing (a refused one leaves the config as it was). What was done,
 /// as one line for a flash.
-pub(crate) async fn run_ops<R: Rest>(app: &App<R>, s: &Session, ops: &[Op]) -> Result<String> {
+pub(crate) async fn run_ops<R: Rest + 'static>(app: &Arc<App<R>>, s: &Session, ops: &[Op]) -> Result<String> {
     Ok(said(&app.edit_ops(s, ops).await?))
 }
 
@@ -413,14 +415,14 @@ macro_rules! spawned {
         let (app, s) = ($app.clone(), $s.clone());
         let run = async move {
             use crate::people::Spoken as _;
-            let desk = app.desk(&s).await.map_err(|e| format!("{e:#}"))?;
+            let desk = app.desk(&s).await?;
             let $d = &desk;
-            match $work {
+            anyhow::Ok(match $work {
                 Ok(t) => Ok(t.spoken(&desk).await),
                 Err(t) => Err(t.spoken(&desk).await),
-            }
+            })
         };
-        tokio::spawn(run).await.unwrap_or_else(|e| Err(format!("{e}")))
+        crate::to_end(run).await.unwrap_or_else(|e| Err(format!("{e:#}")))
     }};
 }
 pub(crate) use spawned;
@@ -451,8 +453,8 @@ pub(crate) fn user_id(s: &str) -> Option<chipsoc_config::Snowflake> {
 /// Handle a config-editing form: `built` is the form's id and the edits it
 /// asks for (or the form back with what's wrong). Done: back to `here` with a
 /// flash. `Err`: the form to show again, with what's wrong.
-pub(crate) async fn edit<R: Rest>(
-    app: &App<R>,
+pub(crate) async fn edit<R: Rest + 'static>(
+    app: &Arc<App<R>>,
     s: &Session,
     here: &str,
     f: Fields,

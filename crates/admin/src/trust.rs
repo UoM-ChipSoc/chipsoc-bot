@@ -46,6 +46,10 @@ impl Baseline for StoreBaseline {
         Box::pin(save_lock(&self.store, &self.scope, lock))
     }
 
+    fn revision(&self) -> BoxFuture<'_, Result<String>> {
+        Box::pin(async { Ok(self.store.trusted_rev(&self.scope).await?.to_string()) })
+    }
+
     fn renamed<'a>(
         &'a self,
         guild: Option<Snowflake>,

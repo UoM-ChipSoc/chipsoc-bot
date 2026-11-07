@@ -184,13 +184,13 @@ struct App<R> {
 struct Loaded {
     /// The files' fingerprint.
     files: u64,
-    /// What was trusted, as JSON.
+    /// What was trusted (see [`chipsoc_engine::Baseline::revision`]).
     trusted: String,
     cfg: Arc<Config>,
 }
 
 impl<R: Rest> App<R> {
-    /// The engine, with the config re-read from disk: for planning, applying and pulling.
+    /// The engine, with the config re-read from disk: for applying and pulling.
     async fn engine(&self) -> Result<MutexGuard<'_, Engine<R>>> {
         let mut e = self.engine.lock().await;
         e.refresh().await?;
@@ -198,16 +198,26 @@ impl<R: Rest> App<R> {
         Ok(e)
     }
 
+    /// An engine to plan with, on the config re-read from disk. The shared
+    /// one is held only to re-read it, so edits and appoints don't wait for a
+    /// plan (see [`Engine::planner`]).
+    async fn planner(&self) -> Result<Engine<R>>
+    where
+        R: Clone,
+    {
+        let mut e = self.engine.lock().await;
+        e.refresh().await?;
+        Ok(e.planner())
+    }
+
     /// The config, vetted against what the bot trusts: read again only when
     /// its files, or what's trusted, have changed.
     async fn config(&self) -> Result<Arc<Config>> {
         let dir = self.dir.clone();
         let files = blocking(move || Ok(chipsoc_config::fingerprint(&dir))).await?;
+        // Read before the config, so a change made meanwhile is read again next time.
         let trusted = match &self.baseline {
-            Some(b) => {
-                let t = b.load().await?;
-                serde_json::to_string(&(&t.lock, &t.approved))?
-            }
+            Some(b) => b.revision().await?,
             None => String::new(),
         };
         if let Some(c) = self.cached()
@@ -251,26 +261,42 @@ impl<R: Rest> App<R> {
             .await?;
         Ok(*g)
     }
+}
 
+impl<R: Rest + 'static> App<R> {
     /// Make one config edit as `s` (see [`Engine::edit`]): checked first,
     /// committed saying who, with no apply or pull in between.
-    async fn edit(&self, s: &Session, op: &chipsoc_config::ops::Op) -> Result<chipsoc_config::ops::Change> {
+    async fn edit(self: &Arc<Self>, s: &Session, op: &chipsoc_config::ops::Op) -> Result<chipsoc_config::ops::Change> {
         self.edit_ops(s, std::slice::from_ref(op)).await
     }
 
     /// Make config edits as `s` as one change (see [`Engine::edit_ops`]):
-    /// one check, one commit, all or nothing.
-    async fn edit_ops(&self, s: &Session, ops: &[chipsoc_config::ops::Op]) -> Result<chipsoc_config::ops::Change> {
-        // Not reloaded first: an edit may be what fixes a config that doesn't load.
-        let mut e = self.engine.lock().await;
-        let change = e.edit_ops(ops, &s.by()).await;
-        self.forget_config();
-        let change = change?;
-        if !change.files.is_empty() {
-            tracing::info!(actor = s.actor().unwrap_or("-"), "web UI edit: {}", change.summary);
-        }
-        Ok(change)
+    /// one check, one commit, all or nothing. Run [`to_end`].
+    async fn edit_ops(
+        self: &Arc<Self>,
+        s: &Session,
+        ops: &[chipsoc_config::ops::Op],
+    ) -> Result<chipsoc_config::ops::Change> {
+        let (app, s, ops) = (self.clone(), s.clone(), ops.to_vec());
+        to_end(async move {
+            // Not reloaded first: an edit may be what fixes a config that doesn't load.
+            let mut e = app.engine.lock().await;
+            let change = e.edit_ops(&ops, &s.by()).await;
+            app.forget_config();
+            let change = change?;
+            if !change.files.is_empty() {
+                tracing::info!(actor = s.actor().unwrap_or("-"), "web UI edit: {}", change.summary);
+            }
+            Ok(change)
+        })
+        .await
     }
+}
+
+/// Run `work` to the end even if the client goes away (a closed tab, a
+/// dropped connection), so a change is never left half made.
+pub(crate) async fn to_end<T: Send + 'static>(work: impl Future<Output = Result<T>> + Send + 'static) -> Result<T> {
+    tokio::spawn(work).await.map_err(|e| anyhow::anyhow!(e))?
 }
 
 impl<R: Rest + 'static> Members for App<R> {

@@ -68,6 +68,16 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub trait Baseline: Send + Sync {
     fn load(&self) -> BoxFuture<'_, Result<Trusted>>;
     fn save_lock<'a>(&'a self, lock: &'a Lock) -> BoxFuture<'a, Result<()>>;
+
+    /// Changes whenever what [`Baseline::load`] gives does (by this program or
+    /// another), so a copy can be checked without loading it all. By
+    /// default, a hash of it all.
+    fn revision(&self) -> BoxFuture<'_, Result<String>> {
+        Box::pin(async {
+            let t = self.load().await?;
+            Ok(chipsoc_model::stable_hash(serde_json::to_string(&(&t.lock, &t.approved))?))
+        })
+    }
     /// Project `from` in server `guild` is now `to`, its keys moved as `keys`
     /// (see [`Op::RenameProject`]): what's kept by slug or role key follows.
     fn renamed<'a>(
@@ -221,6 +231,23 @@ impl<R: Rest> Engine<R> {
     /// so a front end can start even while a file has a mistake in it.
     pub fn unloaded(rest: R, dir: &Path) -> Self {
         Self::with(rest, Config { dir: dir.to_owned(), ..Default::default() })
+    }
+
+    /// A copy of this engine to plan with, on the config as loaded now, so
+    /// a plan (a whole export) needn't hold this one: edits and applies can
+    /// go ahead meanwhile (an apply checks its plan afresh anyway).
+    pub fn planner(&self) -> Self
+    where
+        R: Clone,
+    {
+        Self {
+            rest: self.rest.clone(),
+            cfg: self.cfg.clone(),
+            autosave: self.autosave,
+            me: self.me.clone(),
+            trust: self.trust.clone(),
+            vetted: self.vetted.clone(),
+        }
     }
 
     fn with(rest: R, cfg: Config) -> Self {

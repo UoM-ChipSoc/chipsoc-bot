@@ -143,6 +143,7 @@ const MIGRATIONS: &[&str] = &[
     signins::SCHEMA_V16,
     fed::SCHEMA_V17,
     fed::SCHEMA_V18,
+    trusted::SCHEMA_V19,
 ];
 
 const SCHEMA_V1: &str = r#"

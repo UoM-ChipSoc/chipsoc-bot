@@ -39,7 +39,7 @@ pub(crate) async fn page(Extension(s): Extension<Session>) -> Html<String> {
     view::page(Tab::Changes, &s, landing(&s))
 }
 
-pub(crate) async fn plan<R: Rest + 'static>(
+pub(crate) async fn plan<R: Rest + Clone + 'static>(
     State(app): State<Arc<App<R>>>,
     Extension(s): Extension<Session>,
 ) -> Html<String> {
@@ -48,7 +48,7 @@ pub(crate) async fn plan<R: Rest + 'static>(
 }
 
 /// A fresh plan, kept for `s` to apply, with its Apply form.
-pub(crate) async fn plan_section<R: Rest>(app: &App<R>, s: &Session) -> Element {
+pub(crate) async fn plan_section<R: Rest + Clone>(app: &App<R>, s: &Session) -> Element {
     match planned(app, s).await {
         Ok(planned) => plan_view(s, &planned),
         Err(e) => rsx! {
@@ -68,12 +68,11 @@ struct Planned {
     drift: chipsoc_admin::Drift,
 }
 
-async fn planned<R: Rest>(app: &App<R>, s: &Session) -> Result<Planned> {
-    let e = app.engine().await?;
+async fn planned<R: Rest + Clone>(app: &App<R>, s: &Session) -> Result<Planned> {
+    let e = app.planner().await?;
     // A config with errors fails to plan (the page says what to fix).
     let plan = e.plan(Options::default()).await?;
     let (config, names) = (config_hash(&e.cfg), Names::of(&e.cfg));
-    drop(e);
     let id = app.keep(plan.clone(), s);
     let drift = chipsoc_admin::drift(&plan);
     Ok(Planned { plan, id, config, names, drift })
@@ -94,8 +93,7 @@ pub(crate) async fn apply<R: Rest + 'static>(
     Form(f): Form<ApplyForm>,
 ) -> Html<String> {
     tracing::info!(actor = s.actor().unwrap_or("-"), "web UI apply");
-    // Spawned so closing the tab can't stop an apply halfway.
-    let result = tokio::spawn(run_apply(app, f, s.clone())).await.unwrap_or_else(|e| Err(e.into()));
+    let result = crate::to_end(run_apply(app, f, s.clone())).await;
     let content = match result {
         Ok((report, names)) => results(&s, &report, &names),
         Err(e) => refused(&s, &e),
@@ -138,7 +136,7 @@ pub(crate) async fn adopt<R: Rest + 'static>(
     tracing::info!(actor = s.actor().unwrap_or("-"), permissions, "web UI pull from Discord");
     let by = s.by();
     let pull = async move { app.engine().await?.adopt_by(permissions, &by).await };
-    let content = match tokio::spawn(pull).await.unwrap_or_else(|e| Err(e.into())) {
+    let content = match crate::to_end(pull).await {
         Ok(notes) => pulled(&s, &notes),
         Err(e) => rsx! {
             h1 { "Nothing was pulled" }
