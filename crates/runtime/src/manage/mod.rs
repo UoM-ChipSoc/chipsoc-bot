@@ -94,6 +94,11 @@ pub enum Cmd {
     Resources,
     AddResource(NewResource),
     ArchiveResource(Snowflake),
+    /// `idea close`: tag an idea's post closed, say why, archive and lock it.
+    CloseIdea {
+        post: Snowflake,
+        reason: Option<String>,
+    },
     Members,
     /// `member info`: what someone told the bot (profile, join answers).
     About(Snowflake),
@@ -293,6 +298,9 @@ pub fn parse(options: &[CommandDataOption]) -> Result<Cmd, String> {
             tags: args.text("tags").map(|t| t.split(',').map(|s| s.trim().to_owned()).collect()).unwrap_or_default(),
         }),
         (Some("resource"), "archive") => Cmd::ArchiveResource(post_id(&args.need("post")?)?),
+        (Some("idea"), "close") => {
+            Cmd::CloseIdea { post: post_id(&args.need("thread")?)?, reason: args.text("reason") }
+        }
         (Some("member"), "list") => Cmd::Members,
         (Some("member"), "info") => Cmd::About(args.user("user")?),
         (Some("join"), "notify") => Cmd::JoinNotify,
@@ -420,11 +428,14 @@ pub fn help(cfg: &Config) -> String {
     if b.resources.is_some() {
         shared.push("`/server resource list` / `add` / `archive`: links in the resources forum");
     }
+    if b.ideas.is_some() {
+        shared.push("`/server idea close`: close an idea's post, saying why (tagged, archived and locked)");
+    }
     if b.events.is_some() {
         shared.push("`/event`: create an event (announced, with reminders)");
     }
     if !shared.is_empty() {
-        section("Feeds, resources & events", &shared);
+        section("Feeds, ideas, resources & events", &shared);
     }
     if cfg.federation.peers.iter().any(|p| !p.id.is_empty()) {
         let mut partners = vec!["`/partners`: what partner communities share"];
@@ -613,6 +624,11 @@ async fn run(ctx: &Ctx, cmd: &Cmd, by: &Actor) -> (String, Vec<Component>) {
             Ok(true) => format!("{} Archived <#{id}>: closed and locked, still readable.", fmt::DONE),
             Ok(false) => "That isn't a post in the resources forum.".into(),
             Err(e) => failed(&format!("archive <#{id}>"), &e),
+        },
+        Cmd::CloseIdea { post, reason } => match chipsoc_admin::close_idea(ctx, *post, reason.as_deref(), by).await {
+            Ok(true) => format!("{} Closed <#{post}>: tagged, archived and locked, still readable.", fmt::DONE),
+            Ok(false) => "That isn't a post in the ideas forum.".into(),
+            Err(e) => failed(&format!("close <#{post}>"), &e),
         },
         Cmd::Members => members(ctx).await,
         Cmd::About(user) => match chipsoc_admin::join::about(ctx, *user).await {
@@ -957,6 +973,10 @@ mod tests {
         assert_eq!(op(&parse(&lead).unwrap()), None, "not a config op of its own: it's recorded, given and DMed");
         let info = sub("member", "info", vec![opt("user", CommandOptionValue::User(Id::new(7)))]);
         assert_eq!(parse(&info), Ok(Cmd::About(Snowflake(7))));
+        let close = sub("idea", "close", vec![opt("thread", s("<#55>")), opt("reason", s(" Done elsewhere "))]);
+        assert_eq!(parse(&close), Ok(Cmd::CloseIdea { post: Snowflake(55), reason: Some("Done elsewhere".into()) }));
+        let close = sub("idea", "close", vec![opt("thread", s("https://discord.com/channels/1/56"))]);
+        assert_eq!(parse(&close), Ok(Cmd::CloseIdea { post: Snowflake(56), reason: None }));
         let add = sub(
             "resource",
             "add",

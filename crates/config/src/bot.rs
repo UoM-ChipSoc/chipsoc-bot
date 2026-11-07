@@ -376,6 +376,9 @@ pub struct Ideas {
     /// Tag name for ideas that still need someone to lead them.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub needs_lead_tag: Option<String>,
+    /// Tag name for ideas an admin closed (`/server idea close`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_tag: Option<String>,
     /// The `/propose-project` form, in order (default:
     /// [`default_idea_questions`]). Discord shows 5 boxes at most.
     #[serde(default = "default_idea_questions", skip_serializing_if = "is_default_idea_questions")]
@@ -389,7 +392,13 @@ pub struct Ideas {
 
 impl Default for Ideas {
     fn default() -> Self {
-        Self { forum: String::new(), needs_lead_tag: None, questions: default_idea_questions(), post: None }
+        Self {
+            forum: String::new(),
+            needs_lead_tag: None,
+            closed_tag: None,
+            questions: default_idea_questions(),
+            post: None,
+        }
     }
 }
 

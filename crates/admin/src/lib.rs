@@ -40,8 +40,8 @@ pub use chipsoc_store::AppKind;
 pub use feeds::{FeedInfo, accept_feed, add_feed, feeds, pause_feed, remove_feed};
 pub use find::{Found, Member, Unresolved, find_members, members_of, resolve_user};
 pub use forums::{
-    Lead, NewIdea, NewResource, Post, Refused, archive_resource, ideas, post_idea, post_resource, precheck_resource,
-    resources, vet_resource,
+    Lead, NewIdea, NewResource, Post, Refused, archive_resource, close_idea, ideas, post_idea, post_resource,
+    precheck_resource, resources, vet_resource,
 };
 pub use owner::{Done, history_of, only_owner, owner_id, undo, undo_said};
 pub use people::{
@@ -136,6 +136,7 @@ pub enum AuditAction {
     ResumeFeed,
     PostResource,
     ArchiveResource,
+    CloseIdea,
     JoinNotice,
     SharePartners,
     CreateEvent,
@@ -160,6 +161,7 @@ impl AuditAction {
             Self::ResumeFeed => "resume_feed",
             Self::PostResource => "post_resource",
             Self::ArchiveResource => "archive_resource",
+            Self::CloseIdea => "close_idea",
             Self::JoinNotice => "join_notice",
             Self::SharePartners => "share_partners",
             Self::CreateEvent => "create_event",

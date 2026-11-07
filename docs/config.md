@@ -100,7 +100,7 @@ feature on; leave it out to turn it off.
 | `[review]` | `channel` where applications, project ideas, feeds, links, event suggestions and rejoin cards wait for Accept or Reject. |
 | `[events]` | `channel` for `/event` announcements. `suggest` (default true): members' `/event` is a suggestion for review (needs `[review]`); admins' events are made at once. |
 | `[feeds]` | `channel` for feed posts (feeds are checked every 15 minutes). |
-| `[ideas]` | `forum` where accepted `/propose-project` ideas are posted (needs `[review]`); `needs_lead_tag` marks ideas nobody leads yet; `questions` and `post` make the form and the post your own (see *Project ideas*). |
+| `[ideas]` | `forum` where accepted `/propose-project` ideas are posted (needs `[review]`); `needs_lead_tag` marks ideas nobody leads yet; `closed_tag` marks ones closed with `/server idea close` (`check` errors if it isn't one of the forum's `tags`); `questions` and `post` make the form and the post your own (see *Project ideas*). |
 | `[help]` | `forum` for `/solved`; `solved_tag` (default `solved`). |
 | `[projects]` | `forum` for project posts; `areas` suggested in `project new`; `default_channels` for new projects; `pinned = "<slug>"` pins that project's post at the top of the forum (Discord pins one post per forum, so the forum can't have its own `post` too; changing it unpins the old one). |
 | `[resources]` | `forum` for shared links: `/share-resource` from members (needs `[review]`), and straight from admins (`/server resource add`, web, CLI, API). The same link can't be shared twice; tags must be the forum's. |

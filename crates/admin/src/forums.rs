@@ -492,6 +492,59 @@ pub async fn archive_resource<H: Host>(h: &H, post: Snowflake, by: &Actor) -> Re
     Ok(true)
 }
 
+/// Close an idea: its post gets `[ideas] closed_tag` (and loses the
+/// needs-lead tag), the reason (if any) as the bot's reply, then is archived
+/// and locked, never deleted. Only posts in the ideas forum: false if
+/// there's no such post there.
+pub async fn close_idea<H: Host>(h: &H, post: Snowflake, reason: Option<&str>, by: &Actor) -> Result<bool> {
+    let cfg = h.cfg();
+    let conf = cfg.bot.ideas.as_ref().context("the ideas forum isn't set up in bot.toml")?;
+    let forum = forum_id(h, &conf.forum)?;
+    let rest = h.rest();
+    let thread = match rest.call(Method::Get, &format!("channels/{post}"), None).await {
+        Ok(t) => t,
+        Err(e) if chipsoc_discord::ApiError::status_of(&e) == Some(404) => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    if id(&thread["parent_id"]) != Some(forum) {
+        return Ok(false);
+    }
+    let info = rest.call(Method::Get, &format!("channels/{forum}"), None).await?;
+    let tag = |name: &Option<String>| -> Option<Value> {
+        let name = name.as_deref()?;
+        available(&info).into_iter().find(|t| s(&t["name"]).eq_ignore_ascii_case(name)).map(|t| t["id"].clone())
+    };
+    let closed = match (&conf.closed_tag, tag(&conf.closed_tag)) {
+        (Some(name), None) => {
+            anyhow::bail!("the ideas forum has no tag `{name}` (`[ideas] closed_tag`); add it and apply")
+        }
+        (_, t) => t,
+    };
+    let needs_lead = tag(&conf.needs_lead_tag);
+    let mut tags: Vec<Value> = thread["applied_tags"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|t| Some(*t) != needs_lead.as_ref() && Some(*t) != closed.as_ref())
+        .cloned()
+        .collect();
+    if let Some(c) = closed {
+        tags.truncate(MAX_POST_TAGS - 1);
+        tags.push(c);
+    }
+    // An archived post takes no new tags or replies until it's opened again.
+    let path = format!("channels/{post}");
+    rest.call(Method::Patch, &path, Some(json!({ "archived": false, "applied_tags": tags }))).await?;
+    if let Some(why) = reason.map(str::trim).filter(|r| !r.is_empty()) {
+        let text = truncate(&format!("**Closed:** {why}"), crate::MAX_CONTENT - 1);
+        let body = json!({ "content": text, "allowed_mentions": { "parse": [] } });
+        rest.call(Method::Post, &format!("channels/{post}/messages"), Some(body)).await?;
+    }
+    rest.call(Method::Patch, &path, Some(json!({ "archived": true, "locked": true }))).await?;
+    audit(h, by, AuditAction::CloseIdea, Some(&s(&thread["name"])), Some(&post.to_string())).await;
+    Ok(true)
+}
+
 /// The newest posts in the resources forum.
 pub async fn resources<H: Host>(h: &H, limit: usize) -> Result<Vec<Post>> {
     let key = h.cfg().bot.resources.as_ref().map(|r| r.forum.clone()).context("resources aren't set up in bot.toml")?;

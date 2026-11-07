@@ -190,6 +190,17 @@ pub fn command(cfg: &Config) -> Command {
             ],
         ));
     }
+    if cfg.bot.ideas.is_some() {
+        subs.push(group(
+            "idea",
+            "Project ideas in the ideas forum",
+            vec![subcommand(
+                "close",
+                "Close an idea's post: tagged closed, archived and locked",
+                vec![text("thread", "Its link or id"), optional("reason", "Why (optional, posted in it)")],
+            )],
+        ));
+    }
     if shares_on_demand(cfg) {
         subs.push(group(
             "share",

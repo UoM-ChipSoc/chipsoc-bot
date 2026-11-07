@@ -163,6 +163,7 @@ card at once.
 | `/server project status\|applications\|rename`, `/server position open\|close` | Admins | Config edits: saved, then shown as a plan with an **Apply** button. Closing a position with a window posts its applicants' card. |
 | `/server project lead` | Admins | Make someone a project lead (the Lead role, and a DM). |
 | `/server feed list\|add\|pause\|resume\|remove`, `/server resource list\|add\|archive` | Admins | Feeds (a paused one isn't checked) and the resources forum. |
+| `/server idea close <thread> [reason]` | Admins | Close an idea's post: it gets `[ideas] closed_tag` (and loses the needs-lead tag), the reason is posted in it, then it's archived and locked (never deleted). |
 | `/server join notify` | Admins | Says how many members haven't been through the join flow, then DMs them once with **Send to N**. |
 | `/server share announcement\|event` | Admins | Share an announcement (its link) or one of our events with partners you pick from a menu; only partners whose `send` lists that kind are offered ([partners.md](partners.md#sharing-content)). Making an event with `/event` offers the same menu. |
 | `/record start [channel]`, `/record stop` | Admins, `[recording] who` | Record a meeting in the call you're in (or the one named); see below. |

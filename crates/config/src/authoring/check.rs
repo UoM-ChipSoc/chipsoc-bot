@@ -802,6 +802,12 @@ fn bot(r: &mut Report, c: &Config, keys: &Keys) {
     }
     if let Some(i) = &b.ideas {
         idea_form(r, c, i);
+        if let Some(tag) = &i.closed_tag
+            && let Some(forum) = c.desired.channel(&i.forum)
+            && !forum.tags.iter().any(|t| t.eq_ignore_ascii_case(tag))
+        {
+            r.err(format!("bot.toml [ideas] closed_tag: `{tag}` isn't a tag on #{}; add it to its `tags`", i.forum));
+        }
     }
     if b.name.is_empty() {
         r.warn("bot.toml: set `name` (used in the bot's messages)");
@@ -1737,6 +1743,23 @@ mod tests {
         assert!(warnings(&d).contains("areas: ai isn't a tag on #ideas"), "{}", warnings(&d));
         fs::write(p.join("bot.toml"), format!("{bot}areas = [\"cpu\", \"tooling\"]\n")).unwrap();
         assert!(!warnings(&d).contains("a tag on"), "{}", warnings(&d));
+    }
+
+    #[test]
+    fn an_ideas_closed_tag_must_be_the_forums() {
+        let d = dir();
+        let p = d.path();
+        let cat = fs::read_to_string(p.join("categories/10-a.toml")).unwrap();
+        fs::write(
+            p.join("categories/10-a.toml"),
+            format!("{cat}\n[[channel]]\nkey = \"ideas\"\nname = \"ideas\"\ntype = \"forum\"\ntags = [\"Closed\"]\n"),
+        )
+        .unwrap();
+        let bot = "name = \"T\"\n[review]\nchannel = \"general\"\n[ideas]\nforum = \"ideas\"\n";
+        fs::write(p.join("bot.toml"), format!("{bot}closed_tag = \"done\"\n")).unwrap();
+        assert!(errors(&d).contains("closed_tag: `done` isn't a tag on #ideas"), "{}", errors(&d));
+        fs::write(p.join("bot.toml"), format!("{bot}closed_tag = \"closed\"\n")).unwrap();
+        assert_eq!(errors(&d), "");
     }
 
     #[test]

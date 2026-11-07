@@ -229,6 +229,7 @@ pub fn did(action: &str) -> String {
         "resume_feed" => "Resumed a feed",
         "post_resource" => "Shared a resource",
         "archive_resource" => "Archived a resource",
+        "close_idea" => "Closed an idea",
         "join_notice" => "Sent the join flow reminder",
         "join_flow" => "Finished the join flow",
         "approve_config_change" => "Approved a config change",

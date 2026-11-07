@@ -1265,3 +1265,50 @@ async fn an_accept_that_gives_no_role_yet_says_why_and_a_grown_role_stays_queued
     assert_eq!(Waits::of(&given, &roles), None, "held back, but not this");
     assert!(Waits::Approval.for_them().contains("another admin has approved"));
 }
+
+#[tokio::test]
+async fn an_idea_is_closed_with_a_tag_and_a_reason_never_deleted() {
+    let h = host(true).await;
+    h.discord.edit_channel("ideas", |f| {
+        f["available_tags"].as_array_mut().unwrap().push(json!({ "id": "777", "name": "Closed" }));
+    });
+    let set = |closed: &str| {
+        let mut c = (*h.cfg()).clone();
+        let i = c.bot.ideas.as_mut().unwrap();
+        (i.needs_lead_tag, i.closed_tag) = (Some("needs-lead".into()), Some(closed.into()));
+        *h.cfg.lock().unwrap() = Arc::new(c);
+    };
+    set("closed");
+    let ideas = h.cfg().desired.lock.channel("ideas").unwrap();
+    let info = h.rest().call(Method::Get, &format!("channels/{ideas}"), None).await.unwrap();
+    let tag_id = |name: &str| {
+        info["available_tags"].as_array().unwrap().iter().find(|t| t["name"] == name).unwrap()["id"].clone()
+    };
+    let (cpu, needs) = (tag_id("cpu"), tag_id("needs-lead"));
+    let body = json!({ "name": "an idea", "applied_tags": [cpu, needs], "message": { "content": "!" } });
+    let idea = h.rest().call(Method::Post, &format!("channels/{ideas}/threads"), Some(body)).await.unwrap();
+    let idea: Snowflake = idea["id"].as_str().unwrap().parse().unwrap();
+    let resource = h.cfg().desired.lock.channel("resources").unwrap();
+    let body = json!({ "name": "a book", "message": { "content": "!" } });
+    let other = h.rest().call(Method::Post, &format!("channels/{resource}/threads"), Some(body)).await.unwrap();
+    let other: Snowflake = other["id"].as_str().unwrap().parse().unwrap();
+
+    assert!(!close_idea(&h, other, None, &reviewer()).await.unwrap(), "not an idea");
+    assert!(!close_idea(&h, Snowflake(424242), None, &reviewer()).await.unwrap(), "gone");
+    set("done");
+    let err = close_idea(&h, idea, None, &reviewer()).await.unwrap_err().to_string();
+    assert!(err.contains("no tag `done`"), "{err}");
+    set("closed");
+    assert!(close_idea(&h, idea, Some(" Merged into Golem. "), &reviewer()).await.unwrap());
+    {
+        let st = h.discord.state.lock().unwrap();
+        let thread = st.channels.iter().find(|c| c["id"] == idea.to_string()).unwrap();
+        assert_eq!(thread["applied_tags"], json!([cpu, "777"]), "closed, no longer needing a lead");
+        assert_eq!((&thread["archived"], &thread["locked"]), (&json!(true), &json!(true)));
+        let mine = st.messages.iter().filter(|m| m["channel_id"] == idea.to_string());
+        let said: Vec<&str> = mine.filter_map(|m| m["content"].as_str()).collect();
+        assert_eq!(said, ["!", "**Closed:** Merged into Golem."]);
+    }
+    let actions: Vec<String> = activity(&h, 1).await.unwrap().into_iter().map(|e| e.action).collect();
+    assert_eq!(actions, ["close_idea"]);
+}
