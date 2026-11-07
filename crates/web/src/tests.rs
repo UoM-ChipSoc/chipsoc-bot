@@ -1604,8 +1604,11 @@ async fn a_flood_of_sign_ins_cannot_push_out_a_real_one() {
     // A login cookie this server didn't sign is no sign-in at all.
     let mut b = Browser::discord();
     let state = b.start_discord().await;
-    let forged = b.cookies["login"].replace('a', "b");
-    b.cookies.insert("login".into(), forged);
+    // One byte flipped at a fixed place: always a change, whatever the cookie holds.
+    let mut forged = b.cookies["login"].clone().into_bytes();
+    let i = forged.len() / 2;
+    forged[i] = if forged[i] == b'A' { b'B' } else { b'A' };
+    b.cookies.insert("login".into(), String::from_utf8(forged).unwrap());
     assert_eq!(b.get(&format!("/auth/discord?code=code-ada&state={state}")).await.status, StatusCode::FORBIDDEN);
     assert!(b.traded().is_empty());
 }
@@ -1982,6 +1985,15 @@ async fn recordings_are_listed_played_and_deleted_only_on_purpose() {
     ] {
         assert_eq!(b.get(&path).await.status, StatusCode::NOT_FOUND, "{path}");
     }
+
+    // Not while its transcript is being made (review 4 #25).
+    store::save(&dir, &Meta { transcript: Transcript::Making, ..m.clone() }).unwrap();
+    let page = b.submit("/recordings/delete", &[("id", &id), ("confirm", "yes")]).await;
+    let shown = b.follow(page).await;
+    assert!(shown.body.contains("transcript is being made"), "{}", shown.body);
+    assert!(dir.exists());
+    assert!(store::delete(&root, 1000, &id).is_err(), "nor by anything else");
+    store::save(&dir, &m).unwrap();
 
     // Deleting needs the confirmation, and is logged.
     let page = b.submit("/recordings/delete", &[("id", &id)]).await;

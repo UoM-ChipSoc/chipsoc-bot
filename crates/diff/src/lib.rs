@@ -830,18 +830,29 @@ impl Diff<'_> {
                 }
             }
         }
-        // Taken out of the config (still there in Discord): archived, never deleted.
+        // Taken out of the config (still there in Discord): archived, never
+        // deleted. Only a post the bot applied: a key lock.toml gained some
+        // other way (pushed) never had a config post behind it.
         let gone: Vec<(String, Snowflake)> = self
             .want
             .lock
             .posts
             .iter()
-            .filter(|(k, _)| k.contains('/') && !wanted.contains(*k))
+            .filter(|(k, _)| is_thread_key(k) && !wanted.contains(*k))
             .filter(|(k, _)| self.live.threads.contains_key(*k))
             .map(|(k, p)| (k.clone(), p.message))
             .collect();
         for (key, id) in gone {
-            self.push(Action::Archive { kind: ObjectKind::Thread, key, id });
+            if self.want.lock.applied.hashes.contains_key(&object_key(ObjectKind::Thread, &key)) {
+                self.push(Action::Archive { kind: ObjectKind::Thread, key, id });
+            } else {
+                self.plan.warnings.push(Warning::Note {
+                    text: format!(
+                        "lock.toml names the forum post <#{id}> as `{key}`, but the bot never posted it from the config; \
+                         it's left alone (take `{key}` out of lock.toml)"
+                    ),
+                });
+            }
         }
     }
 

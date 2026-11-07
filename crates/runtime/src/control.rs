@@ -53,8 +53,11 @@ pub async fn begin(ctx: &Ctx) -> Result<Change<'_>> {
 
 impl Change<'_> {
     pub async fn end(mut self) {
-        if self.engine.refresh().await.is_ok() {
-            reload::use_config(self.ctx, self.engine.cfg.clone()).await;
+        match self.engine.refresh().await {
+            Ok(()) => {
+                reload::use_config(self.ctx, self.engine.cfg.clone()).await;
+            }
+            Err(e) => tracing::warn!("re-reading the config after a change failed: {e:#}"),
         }
     }
 }
@@ -128,21 +131,16 @@ pub async fn apply_as(ctx: &Ctx, plan: &Plan, by: &By) -> Result<Report> {
     let mut c = begin(ctx).await?;
     let r = c.engine.apply_by(plan, by, &mut noop).await;
     // Noted while still changing, so the reload watch can't take it for another program's.
-    if r.is_ok()
-        && let Some(who) = by.key()
-        && let Ok(Some(id)) = ctx.db().last_apply_by(&who).await
-    {
+    if let Some(id) = r.as_ref().ok().and_then(|r| r.audit_id) {
         ctx.own_applies.lock().unwrap_or_else(|e| e.into_inner()).insert(id);
     }
     c.end().await;
     r
 }
 
-/// Close the bot log's plan posts made before each apply in the audit log
-/// after entry `seen` that another program (the web UI, the API and so the
-/// CLI signed in to it, the CLI on the bot's machine) made: Discord has moved
-/// on, so their buttons would only find a stale plan. `seen` moves on past
-/// what's handled. Waits (does nothing) while the bot is changing things.
+/// Close the bot log's plan posts made before each apply another program
+/// logged since `seen` (the web UI, the API, the CLI). Skipped while the
+/// bot is changing things.
 pub async fn close_applied(ctx: &Ctx, seen: &mut i64) {
     let Ok(_one) = ctx.changing.try_lock() else { return };
     let applies = match ctx.db().applies_after(*seen).await {

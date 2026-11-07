@@ -177,12 +177,9 @@ onboarding asks every question of everyone; this one branches.
   `log.bot` says when it starts, lists anyone whose DMs are closed, and
   says when everyone due has been asked.
 - **If the bot is down** while the gate is on, **Get started** fails and
-  newcomers can't get in. Give them `access_role` by hand in Discord (the
-  member's profile → Roles); the bot leaves the flow's roles alone. To open
-  everything for a while, set `gate = false` and apply; or, with the bot
-  down, give @everyone View Channels in Discord's role settings, and once
-  it's back either apply `gate = false` or let the next apply (or drift
-  watch, with `mode = "undo"`) take it away again.
+  newcomers can't get in: the committee gives them `access_role` by hand,
+  or opens the server for a while (`gate = false`), as [deploy.md](deploy.md#when-the-bot-is-down)
+  says.
 
 **Going live:** try it with `gate = false` (everyone still sees everything);
 check the flow from a test account; then set `gate = true`, apply (the plan

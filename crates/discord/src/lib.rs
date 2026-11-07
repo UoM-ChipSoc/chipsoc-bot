@@ -39,6 +39,9 @@ impl ApiError {
 /// Discord's error code for a DM to someone who doesn't take them.
 pub const CANNOT_DM: u64 = 50007;
 
+/// Discord's error code for a change to an archived thread (only opening it again is allowed).
+pub const ARCHIVED_THREAD: u64 = 50083;
+
 /// Discord's REST API, as JSON in and out. Paths are relative to `/api/v10/`.
 pub trait Rest: Send + Sync {
     fn call(&self, method: Method, path: &str, body: Option<Value>) -> impl Future<Output = Result<Value>> + Send;

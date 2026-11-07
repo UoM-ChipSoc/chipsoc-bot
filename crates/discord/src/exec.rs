@@ -13,7 +13,7 @@ use chipsoc_model::{Action, Change, Field, ObjectKind, OrderScope, Plan};
 use serde_json::{Map, Value, json};
 
 use crate::wire::{self, id, s};
-use crate::{ApiError, Method, Rest};
+use crate::{ARCHIVED_THREAD, ApiError, Method, Rest};
 
 use crate::export::PINNED_THREAD;
 
@@ -47,12 +47,12 @@ pub async fn clear_rename_notices(rest: &impl Rest, thread: Snowflake, me: Snowf
 }
 
 /// [`clear_rename_notices`] in every forum post the lockfile holds whose
-/// title the bot sets: projects' and `[[channel.thread]]`s. Once, for the
-/// notices renames left before the bot deleted them as it went.
+/// title the bot sets: projects' and `[[channel.thread]]`s. For the notices
+/// left by renames made before the bot deleted its own.
 pub async fn clear_all_rename_notices(rest: &impl Rest, lock: &Lock) -> Result<usize> {
     let me = id(&rest.call(Method::Get, "users/@me", None).await?["id"]).context("no id for the bot")?;
     let threads = lock.project_posts.values().map(|t| t.thread);
-    let threads = threads.chain(lock.posts.iter().filter(|(k, _)| k.contains('/')).map(|(_, p)| p.message));
+    let threads = threads.chain(lock.posts.iter().filter(|(k, _)| is_thread_key(k)).map(|(_, p)| p.message));
     let mut gone = 0;
     for t in threads.collect::<BTreeSet<_>>() {
         match clear_rename_notices(rest, t, me).await {
@@ -73,6 +73,18 @@ enum Entry<'k> {
     Thread(&'k str),
 }
 
+/// Pages of a forum's archived posts read when looking for a lost one.
+const ARCHIVED_PAGES: usize = 10;
+
+/// The first message's part of `have` (what a post's first part said when
+/// planned): a forum post's starts with its title and tags (and a pin mark).
+fn first_of<'s>(post: Entry, have: &'s str) -> &'s str {
+    match post {
+        Entry::Post(_) => have,
+        Entry::Project(_) | Entry::Thread(_) => projects::unpinned(have).1.splitn(3, '\n').nth(2).unwrap_or_default(),
+    }
+}
+
 /// Each part's signature.
 fn signatures(parts: &[Rendered]) -> Vec<String> {
     parts.iter().map(Rendered::signature).collect()
@@ -88,6 +100,8 @@ pub struct Outcome {
 #[derive(Debug, Default)]
 pub struct Report {
     pub outcomes: Vec<Outcome>,
+    /// The audit-log entry the apply wrote, if it wrote one.
+    pub audit_id: Option<i64>,
 }
 
 impl Report {
@@ -120,8 +134,9 @@ pub async fn execute(
             lock.applied.hashes.insert(obj.clone(), h.clone());
         }
     }
+    let me = std::sync::OnceLock::new();
     for action in plan.actions.iter().filter(|a| a.mutates()) {
-        let mut ex = Exec { rest, cfg, lock, live };
+        let mut ex = Exec { rest, cfg, lock, live, me: &me };
         let result = ex.run(action).await.map_err(|e| format!("{e:#}"));
         if result.is_ok()
             && let Some(obj) = action.object()
@@ -151,6 +166,8 @@ struct Exec<'a, R> {
     cfg: &'a Config,
     lock: &'a mut Lock,
     live: Option<&'a Snapshot>,
+    /// The bot's own user id, once asked.
+    me: &'a std::sync::OnceLock<Snowflake>,
 }
 
 /// Every key's id, or an error naming the ones that don't exist yet.
@@ -513,7 +530,11 @@ impl<R: Rest> Exec<'_, R> {
 
     /// The bot's own user id.
     async fn me(&self) -> Result<Snowflake> {
-        id(&self.call(Method::Get, "users/@me".into(), None).await?["id"]).context("no id for the bot")
+        if let Some(me) = self.me.get() {
+            return Ok(*me);
+        }
+        let me = id(&self.call(Method::Get, "users/@me".into(), None).await?["id"]).context("no id for the bot")?;
+        Ok(*self.me.get_or_init(|| me))
     }
 
     /// Every message and thread the lockfile holds for posts, every part.
@@ -719,11 +740,14 @@ impl<R: Rest> Exec<'_, R> {
         let src = self.cfg.desired.posts.get(key).context("no post for this channel in config")?;
         let ch = self.lock.channel(key).with_context(|| format!("channel `{key}` doesn't exist yet"))?;
         let parts = template::render_parts(src, self.lock);
-        let (first, later) = parts.split_first().context("the post has no text")?;
-        if self.cfg.desired.channel(key).is_some_and(|c| c.kind.has_tags()) {
-            return self.forum_post(key, ch, first, later, existing).await;
-        }
         let entry = Entry::Post(key);
+        if self.cfg.desired.channel(key).is_some_and(|c| c.kind.has_tags()) {
+            // A forum's post: a pinned thread titled FORUM_POST_TITLE, kept by
+            // its id, which is also its first message's.
+            let existing = existing.map(|t| ThreadRef { thread: t, message: t, parts: self.parts_of(entry) });
+            return self.forum_thread(entry, ch, FORUM_POST_TITLE, None, &parts, existing, Some(true)).await;
+        }
+        let (first, later) = parts.split_first().context("the post has no text")?;
         let (have, old) = (self.have(entry), self.parts_of(entry));
         // Looking is best effort: without message history, post as before.
         if existing.is_none()
@@ -735,14 +759,8 @@ impl<R: Rest> Exec<'_, R> {
             return self.finish(entry, ch, &found, later, &have).await;
         }
         if let Some(m) = existing {
-            let edited = if have.first() == Some(&first.signature()) {
-                Ok(Value::Null)
-            } else {
-                let body = wire::message_json(first);
-                self.call(Method::Patch, format!("channels/{ch}/messages/{m}"), Some(body)).await
-            };
-            match edited {
-                Ok(_) => return self.finish(entry, ch, &old, later, have.get(1..).unwrap_or_default()).await,
+            match self.edit_first(entry, ch, m, first, &have).await {
+                Ok(()) => return self.finish(entry, ch, &old, later, have.get(1..).unwrap_or_default()).await,
                 Err(e) if ApiError::status_of(&e) == Some(404) => {} // deleted in Discord: post again
                 Err(e) => return Err(e),
             }
@@ -755,56 +773,21 @@ impl<R: Rest> Exec<'_, R> {
         cleared.map_or(Ok(()), |e| Err(e.context("posted again, but the old parts are still there")))
     }
 
-    /// A forum's managed post: a pinned thread titled [`FORUM_POST_TITLE`],
-    /// kept by its id, which is also its first message's; later parts follow
-    /// in the thread.
-    async fn forum_post(
-        &mut self,
-        key: &str,
-        forum: Snowflake,
+    /// Edit a post's first message `m` in `ch` to say `first`, unless `have`
+    /// (what each part said when planned) shows it already does.
+    async fn edit_first(
+        &self,
+        post: Entry<'_>,
+        ch: Snowflake,
+        m: Snowflake,
         first: &Rendered,
-        later: &[Rendered],
-        existing: Option<Snowflake>,
+        have: &[String],
     ) -> Result<()> {
-        let entry = Entry::Post(key);
-        let (have, old) = (self.have(entry), self.parts_of(entry));
-        let message = wire::message_json(first);
-        if existing.is_none() {
-            let claimed = self.claimed();
-            if let Ok(Some(t)) = self.find_thread(forum, FORUM_POST_TITLE, first, claimed).await {
-                let found = self.find_later(t.thread, t.thread, later).await.unwrap_or_default();
-                let have = signatures(&later[..found.len()]);
-                self.lock.posts.insert(key.to_owned(), PostRef { message: t.thread, parts: found.clone() });
-                return self.finish(entry, t.thread, &found, later, &have).await;
-            }
+        if have.first().is_some_and(|h| first_of(post, h) == first.signature()) {
+            return Ok(());
         }
-        if let Some(t) = existing {
-            let edited = if have.first() == Some(&first.signature()) {
-                Ok(Value::Null)
-            } else {
-                self.call(Method::Patch, format!("channels/{t}/messages/{t}"), Some(message.clone())).await
-            };
-            match edited {
-                Ok(_) => return self.finish(entry, t, &old, later, have.get(1..).unwrap_or_default()).await,
-                Err(e) if ApiError::status_of(&e) == Some(404) => {} // deleted in Discord: post again
-                Err(e) => return Err(e),
-            }
-        }
-        let cleared = match self.lock.posts.get(key).map(|p| p.message) {
-            Some(old_thread) => self.clear(old_thread, &old).await,
-            None => None,
-        };
-        let body = json!({ "name": FORUM_POST_TITLE, "message": message });
-        let made = self.call(Method::Post, format!("channels/{forum}/threads"), Some(body)).await?;
-        let thread = id(&made["id"]).context("no id in reply")?;
-        self.lock.posts.insert(key.to_owned(), PostRef { message: thread, parts: Vec::new() });
-        let rest = self.finish(entry, thread, &[], later, &[]).await;
-        let pin = json!({ "flags": PINNED_THREAD });
-        self.call(Method::Patch, format!("channels/{thread}"), Some(pin))
-            .await
-            .context("posted, but couldn't pin it (the bot needs Manage Threads there)")?;
-        rest?;
-        cleared.map_or(Ok(()), |e| Err(e.context("posted again, but the old parts are still there")))
+        self.call(Method::Patch, format!("channels/{ch}/messages/{m}"), Some(wire::message_json(first))).await?;
+        Ok(())
     }
 
     async fn project_post(&mut self, slug: &str, existing: Option<ThreadRef>) -> Result<()> {
@@ -817,7 +800,7 @@ impl<R: Rest> Exec<'_, R> {
         let want_pin = conf.pinned.as_deref() == Some(slug);
         let was_pinned = self.live.and_then(|l| l.project_posts.get(slug)).is_some_and(|sig| projects::unpinned(sig).0);
         let pin = (want_pin || was_pinned).then_some(want_pin);
-        self.forum_thread(Entry::Project(slug), forum, &post.title, &post.tags, &post.parts, existing, pin).await
+        self.forum_thread(Entry::Project(slug), forum, &post.title, Some(&post.tags), &post.parts, existing, pin).await
     }
 
     /// A forum's `[[channel.thread]]` post, keyed `forum/key`. Never pinned.
@@ -828,7 +811,7 @@ impl<R: Rest> Exec<'_, R> {
         let src = self.cfg.desired.threads.get(key).context("no text for this forum post")?;
         let forum = self.lock.channel(forum_key).with_context(|| format!("forum `{forum_key}` doesn't exist yet"))?;
         let parts = template::render_parts(src, self.lock);
-        self.forum_thread(Entry::Thread(key), forum, &t.title, &t.tags, &parts, existing, None).await
+        self.forum_thread(Entry::Thread(key), forum, &t.title, Some(&t.tags), &parts, existing, None).await
     }
 
     /// The ids of `forum`'s tags named in `names` (matched case-insensitively), at most 5.
@@ -845,29 +828,31 @@ impl<R: Rest> Exec<'_, R> {
             .collect())
     }
 
-    /// A forum post the bot keeps (a project's, or a `[[channel.thread]]`):
-    /// its title, tags and parts edited in place; found again if the
-    /// lockfile lost track of it; posted again if it was deleted. `pin`:
-    /// pin it (or unpin it), else its pin is left as it is.
+    /// A forum post the bot keeps (a forum's own post, a project's, or a
+    /// `[[channel.thread]]`): its title, tags (unless `tags` is `None`) and
+    /// parts edited in place, opened again first if Discord archived it;
+    /// found again if the lockfile lost track of it; posted again if it was
+    /// deleted. `pin`: pin it (or unpin it), else its pin is left as it is.
     #[allow(clippy::too_many_arguments)]
     async fn forum_thread(
         &mut self,
         entry: Entry<'_>,
         forum: Snowflake,
         title: &str,
-        tags: &[String],
+        tags: Option<&[String]>,
         parts: &[Rendered],
         existing: Option<ThreadRef>,
         pin: Option<bool>,
     ) -> Result<()> {
         let (first, later) = parts.split_first().context("the post has no text")?;
         let mut have = self.have(entry);
-        let tag_ids = self.tag_ids(forum, tags).await?;
+        let tag_ids = match tags {
+            Some(tags) => Some(self.tag_ids(forum, tags).await?),
+            None => None,
+        };
         let title: String = title.chars().take(100).collect();
-        let message = wire::message_json(first);
-        let claimed = self.claimed();
         let found = if existing.is_none() {
-            self.find_thread(forum, &title, first, claimed).await.ok().flatten()
+            self.find_thread(forum, &title, first, self.claimed()).await.ok().flatten()
         } else {
             None
         };
@@ -882,50 +867,97 @@ impl<R: Rest> Exec<'_, R> {
             None => None,
         };
         let old = self.thread_ref(entry);
-        let flags = |on: bool| json!(if on { PINNED_THREAD } else { 0 });
         if let Some(t) = existing.or(found) {
-            // A new title leaves a notice in the thread, deleted below.
-            let renamed = match self.call(Method::Get, format!("channels/{}", t.thread), None).await {
-                Ok(c) => c["name"].as_str() != Some(title.as_str()),
-                Err(_) => false,
-            };
-            let mut patch = json!({ "name": title, "applied_tags": tag_ids });
-            if let Some(on) = pin {
-                patch["flags"] = flags(on);
-            }
-            let thread = self.call(Method::Patch, format!("channels/{}", t.thread), Some(patch)).await;
-            let msg = self
-                .call(Method::Patch, format!("channels/{}/messages/{}", t.thread, t.message), Some(message.clone()))
-                .await;
-            match (thread, msg) {
-                (Ok(_), Ok(_)) => {
+            match self.keep_thread(entry, &t, &title, tag_ids.as_deref(), pin, first, &have).await {
+                Ok(renamed) => {
+                    // A new title leaves a notice in the thread.
                     let notices = match renamed {
-                        true => clear_rename_notices(self.rest, t.thread, self.me().await?).await.map(drop),
+                        true => match self.me().await {
+                            Ok(me) => clear_rename_notices(self.rest, t.thread, me).await.map(drop),
+                            Err(e) => Err(e),
+                        },
                         false => Ok(()),
                     };
                     self.finish(entry, t.thread, &t.parts, later, have.get(1..).unwrap_or_default()).await?;
                     return notices.context("renamed, but couldn't delete Discord's rename notice in it");
                 }
-                (Err(e), _) | (_, Err(e)) if ApiError::status_of(&e) != Some(404) => return Err(e),
-                _ => {} // deleted in Discord: post again
+                Err(e) if ApiError::status_of(&e) == Some(404) => {} // deleted in Discord: post again
+                Err(e) => return Err(e),
             }
         }
         let cleared = match old {
             Some(t) => self.clear(t.thread, &t.parts).await,
             None => None,
         };
-        let body = json!({ "name": title, "applied_tags": tag_ids, "message": message });
+        let mut body = json!({ "name": title, "message": wire::message_json(first) });
+        if let Some(ids) = &tag_ids {
+            body["applied_tags"] = json!(ids);
+        }
         let made = self.call(Method::Post, format!("channels/{forum}/threads"), Some(body)).await?;
         let thread = id(&made["id"]).context("no id in reply")?;
         let message = id(&made["message"]["id"]).unwrap_or(thread);
         self.set_thread_ref(entry, ThreadRef { thread, message, parts: Vec::new() });
-        self.finish(entry, thread, &[], later, &[]).await?;
+        let rest = self.finish(entry, thread, &[], later, &[]).await;
         if pin == Some(true) {
-            self.call(Method::Patch, format!("channels/{thread}"), Some(json!({ "flags": flags(true) })))
+            self.call(Method::Patch, format!("channels/{thread}"), Some(json!({ "flags": PINNED_THREAD })))
                 .await
                 .context("posted, but couldn't pin it (the bot needs Manage Threads there)")?;
         }
+        rest?;
         cleared.map_or(Ok(()), |e| Err(e.context("posted again, but the old parts are still there")))
+    }
+
+    /// Bring a kept forum post's thread (title, tags, pin; opened if
+    /// archived) and first message in line, sending only what differs.
+    /// Whether it was renamed. A 404 means it's gone.
+    #[allow(clippy::too_many_arguments)]
+    async fn keep_thread(
+        &self,
+        entry: Entry<'_>,
+        t: &ThreadRef,
+        title: &str,
+        tag_ids: Option<&[String]>,
+        pin: Option<bool>,
+        first: &Rendered,
+        have: &[String],
+    ) -> Result<bool> {
+        // As Discord has it now; if it can't be read, everything is sent.
+        let live = match self.call(Method::Get, format!("channels/{}", t.thread), None).await {
+            Ok(c) => Some(c),
+            Err(e) if ApiError::status_of(&e) == Some(404) => return Err(e),
+            Err(_) => None,
+        };
+        let mut patch = Map::new();
+        let renamed = live.as_ref().is_some_and(|c| c["name"].as_str() != Some(title));
+        if live.is_none() || renamed {
+            patch.insert("name".into(), json!(title));
+        }
+        if let Some(ids) = tag_ids {
+            let now: BTreeSet<Snowflake> =
+                live.as_ref().map(|c| wire::ids(&c["applied_tags"])).unwrap_or_default().into_iter().collect();
+            let want: BTreeSet<Snowflake> = ids.iter().filter_map(|i| i.parse().ok().map(Snowflake)).collect();
+            if live.is_none() || now != want {
+                patch.insert("applied_tags".into(), json!(ids));
+            }
+        }
+        if let Some(on) = pin {
+            // Only the pinned bit: the thread's other flags stay as they are.
+            let flags = live.as_ref().and_then(|c| c["flags"].as_u64()).unwrap_or(0);
+            let want = if on { flags | PINNED_THREAD } else { flags & !PINNED_THREAD };
+            if live.is_none() || want != flags {
+                patch.insert("flags".into(), json!(want));
+            }
+        }
+        // An archived post takes no edits or new parts until it's opened
+        // again. It's left open: a kept post isn't one to hide.
+        if live.as_ref().is_some_and(|c| c["thread_metadata"]["archived"] == true) {
+            patch.insert("archived".into(), json!(false));
+        }
+        if !patch.is_empty() {
+            self.call(Method::Patch, format!("channels/{}", t.thread), Some(Value::Object(patch))).await?;
+        }
+        self.edit_first(entry, t.thread, t.message, first, have).await?;
+        Ok(renamed)
     }
 
     /// A forum post the bot started in `forum` with this title and first
@@ -939,11 +971,31 @@ impl<R: Rest> Exec<'_, R> {
     ) -> Result<Option<ThreadRef>> {
         let me = self.me().await?;
         let g = guild(self.lock)?;
-        let active = self.call(Method::Get, format!("guilds/{g}/threads/active"), None).await?;
-        let old = self.call(Method::Get, format!("channels/{forum}/threads/archived/public"), None).await?;
-        let candidates: Vec<Snowflake> = [&active["threads"], &old["threads"]]
-            .into_iter()
-            .flat_map(|l| l.as_array().into_iter().flatten())
+        let mut lists = vec![self.call(Method::Get, format!("guilds/{g}/threads/active"), None).await?];
+        // Archived posts come a page at a time, newest archived first.
+        let mut before: Option<String> = None;
+        for _ in 0..ARCHIVED_PAGES {
+            let path = match &before {
+                Some(b) => {
+                    format!("channels/{forum}/threads/archived/public?limit=100&before={}", b.replace('+', "%2B"))
+                }
+                None => format!("channels/{forum}/threads/archived/public?limit=100"),
+            };
+            let page = self.call(Method::Get, path, None).await?;
+            let more = page["has_more"] == true;
+            before = page["threads"]
+                .as_array()
+                .and_then(|l| l.last())
+                .and_then(|t| t["thread_metadata"]["archive_timestamp"].as_str())
+                .map(str::to_owned);
+            lists.push(page);
+            if !more || before.is_none() {
+                break;
+            }
+        }
+        let candidates: Vec<Snowflake> = lists
+            .iter()
+            .flat_map(|l| l["threads"].as_array().into_iter().flatten())
             .filter(|t| id(&t["parent_id"]) == Some(forum) && id(&t["owner_id"]) == Some(me) && t["name"] == title)
             .filter_map(|t| id(&t["id"]))
             .filter(|t| !claimed.contains(t))
@@ -1033,8 +1085,15 @@ impl<R: Rest> Exec<'_, R> {
     /// forum post is archived and locked where it is.
     async fn archive(&mut self, kind: ObjectKind, key: &str, oid: Snowflake) -> Result<()> {
         if kind == ObjectKind::Thread {
+            let path = format!("channels/{oid}");
             let body = json!({ "archived": true, "locked": true });
-            match self.call(Method::Patch, format!("channels/{oid}"), Some(body)).await {
+            let mut done = self.call(Method::Patch, path.clone(), Some(body.clone())).await;
+            // Discord archived it already, so it takes no lock: open it, then close and lock it.
+            if done.as_ref().err().is_some_and(|e| ApiError::code_of(e) == Some(ARCHIVED_THREAD)) {
+                self.call(Method::Patch, path.clone(), Some(json!({ "archived": false }))).await?;
+                done = self.call(Method::Patch, path, Some(body)).await;
+            }
+            match done {
                 Err(e) if ApiError::status_of(&e) != Some(404) => return Err(e),
                 _ => {}
             }

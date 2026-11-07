@@ -3,7 +3,6 @@
 //! registration, and how DM presses find their server.
 
 use std::collections::HashMap;
-use std::time::Duration;
 
 use super::*;
 use crate::now;
@@ -97,12 +96,7 @@ async fn dm_presses_find_their_server_and_strangers_are_refused() {
     let guilds = HashMap::from([(Id::new(1000), ctx.clone())]);
     crate::route(&guilds, Event::InteractionCreate(Box::new(InteractionCreate(dm_press(ADA, "s2", "x:y@1000", &[])))));
     crate::route(&guilds, Event::InteractionCreate(Box::new(InteractionCreate(dm_press(ADA, "s3", "x:y@999", &[])))));
-    let answered = async {
-        while fake.replies_to("s2").is_empty() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    };
-    tokio::time::timeout(Duration::from_secs(5), answered).await.expect("routed to its server");
+    crate::tests::eventually("routing to its server", || !fake.replies_to("s2").is_empty()).await;
     assert!(said(&fake, "s2")["content"].as_str().unwrap().contains("doesn't know that one"));
     assert!(fake.replies_to("s3").is_empty(), "a server the bot doesn't run here: nobody answers");
 }

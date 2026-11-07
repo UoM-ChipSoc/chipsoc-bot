@@ -400,12 +400,13 @@ impl<'a> Names<'a> {
             ObjectKind::ProjectPost => format!("{}'s project post", self.project(key)),
             ObjectKind::Thread => {
                 let (forum, own) = key.split_once('/').unwrap_or(("", key));
-                let title = self
-                    .cfg
-                    .desired
-                    .channel(forum)
-                    .and_then(|c| c.threads.iter().find(|t| t.key == own))
-                    .map_or_else(|| format!("`{own}`"), |t| format!("**{}**", t.title));
+                let configured = self.cfg.desired.channel(forum).and_then(|c| c.threads.iter().find(|t| t.key == own));
+                // One the config no longer has is named by Discord (its real title), not by its key.
+                let title = match (configured, id) {
+                    (Some(t), _) => format!("**{}**", t.title),
+                    (None, Some(id)) => format!("<#{id}> (`{own}` in lock.toml)"),
+                    (None, None) => format!("`{own}`"),
+                };
                 format!("the post {title} in {}", self.channel(forum))
             }
             ObjectKind::Server => "server settings".into(),
@@ -772,7 +773,7 @@ mod tests {
 **Channels** (1)
 • Edit <#21>"
         );
-        let ok = Report { outcomes: report.outcomes.into_iter().skip(1).collect() };
+        let ok = Report { outcomes: report.outcomes.into_iter().skip(1).collect(), ..Default::default() };
         assert!(outcome("<@7>", &ok, &Names::new(&c)).starts_with("✅ **Applied by <@7>:** 1 change done."));
         assert!(outcome("<@7>", &Report::default(), &Names::new(&c)).contains("nothing needed changing"));
     }

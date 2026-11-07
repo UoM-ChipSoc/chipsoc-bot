@@ -65,6 +65,11 @@ fn err(status: u16, message: &str) -> anyhow::Error {
     ApiError { status, message: message.into(), code: None }.into()
 }
 
+/// Discord's refusal of a change to an archived thread.
+fn archived_err() -> anyhow::Error {
+    ApiError { status: 400, message: "Thread is archived".into(), code: Some(crate::ARCHIVED_THREAD) }.into()
+}
+
 /// The bot's application id, as webhooks for its interactions carry it.
 pub const APP: &str = "1";
 
@@ -167,6 +172,14 @@ impl FakeDiscord {
         }
     }
 
+    /// Archive a forum post, as Discord does after a week without activity.
+    pub fn auto_archive(&self, thread: Snowflake) {
+        let mut st = self.state();
+        if let Some(t) = st.channels.iter_mut().find(|c| c["id"] == thread.to_string() && c["thread"] == true) {
+            t["thread_metadata"]["archived"] = json!(true);
+        }
+    }
+
     fn bot_position(&self, st: &State) -> i64 {
         let bot = st.roles.iter().find(|r| r["id"] == self.bot_role.to_string());
         bot.and_then(|r| r["position"].as_i64()).unwrap_or(i64::MAX)
@@ -199,6 +212,20 @@ impl FakeDiscord {
             st.bodies.push((format!("{method:?} {path}"), body.clone()));
         }
         let find = |list: &[Value], i: &str| list.iter().position(|x| x["id"] == i);
+        // Like Discord: an archived thread takes no new, edited or deleted
+        // messages, and no change but opening it again.
+        if let ["channels", cid, rest @ ..] = parts.as_slice()
+            && st.channels.iter().any(|c| c["id"] == *cid && c["thread"] == true && archived(c))
+        {
+            let refused = match (method, rest) {
+                (Method::Post, ["messages"]) | (Method::Patch | Method::Delete, ["messages", _]) => true,
+                (Method::Patch, []) => body["archived"] != false,
+                _ => false,
+            };
+            if refused {
+                return Err(archived_err());
+            }
+        }
         match (method, parts.as_slice()) {
             (Method::Get, ["users", "@me"]) => Ok(json!({ "id": "42", "username": "bot" })),
             (Method::Get, ["users", "@me", "guilds"]) => Ok(json!([{ "id": g, "name": st.guild["name"] }])),

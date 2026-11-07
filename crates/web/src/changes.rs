@@ -323,8 +323,17 @@ fn step(names: &Names, a: &Action) -> Element {
             span { class: "verb edit", "Reorder" }
             "{reorder(names, scope, to)}"
         },
-        Action::Archive { kind, key, .. } => headline("remove", "Archive", kind, key),
-        Action::Delete { kind, key, .. } => headline("remove", "Delete", kind, key),
+        // What the config doesn't name is named by its Discord id too: its key is only lock.toml's.
+        Action::Archive { kind, key, id } | Action::Delete { kind, key, id } => {
+            let verb = if matches!(a, Action::Archive { .. }) { "Archive" } else { "Delete" };
+            let unnamed = names.get(*kind, key) == key.as_str();
+            rsx! {
+                {headline("remove", verb, kind, key)}
+                if unnamed {
+                    " (Discord id {id})"
+                }
+            }
+        }
         Action::Skip { kind, key, reason } => rsx! {
             {headline("", "Skip", kind, key)}
             " ({reason})"

@@ -127,7 +127,7 @@ pub enum MirrorState {
     Posted,
     /// Rejected here: later updates are ignored.
     Refused,
-    /// They took it down (or it was archived here).
+    /// They took it down, or what we posted of it was deleted here.
     Removed,
 }
 
@@ -915,17 +915,19 @@ impl Fed<'_> {
         .await?)
     }
 
-    /// An item shared already changed: send it again to whoever has it. How many that is.
+    /// An item shared already changed: send it again to whoever has it (not
+    /// if it's what was sent already). How many that is.
     pub async fn update_out(&self, what: &str, origin: &str, body: &str, now: i64) -> Result<u64> {
         let r = sqlx::query(
             "UPDATE fed_share_out SET body = ?, pending = 1, tries = 0, changed = ?
-             WHERE guild_id = ? AND what = ? AND origin = ? AND removed = 0",
+             WHERE guild_id = ? AND what = ? AND origin = ? AND removed = 0 AND body != ?",
         )
         .bind(body)
         .bind(now)
         .bind(self.guild)
         .bind(what)
         .bind(origin)
+        .bind(body)
         .execute(self.pool)
         .await?;
         Ok(r.rows_affected())

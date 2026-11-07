@@ -16,6 +16,7 @@ use twilight_model::id::marker::{ChannelMarker, GuildMarker};
 
 use super::{Call, Conn, STATUS, Voice};
 use crate::Ctx;
+use crate::tests::eventually;
 
 const ADA: u64 = 7;
 const BEN: u64 = 8;
@@ -207,13 +208,8 @@ async fn start_with(s: &Server, i: Interaction) {
     moved(s, ADA, "Ada", Some(s.id("meeting")));
     let ctx = s.ctx.clone();
     let task = tokio::spawn(async move { crate::commands::interaction(&ctx, &i).await });
-    // The bot asks to join; Discord says where to connect.
-    for _ in 0..200 {
-        if !s.call.moves.lock().unwrap().is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    // The bot asks to join (unless it was refused); Discord says where to connect.
+    eventually("the bot to ask to join", || !s.call.moves.lock().unwrap().is_empty() || task.is_finished()).await;
     moved(s, s.ctx.me.get(), "Bot", Some(s.id("meeting")));
     super::voice_server(&s.ctx, "voice.example:443", "secret");
     task.await.unwrap();
@@ -248,7 +244,7 @@ async fn a_meeting_is_recorded_everyone_is_told_and_the_committee_gets_it() {
     }
     moved(&s, BEN, "Ben", Some(meeting));
     moved(&s, BEN, "Ben", Some(meeting)); // unchanged: not told twice
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    eventually("Ben to be told by DM", || !s.fake.dms_to(BEN).is_empty()).await;
     let dms = s.fake.dms_to(BEN);
     assert_eq!(dms.len(), 1, "{dms:?}");
     assert!(dms[0].contains("being recorded") && dms[0].contains("(#meeting)"), "{}", dms[0]);
@@ -351,7 +347,10 @@ async fn closed_dms_get_the_notice_in_the_call_and_a_missing_status_goes_in_the_
     assert!(notice.contains(&format!("**{STATUS} now.**")), "{notice}");
     s.fake.fail("POST users/@me/channels", 403, false);
     moved(&s, BEN, "Ben", Some(meeting));
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    let ping = |st: &chipsoc_discord::fake::State| {
+        st.messages.iter().find(|m| m["content"].as_str().is_some_and(|c| c.starts_with(&format!("<@{BEN}>")))).cloned()
+    };
+    eventually("Ben to be told in the call", || ping(&s.fake.state.lock().unwrap()).is_some()).await;
     {
         let st = s.fake.state.lock().unwrap();
         let ping = st
@@ -363,7 +362,8 @@ async fn closed_dms_get_the_notice_in_the_call_and_a_missing_status_goes_in_the_
     }
     // The bot is pulled out of the call: it stops, saying why.
     moved(&s, s.ctx.me.get(), "Bot", None);
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    let ended = || store::list(s.root.path(), 1000).first().is_some_and(|m| m.ended_because.is_some());
+    eventually("the recording to stop", || s.ctx.rec.recording().is_none() && ended()).await;
     let m = store::list(s.root.path(), 1000).remove(0);
     assert_eq!(m.ended_because.as_deref(), Some("the bot was disconnected from the call"));
     assert!(s.ctx.rec.recording().is_none());
@@ -469,14 +469,8 @@ async fn a_late_joiner_nobody_can_tell_stops_the_recording() {
     moved(&s, BEN, "Ben", Some(meeting));
     // Stopping closes the files after the session ends: wait for both, however slow the machine.
     let ended = || store::list(s.root.path(), 1000).first().is_some_and(|m| m.ended_because.is_some());
-    for _ in 0..500 {
-        let told = s.messages_in("log").join("\n").contains("couldn't be told");
-        if s.ctx.rec.recording().is_none() && ended() && told {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert!(s.ctx.rec.recording().is_none(), "stopped");
+    let told = || s.messages_in("log").join("\n").contains("couldn't be told");
+    eventually("the recording to stop, saying why", || s.ctx.rec.recording().is_none() && ended() && told()).await;
     let m = store::list(s.root.path(), 1000).remove(0);
     assert_eq!(m.ended_because.as_deref(), Some("someone who joined couldn't be told it's recording"));
     let log = s.messages_in("log").join("\n");
@@ -495,7 +489,8 @@ async fn a_late_joiner_is_told_where_the_recording_was_started_if_nowhere_else()
     s.fake.fail("POST users/@me/channels", 403, false);
     s.fake.fail(&format!("POST channels/{meeting}/messages"), 403, false);
     moved(&s, BEN, "Ben", Some(meeting));
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let said = || s.messages_in("committee-chat").join("\n").contains(&format!("<@{BEN}> "));
+    eventually("Ben to be told where it was started", said).await;
     assert!(s.ctx.rec.recording().is_some(), "still recording");
     let told = s.messages_in("committee-chat").join("\n");
     assert!(told.contains(&format!("<@{BEN}> ")) && told.contains("being recorded"), "{told}");

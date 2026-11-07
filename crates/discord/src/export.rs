@@ -340,6 +340,7 @@ async fn posts(
     unreadable: &mut Unreadable,
 ) -> Result<Posts> {
     let mut posts = BTreeMap::new();
+    let me = if known.posts.is_empty() && known.project_posts.is_empty() { None } else { Some(me(rest).await?) };
     for (key, p) in &known.posts {
         let Some(ch) = known.channel(key) else { continue };
         // A forum's post is a thread whose first message has its id.
@@ -347,7 +348,21 @@ async fn posts(
             c["type"].as_u64().and_then(|t| ChannelKind::from_discord(t as u8)).is_some_and(ChannelKind::has_tags)
         });
         let at = if forum { p.message } else { ch };
+        // A forum's post must be a thread in that forum.
+        if forum {
+            match get_read(rest, &format!("channels/{at}")).await? {
+                Read::Found(t) if id(&t["parent_id"]) == Some(ch) => {}
+                Read::Found(_) | Read::Absent => continue,
+                Read::Forbidden => {
+                    unreadable.posts.insert(key.clone());
+                    lock.posts.insert(key.clone(), p.clone());
+                    continue;
+                }
+            }
+        }
         match get_read(rest, &format!("channels/{at}/messages/{}", p.message)).await? {
+            // Only the bot's own message is its post (one it can edit).
+            Read::Found(m) if id(&m["author"]["id"]) != me => {}
             Read::Found(m) => match later_parts(rest, at, &p.parts).await? {
                 Some(later) => {
                     let all: Vec<Rendered> = std::iter::once(wire::rendered_from(&m)).chain(later).collect();
@@ -368,7 +383,7 @@ async fn posts(
     }
     let mut project_posts = BTreeMap::new();
     for (slug, t) in &known.project_posts {
-        let Some((thread, sig)) = forum_post(rest, t, channels).await? else {
+        let Some((thread, sig)) = forum_post(rest, t, channels, None, me).await? else {
             continue;
         };
         let sig = match sig {
@@ -398,9 +413,15 @@ async fn threads(
     unreadable: &mut Unreadable,
 ) -> Result<BTreeMap<String, String>> {
     let mut out = BTreeMap::new();
-    for (key, p) in known.posts.iter().filter(|(k, _)| k.contains('/')) {
+    let mut bot = None;
+    for (key, p) in known.posts.iter().filter(|(k, _)| is_thread_key(k)) {
+        // Only a post in the forum its key names is one of its threads.
+        let Some(forum) = key.split_once('/').and_then(|(f, _)| known.channel(f)) else { continue };
+        if bot.is_none() {
+            bot = Some(me(rest).await?);
+        }
         let t = ThreadRef { thread: p.message, message: p.message, parts: p.parts.clone() };
-        match forum_post(rest, &t, channels).await? {
+        match forum_post(rest, &t, channels, Some(forum), bot).await? {
             None => {}
             Some((_, None)) => {
                 unreadable.posts.insert(key.clone());
@@ -415,9 +436,23 @@ async fn threads(
     Ok(out)
 }
 
+/// The bot's own user id.
+async fn me(rest: &impl Rest) -> Result<Snowflake> {
+    use anyhow::Context;
+    id(&rest.call(Method::Get, "users/@me", None).await?["id"]).context("no id for the bot")
+}
+
 /// A forum post the bot keeps: its thread, and its signature (title, tags,
-/// text), or none if the token can't read it. None at all if it's gone.
-async fn forum_post(rest: &impl Rest, t: &ThreadRef, channels: &[Value]) -> Result<Option<(Value, Option<String>)>> {
+/// text), or none if the token can't read it. None at all if it's gone, or
+/// isn't the bot's post (in `forum`, when given, with `me`'s first message):
+/// a lockfile entry can't make the bot take over someone else's.
+async fn forum_post(
+    rest: &impl Rest,
+    t: &ThreadRef,
+    channels: &[Value],
+    forum: Option<Snowflake>,
+    me: Option<Snowflake>,
+) -> Result<Option<(Value, Option<String>)>> {
     let (thread, m) = (
         get_read(rest, &format!("channels/{}", t.thread)).await?,
         get_read(rest, &format!("channels/{}/messages/{}", t.thread, t.message)).await?,
@@ -427,6 +462,11 @@ async fn forum_post(rest: &impl Rest, t: &ThreadRef, channels: &[Value]) -> Resu
         (Read::Forbidden, _) | (_, Read::Forbidden) => return Ok(Some((Value::Null, None))),
         _ => return Ok(None),
     };
+    if forum.is_some_and(|f| id(&thread["parent_id"]) != Some(f))
+        || me.is_some_and(|me| id(&m["author"]["id"]) != Some(me))
+    {
+        return Ok(None);
+    }
     let Some(later) = later_parts(rest, t.thread, &t.parts).await? else {
         return Ok(Some((thread, None)));
     };

@@ -318,6 +318,9 @@ pub(crate) async fn delete<R: Rest + Clone + 'static>(
         if meta.ended_at.is_none() {
             return Err("It's still recording: stop it with /record stop first.".to_owned());
         }
+        if meta.transcript == Transcript::Making {
+            return Err("Its transcript is being made: delete it once that's done.".to_owned());
+        }
         let root = app.recordings.clone();
         let gone = {
             let id = id.clone();

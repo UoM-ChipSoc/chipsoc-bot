@@ -185,7 +185,7 @@ pub(crate) async fn deliver(ctx: &Ctx, peer: &Peer, content: &str) -> bool {
 /// measured at the width real ones have.
 pub(crate) fn fits(sk: &proto::SecretKey, from: &str, to: &str, body: Body) -> bool {
     let env = Envelope { from: from.into(), to: to.into(), seq: now_ms(), ts: now(), nonce: "x".repeat(16), body };
-    proto::seal(sk, &env).chars().count() <= ui::MAX_CONTENT
+    proto::sealed_len(sk, &env) <= ui::MAX_CONTENT
 }
 
 /// Split `items` into runs that each `fits`, in order. Items too big to fit

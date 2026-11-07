@@ -88,15 +88,15 @@ pub trait Baseline: Send + Sync {
     }
 
     /// Note in the audit log of server `guild` that `by` (an id, else a
-    /// name) did `action`; `detail` says what.
+    /// name) did `action`; `detail` says what. The entry's id, if it has one.
     fn audit<'a>(
         &'a self,
         _guild: Snowflake,
         _by: &'a str,
         _action: &'a str,
         _detail: &'a str,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async { Ok(()) })
+    ) -> BoxFuture<'a, Result<Option<i64>>> {
+        Box::pin(async { Ok(None) })
     }
 }
 
@@ -133,10 +133,15 @@ impl Lease {
         }
     }
 
-    /// Whether an apply holds the lease now, here or in another program
-    /// (lock.toml may be half written meanwhile).
+    /// Whether an apply holds the lease now (here or in another program): a
+    /// hint, out of date as soon as it's said. Looking takes a shared lock
+    /// for an instant, which never stops another look, and an apply starting
+    /// in that instant waits it out (see [`Lease::take_soon`]).
     pub fn busy(dir: &Path) -> bool {
-        matches!(Self::take(dir), Err(e) if e.downcast_ref::<Refused>() == Some(&Refused::Busy))
+        let Ok(f) = File::options().create(true).truncate(false).write(true).open(dir.join(".apply.lock")) else {
+            return false;
+        };
+        f.try_lock_shared().is_err()
     }
 
     /// [`Lease::take`], trying again for a moment first: a lease just let go
@@ -377,11 +382,16 @@ impl<R: Rest> Engine<R> {
     }
 
     /// Note what `by` did in the audit log, if there's one (see [`Baseline::audit`]) and they're a person.
-    async fn audit(&self, by: &By, action: &str, detail: &str) {
-        let (Some((baseline, _)), Some(who)) = (&self.trust, by.key()) else { return };
-        let Ok(g) = self.guild().await else { return };
-        if let Err(e) = baseline.audit(g, &who, action, detail).await {
-            tracing::warn!("audit log failed: {e:#}");
+    /// The entry's id, if one was written.
+    async fn audit(&self, by: &By, action: &str, detail: &str) -> Option<i64> {
+        let (Some((baseline, _)), Some(who)) = (&self.trust, by.key()) else { return None };
+        let g = self.guild().await.ok()?;
+        match baseline.audit(g, &who, action, detail).await {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::warn!("audit log failed: {e:#}");
+                None
+            }
         }
     }
 
@@ -604,7 +614,7 @@ impl<R: Rest> Engine<R> {
         }
         let cfg = self.cfg.clone();
         let mut saver = Saver { cfg: &cfg, trust: self.baseline(), progress };
-        let report = exec::execute(&self.rest, &cfg, &checked, Some(&live), &mut lock, &mut saver).await;
+        let mut report = exec::execute(&self.rest, &cfg, &checked, Some(&live), &mut lock, &mut saver).await;
         // Objects made during this run were hashed before they existed; record
         // what everything in sync looks like now.
         if let Err(e) = self.record_applied(g, &mut lock).await {
@@ -623,7 +633,7 @@ impl<R: Rest> Engine<R> {
         let failed = report.outcomes.len() - done;
         let detail =
             if failed == 0 { format!("{done} change(s)") } else { format!("{done} change(s), {failed} failed") };
-        self.audit(by, "apply", &detail).await;
+        report.audit_id = self.audit(by, "apply", &detail).await;
         if let Err(e) = self.refresh().await {
             // The report still stands; the next load shows the problem.
             tracing::warn!("reloading the config after apply failed: {e:#}");
