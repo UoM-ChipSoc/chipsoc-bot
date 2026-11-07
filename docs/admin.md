@@ -29,7 +29,8 @@ suggestions to Accept or Reject in the second.
 Accept their `/volunteer` card, or the Members page). For an admin position
 a second admin presses **Approve** in `log.bot`, and they get the role and
 `admin_role`; nobody appoints themselves except the server owner. They get
-a welcome DM saying what they can do and where (with a dashboard link when
+a welcome DM saying what they can do and where (`/server help`, the review
+channel, `/record` when recording is on, and a dashboard link when
 Tailscale is set up). Someone who should be an admin without a position
 goes under `admin_role` in members.toml.
 
@@ -153,7 +154,7 @@ card at once.
 | `/share-resource` | Anyone | Title, https link, what it is, the forum's tags; checked (not shared before), then a review card; once accepted, a post crediting them, and a DM. |
 | `/suggest-feed` | Anyone | A feed's address, or a website's (its feed is found from the page). A review card; once accepted, new posts are shared; a DM either way. |
 | `/profile` | Anyone | Sets their nickname (with `join.toml`: opens the join flow). |
-| `/solved` | Asker, admins | Tags a help post solved and closes it. |
+| `/solved` | Asker, admins | Tags a help post solved and closes it. If the bot can't (it needs Manage Threads in the forum), the member is asked to try later and `log.bot` says why. |
 | `/partners` | Anyone | Partners' project catalogues (with partners only). |
 | `/event` | Anyone | Admins: a scheduled event at once (in a voice or stage channel if "Where" names one), announced, with reminders a day and an hour before. Members: a suggestion for review; Accept makes it, crediting them, and they get a DM either way. A start that can't be read or has passed, or a length outside 5–1440 minutes, is refused. |
 | `/server help` | Anyone | Start here: what admins can do, by area, and where. |
@@ -168,7 +169,7 @@ card at once.
 | `/server member list\|info\|appoint\|remove` | Admins | Positions and who holds them, and who left; what someone answered when they joined; appoint or take out. |
 | `/server project status\|applications\|rename`, `/server position open\|close` | Admins | Config edits: saved, then shown as a plan with an **Apply** button. Closing a position with a window posts its applicants' card. |
 | `/server project lead` | Admins | Make someone a project lead (the Lead role, and a DM). Refused, and nobody told, if the Lead role has moderator or admin permissions in Discord the config doesn't give it. |
-| `/server feed list\|add\|pause\|resume\|remove`, `/server resource list\|add\|archive` | Admins | Feeds (a paused one isn't checked) and the resources forum. |
+| `/server feed list\|add\|pause\|resume\|remove`, `/server resource list\|add\|archive` | Admins | Feeds (by title, which the bot keeps as each one last read; a paused one isn't checked) and the resources forum. |
 | `/server idea close <post> [reason]` | Admins | Close an idea's post, after **Confirm**: it gets `[ideas] closed_tag` if set (and loses the needs-lead tag), "🔒 **Closed:** <reason>" (or just "🔒 **Closed.**") is posted in it, then it's archived and locked (never deleted). The reply says whether it was tagged. Also on the dashboard's Resources page (**Close…**, a reason, then **Yes, close this idea**), the TUI's Resources tab, `idea close` and the API. |
 | `/server join notify` | Admins | Says how many members haven't been through the join flow, then DMs them once with **Send to N**. |
 | `/server share announcement\|event` | Admins | Share an announcement (its link) or one of our events with partners you pick from a menu; only partners whose `send` lists that kind are offered ([partners.md](partners.md#sharing-content)). Making an event with `/event` offers the same menu. |
