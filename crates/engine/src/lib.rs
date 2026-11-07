@@ -637,10 +637,9 @@ impl<R: Rest> Engine<R> {
         }
         let cfg = self.cfg.clone();
         let mut saver = Saver { cfg: &cfg, trust: self.baseline(), progress };
+        let before = lock.clone();
         let mut report = exec::execute(&self.rest, &cfg, &checked, Some(&live), &mut lock, &mut saver).await;
-        // Objects made during this run were hashed before they existed; record
-        // what everything in sync looks like now.
-        if let Err(e) = self.record_applied(g, &mut lock).await {
+        if let Err(e) = self.record_applied(g, &mut lock, &before).await {
             tracing::warn!("recording applied state failed: {e:#}");
         }
         if let Err(e) = self.trust_lock(&lock).await {
@@ -686,11 +685,19 @@ impl<R: Rest> Engine<R> {
         b.save_lock(lock).await
     }
 
-    /// Record in `lock` what's in step after an apply (the caller saves it).
-    async fn record_applied(&mut self, g: Snowflake, lock: &mut Lock) -> Result<()> {
+    /// Record in `lock` what's in step after an apply (the caller saves it);
+    /// `before` is the lock it started from.
+    async fn record_applied(&mut self, g: Snowflake, lock: &mut Lock, before: &Lock) -> Result<()> {
         let mut cfg = (*self.cfg).clone();
         cfg.desired.lock = lock.clone();
         self.cfg = Arc::new(cfg);
+        // Objects made during this run were hashed before they existed (or
+        // what they point at did), so plan again to hash them as they are.
+        // With no new ids or posts, the plan's hashes (kept as it ran) are those.
+        let ids = |l: &Lock| Lock { applied: Default::default(), ..l.clone() };
+        if ids(lock) == ids(before) {
+            return Ok(());
+        }
         let (after, _) = self.plan_at(g, Options::default()).await?;
         let pending: BTreeSet<String> = after.actions.iter().filter_map(Action::object).collect();
         for (obj, h) in after.hashes {

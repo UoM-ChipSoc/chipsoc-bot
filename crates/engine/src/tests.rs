@@ -190,6 +190,28 @@ async fn ui_changes_are_detected_and_undone() {
     assert_converged(&e).await;
 }
 
+/// An apply that makes nothing new exports the server once (to check the
+/// plan), not again to record what's in step: the plan's hashes are those.
+#[tokio::test]
+async fn an_apply_making_nothing_new_exports_once() {
+    let d = fixture();
+    let mut e = engine(d.path());
+    apply_all(&mut e).await;
+    e.rest.edit_channel("general", |c| c["topic"] = json!("changed in the UI"));
+    let start = e.rest.requests();
+    let plan = e.plan(Options::default()).await.unwrap();
+    let planning = e.rest.requests() - start;
+    e.rest.take_calls();
+    e.apply(&plan, &mut |_: &Action, _: &Result<(), String>| {}).await.unwrap();
+    let applying = e.rest.requests() - start - planning;
+    assert_eq!(e.rest.take_calls().len(), 1, "one edit");
+    // One export to check the plan against, and the edit.
+    assert!(applying <= planning + 1, "{applying} requests to apply, {planning} to plan");
+    assert_converged(&e).await;
+    let after = chipsoc_config::Config::load(d.path()).unwrap().desired.lock.applied;
+    assert_eq!(after.hashes, e.cfg.desired.lock.applied.hashes, "saved as recorded");
+}
+
 #[tokio::test]
 async fn edits_send_only_changed_fields_and_keep_tag_ids() {
     let d = fixture();
