@@ -85,7 +85,20 @@ impl<R: Rest + Clone> Local<R> {
     /// load can still be edited (to fix it) straight in the files.
     async fn edit(&self, list: &[Op]) -> Result<Change> {
         if self.db.is_some() && self.cfg().is_ok() {
-            return self.engine().await?.edit_ops(list, &self.actor.by(true)).await;
+            let mut change = self.engine().await?.edit_ops(list, &self.actor.by(true)).await?;
+            // Closing a position lists its applicants now, as everywhere.
+            if !change.files.is_empty() && chipsoc_admin::rounds::closes_window(list) {
+                let posted = match self.desk().await {
+                    Ok(d) => chipsoc_admin::rounds::post_closed(&d).await,
+                    Err(e) => Err(e),
+                };
+                if let Err(e) = posted {
+                    change.warnings.push(format!(
+                        "Couldn't list its applicants in the review channel just now ({e:#}); the bot does within a minute."
+                    ));
+                }
+            }
+            return Ok(change);
         }
         // The bot or web UI may share this checkout: don't write while they do.
         let _held = chipsoc_config::git::WriteLock::take(&self.dir)?;
@@ -172,13 +185,9 @@ fn said<T>(r: Result<T, String>) -> Result<T> {
 /// What the shared admin code said, as plain text with people's names (an error if it refused).
 async fn spoken<H: Host>(h: &H, r: Result<chipsoc_admin::Said, chipsoc_admin::Said>) -> Result<String> {
     match r {
-        Ok(s) => Ok(plain(h, s).await),
-        Err(s) => Err(anyhow::Error::msg(plain(h, s).await)),
+        Ok(s) => Ok(s.plain_named(h).await),
+        Err(s) => Err(anyhow::Error::msg(s.plain_named(h).await)),
     }
-}
-
-async fn plain<H: Host>(h: &H, s: chipsoc_admin::Said) -> String {
-    s.named(h).await.plain(Some(&h.cfg()))
 }
 
 impl<R: Rest + Clone> Backend<R> {
@@ -232,11 +241,11 @@ impl<R: Rest + Clone> Backend<R> {
         }
     }
 
-    /// The config's latest changes, or what `user` did in the last week (see [`chipsoc_admin::history_of`]).
+    /// The config's latest changes, or what `user` did in the last week (see [`chipsoc_admin::config_history`]).
     pub async fn changes(&self, user: Option<Snowflake>, limit: usize) -> Result<Vec<Done>> {
         match self {
             Self::Remote(c) => c.changes(user, limit).await,
-            Self::Local(l) => chipsoc_admin::history_of(&l.desk().await?, user, limit).await,
+            Self::Local(l) => chipsoc_admin::config_history(&l.desk().await?, user, limit).await,
         }
     }
 
@@ -329,7 +338,7 @@ impl<R: Rest + Clone> Backend<R> {
     pub async fn history(&self, limit: usize) -> Result<Vec<Past>> {
         match self {
             Self::Remote(c) => c.history(limit).await,
-            Self::Local(l) => chipsoc_admin::history(&l.desk().await?, limit as i64).await,
+            Self::Local(l) => chipsoc_admin::queue_history(&l.desk().await?, limit as i64).await,
         }
     }
 
@@ -343,7 +352,7 @@ impl<R: Rest + Clone> Backend<R> {
                         decided.outcome = decided.outcome.named(&d).await;
                         Ok(decided)
                     }
-                    Err(why) => Err(anyhow::Error::msg(plain(&d, why).await)),
+                    Err(why) => Err(anyhow::Error::msg(why.plain_named(&d).await)),
                 }
             }
         }

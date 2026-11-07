@@ -33,7 +33,7 @@ pub(crate) async fn page<R: Rest + Clone + 'static>(
 ) -> Response {
     let loaded = async {
         let desk = app.desk(&s).await?;
-        let done = chipsoc_admin::history_of(&desk, q.user, SHOWN).await?;
+        let done = chipsoc_admin::config_history(&desk, q.user, SHOWN).await?;
         anyhow::Ok((done, chipsoc_admin::owner_id(&desk).await.ok()))
     };
     let (done, owner) = match loaded.await {

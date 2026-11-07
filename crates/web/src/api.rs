@@ -261,13 +261,20 @@ pub(crate) async fn schema<R: Rest + 'static>(State(app): State<Arc<App<R>>>) ->
 /// `POST /ops`: one change to the config (an op, or a list of them made as
 /// one: one check, one commit, all or nothing), refused (with the problems)
 /// if it would break it.
-pub(crate) async fn op<R: Rest + 'static>(
+pub(crate) async fn op<R: Rest + Clone + 'static>(
     State(app): State<Arc<App<R>>>,
     Extension(s): Extension<Session>,
     Json(ops): Json<crate::remote::Ops>,
 ) -> Reply<Change> {
     let ops = ops.into_vec();
-    Ok(Json(to_end(async move { app.edit_ops(&s, &ops).await }).await?))
+    let change = to_end(async move {
+        let change = app.edit_ops(&s, &ops).await?;
+        if !change.files.is_empty() && chipsoc_admin::rounds::closes_window(&ops) {
+            crate::positions::close_windows(&app, &s).await;
+        }
+        anyhow::Ok(change)
+    });
+    Ok(Json(change.await?))
 }
 
 /// `POST /ops/preview`: a managed post's markdown as Discord would get it.
@@ -436,7 +443,7 @@ pub(crate) async fn changes<R: Rest + Clone + 'static>(
     Query(q): Query<Whose>,
 ) -> Reply<Vec<chipsoc_admin::Done>> {
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
-    Ok(Json(chipsoc_admin::history_of(&app.desk(&s).await?, q.user, limit).await?))
+    Ok(Json(chipsoc_admin::config_history(&app.desk(&s).await?, q.user, limit).await?))
 }
 
 /// `POST /undo`: go back on a config commit (the server owner only); apply to send it to Discord.
@@ -530,7 +537,7 @@ pub(crate) async fn history<R: Rest + Clone + 'static>(
     Extension(s): Extension<Session>,
     Query(q): Query<Limit>,
 ) -> Reply<Vec<Past>> {
-    Ok(Json(chipsoc_admin::history(&app.desk(&s).await?, q.or(50) as i64).await?))
+    Ok(Json(chipsoc_admin::queue_history(&app.desk(&s).await?, q.or(50) as i64).await?))
 }
 
 /// Run admin work that may change Discord or the config to the end, even if

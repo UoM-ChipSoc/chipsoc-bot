@@ -47,9 +47,7 @@ pub(crate) async fn act<R: Rest + Clone + 'static>(
         Err(e) => return view::broken(Tab::Positions, &s, &e).into_response(),
     };
     let built = build(&action, &f, &cfg);
-    let closes = built
-        .as_ref()
-        .is_ok_and(|(_, ops)| ops.iter().any(|o| matches!(o, Op::SetPosition { set: PositionField::Open(false), .. })));
+    let closes = built.as_ref().is_ok_and(|(_, ops)| chipsoc_admin::rounds::closes_window(ops));
     match edit(&app, &s, HERE, f, built).await {
         Ok(done) => {
             if closes {
@@ -62,8 +60,9 @@ pub(crate) async fn act<R: Rest + Clone + 'static>(
 }
 
 /// Closing a position closes its window: the card listing who applied is
-/// posted now (the bot would within a minute anyway).
-async fn close_windows<R: Rest + Clone + 'static>(app: &App<R>, s: &Session) {
+/// posted now (the bot would within a minute anyway). Here and for the API
+/// (the CLI and TUI signed in to this server).
+pub(crate) async fn close_windows<R: Rest + Clone + 'static>(app: &App<R>, s: &Session) {
     let posted = match app.desk(s).await {
         Ok(d) => chipsoc_admin::rounds::post_closed(&d).await,
         Err(e) => Err(e),

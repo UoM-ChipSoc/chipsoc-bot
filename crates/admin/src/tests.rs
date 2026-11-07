@@ -761,7 +761,7 @@ async fn rejections_can_say_why_and_decisions_are_kept() {
     );
     decide_with(&h, b, true, Some(" "), &reviewer()).await.unwrap();
 
-    let past = history(&h, 10).await.unwrap();
+    let past = queue_history(&h, 10).await.unwrap();
     let seen: Vec<(i64, &str, Option<&str>)> =
         past.iter().map(|p| (p.id, p.status.as_str(), p.reason.as_deref())).collect();
     assert_eq!(seen, [(b, "accepted", None), (a, "rejected", Some("We're full this year."))]);

@@ -194,6 +194,12 @@ impl Said {
         self
     }
 
+    /// [`Said::named`], then [`Said::plain`]: what a front end without
+    /// Discord's markdown shows.
+    pub async fn plain_named<H: Host>(self, h: &H) -> String {
+        self.named(h).await.plain(Some(&h.cfg()))
+    }
+
     /// With people's names filled in from the server's member list, and
     /// channels' from the config: ready for [`Said::plain`] anywhere.
     pub async fn named<H: Host>(self, h: &H) -> Self {
