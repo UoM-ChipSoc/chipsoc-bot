@@ -23,8 +23,7 @@ pub const NEW_CONFIG: &str = "📥";
 /// Who can get in: access given or taken.
 pub const ACCESS: &str = "🔒";
 
-/// Discord's limit for a message's text.
-pub const MAX_CONTENT: usize = 2000;
+pub use chipsoc_model::{MAX_CONTENT, truncate};
 /// Bullets shown per group before "+N more".
 pub const SHOWN: usize = 6;
 
@@ -60,21 +59,12 @@ pub fn bullets(lines: &[String], max: usize) -> Vec<String> {
     out
 }
 
-/// At most `max` characters, the last one `…` if it had to be cut.
-pub fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_owned();
-    }
-    let keep: String = s.chars().take(max.saturating_sub(1)).collect();
-    format!("{keep}…")
-}
-
 /// A message with `note` added at the end (a decision under a card, say),
-/// within what the bot sends (a character under Discord's limit): if both
-/// don't fit, `original` is shortened, never the note.
+/// within Discord's limit: if both don't fit, `original` is shortened, never
+/// the note.
 pub fn with_note(original: &str, note: &str) -> String {
-    let note = truncate(note, MAX_CONTENT - 1);
-    let room = MAX_CONTENT - 1 - note.chars().count();
+    let note = truncate(note, MAX_CONTENT);
+    let room = MAX_CONTENT - note.chars().count();
     let original = if room == 0 { String::new() } else { truncate(original, room) };
     format!("{original}{note}")
 }
@@ -180,7 +170,7 @@ pub fn fit(head: &str, lines: &[String]) -> String {
     let mut out = head.to_owned();
     for (n, line) in lines.iter().enumerate() {
         let more = format!("\n…and {} more.", lines.len() - n);
-        if out.chars().count() + 1 + line.chars().count() + more.chars().count() >= MAX_CONTENT {
+        if out.chars().count() + 1 + line.chars().count() + more.chars().count() > MAX_CONTENT {
             out.push_str(&more);
             return out;
         }
@@ -241,6 +231,8 @@ pub fn did(action: &str) -> String {
         "revert" => "Reverted a config change",
         "rewind" => "Rewound the config",
         "solved" => "Marked a help thread solved",
+        "recording_started" => "Started a recording",
+        "recording_stopped" => "Stopped a recording",
         other => return capital(&other.replace('_', " ")),
     };
     said.to_owned()
@@ -641,10 +633,10 @@ mod tests {
         let note = "\n✅ **Accepted by <@123456789012345678>.**";
         let out = with_note(&card, note);
         assert!(out.ends_with(note), "{out}");
-        assert_eq!(out.chars().count(), MAX_CONTENT - 1);
+        assert_eq!(out.chars().count(), MAX_CONTENT);
         assert!(out.contains("x…\n✅"), "the card is shortened");
         assert_eq!(with_note("short", " note"), "short note");
-        assert_eq!(with_note("a", &"n".repeat(3000)).chars().count(), MAX_CONTENT - 1);
+        assert_eq!(with_note("a", &"n".repeat(3000)).chars().count(), MAX_CONTENT);
     }
 
     #[test]
@@ -789,7 +781,7 @@ mod tests {
                 .push(Outcome { action: Action::Create { kind: ObjectKind::Channel, key: format!("c{n}") }, result });
         }
         let text = outcome("x", &report, &Names::new(&c));
-        assert!(text.chars().count() < MAX_CONTENT, "{}", text.len());
+        assert!(text.chars().count() <= MAX_CONTENT, "{}", text.len());
         assert!(text.contains("+244 more failed"), "{text}");
     }
 

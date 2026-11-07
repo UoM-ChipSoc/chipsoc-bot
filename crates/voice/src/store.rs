@@ -169,7 +169,7 @@ impl Meta {
         self.participants.iter().map(|p| p.name.as_str()).collect()
     }
 
-    /// The name of the speaker `user`, from the participants (or the track).
+    /// The name of the speaker `user`, from the participants.
     pub fn name_of(&self, user: u64) -> Option<&str> {
         self.participants.iter().find(|p| p.id == user).map(|p| p.name.as_str())
     }
@@ -211,7 +211,7 @@ pub fn create(root: &Path, guild: u64, at: i64, channel: &str) -> io::Result<(St
         let p = dir.join(&id);
         match std::fs::create_dir(&p) {
             Ok(()) => return Ok((id, p)),
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(e),
         }
     }

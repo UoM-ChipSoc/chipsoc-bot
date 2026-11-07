@@ -348,7 +348,7 @@ pub fn share_menu(ctx: &Ctx, pick: Pick) -> Option<Component> {
 pub async fn command(ctx: &Ctx, i: &Interaction, what: &str, given: &str) {
     let pick = match Pick::parse(what, given) {
         Ok(p) => p,
-        Err(why) => return ctx.respond(i, &ui::ephemeral(&why)).await,
+        Err(why) => return ctx.respond(i, &ui::ephemeral(&why.markdown())).await,
     };
     let kind = pick.kind();
     let options = choices(ctx, kind);
@@ -389,8 +389,8 @@ pub fn shared_text(r: anyhow::Result<Vec<String>>) -> String {
             fmt::DONE,
             fmt::and_list(&names)
         ),
-        Err(e) => match e.downcast_ref::<chipsoc_admin::Refused>() {
-            Some(why) => format!("{} {why}", fmt::ATTENTION),
+        Err(e) => match e.downcast_ref::<chipsoc_admin::Refusal>() {
+            Some(why) => format!("{} {}", fmt::ATTENTION, why.markdown()),
             None => {
                 tracing::warn!("sharing with partners failed: {e:#}");
                 format!("{} **Couldn't share it:** {}", fmt::ATTENTION, fmt::error(&e))

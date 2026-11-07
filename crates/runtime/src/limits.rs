@@ -82,7 +82,7 @@ impl Limits {
         if let Some(at) = last.get(&(kind, user)) {
             let since = now.saturating_duration_since(*at);
             if since < kind.every() {
-                return Err((kind.every() - since).as_secs().max(1));
+                return Err(kind.every().saturating_sub(since).as_secs().max(1));
             }
         }
         // Forget anyone who's done waiting, so the map stays small.

@@ -144,7 +144,8 @@ pub(crate) async fn undo<R: Rest + Clone + 'static>(
         let desk = a.desk(&who).await?;
         anyhow::Ok(chipsoc_admin::undo(&desk, &f.commit, f.how, &desk.actor).await)
     };
-    let made = tokio::spawn(run).await.unwrap_or_else(|e| Err(e.into())).unwrap_or_else(|e| Err(format!("{e:#}")));
+    let made =
+        tokio::spawn(run).await.unwrap_or_else(|e| Err(e.into())).unwrap_or_else(|e| Err(format!("{e:#}").into()));
     let head = chipsoc_admin::undo_said(&made).plain(None);
     match made {
         Ok(Some(_)) => crate::flash::redirect("/changes", &format!("{head} Press **See the plan** to apply it."), true),

@@ -2,8 +2,8 @@
 //! once an admin accepts it, it becomes a post in the resources forum,
 //! crediting whoever shared it.
 
+use chipsoc_admin::NewResource;
 use chipsoc_admin::forums::{RESOURCE_ABOUT, RESOURCE_LINK, RESOURCE_TAGS, RESOURCE_TITLE};
-use chipsoc_admin::{NewResource, Refused};
 use chipsoc_store::AppKind;
 use twilight_model::channel::message::Component;
 use twilight_model::channel::message::component::TextInputStyle;
@@ -55,8 +55,8 @@ pub fn precheck(v: &Values) -> Result<(), Refusal> {
 pub async fn vet(ctx: &Ctx, v: &Values) -> Result<Vetted, Refusal> {
     let r = resource(v);
     if let Err(e) = chipsoc_admin::vet_resource(ctx, &r).await {
-        return Err(match e.downcast_ref::<Refused>() {
-            Some(why) => Refusal::fix(why.to_string()),
+        return Err(match e.downcast_ref::<chipsoc_admin::Refusal>() {
+            Some(why) => Refusal::fix(why.markdown()),
             None => {
                 tracing::warn!("checking a shared resource failed: {e:#}");
                 Refusal::fix("Couldn't check that link just now; please try again later.")

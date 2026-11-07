@@ -8,7 +8,7 @@ use chipsoc_discord::{Method, Rest};
 use chipsoc_engine::Ask;
 use serde::{Deserialize, Serialize};
 
-use crate::{Actor, Host, fmt};
+use crate::{Actor, Host, Refusal, fmt};
 
 /// The server's owner, as Discord says now (see [`chipsoc_engine::owner_of`]).
 /// `Err` when Discord couldn't say: what only the owner may do is then refused.
@@ -19,18 +19,17 @@ pub async fn owner_id<H: Host>(h: &H) -> Result<Snowflake> {
 }
 
 /// Refuse what only the server owner may do (see
-/// [`chipsoc_engine::owner_only`]) unless `by` is the owner: `Err` is what to
-/// tell them ("Only the server owner can …"). When Discord can't say who the
-/// owner is, it's refused, saying so.
-pub async fn only_owner<H: Host>(h: &H, by: &Actor, ask: &Ask<'_>) -> Result<(), String> {
+/// [`chipsoc_engine::owner_only`]) unless `by` is the owner. When Discord
+/// can't say who the owner is, it's refused, saying so.
+pub async fn only_owner<H: Host>(h: &H, by: &Actor, ask: &Ask<'_>) -> Result<(), Refusal> {
     // Not knowing the owner makes this as strict as it gets: nothing to ask.
     if chipsoc_engine::owner_only(ask, None).is_none() {
         return Ok(());
     }
     let by = by.by(h.trusted());
     match owner_id(h).await {
-        Ok(owner) => chipsoc_engine::owner_check(&by, ask, Some(owner)).map_err(|why| format!("{why}.")),
-        Err(_) => chipsoc_engine::owner_check(&by, ask, None).map_err(|_| chipsoc_engine::OWNER_UNKNOWN.to_owned()),
+        Ok(owner) => chipsoc_engine::owner_check(&by, ask, Some(owner)).map_err(Refusal::OwnerOnly),
+        Err(_) => chipsoc_engine::owner_check(&by, ask, None).map_err(|_| Refusal::OwnerUnknown),
     }
 }
 
@@ -40,11 +39,11 @@ pub async fn only_owner<H: Host>(h: &H, by: &Actor, ask: &Ask<'_>) -> Result<(),
 /// audited, and told in the bot log; like any config change, it reaches
 /// Discord when applied, and what it removes is archived, not deleted.
 /// `Ok(None)`: nothing to change. [`undo_said`] words the outcome.
-pub async fn undo<H: Host>(h: &H, commit: &str, how: Undo, by: &Actor) -> Result<Option<Undid>, String> {
+pub async fn undo<H: Host>(h: &H, commit: &str, how: Undo, by: &Actor) -> Result<Option<Undid>, Refusal> {
     only_owner(h, by, &Ask::Undo).await?;
     let made = h.undo(commit, how, &by.by(h.trusted())).await.map_err(|e| {
         tracing::warn!("going back on config commit {commit} failed: {e:#}");
-        fmt::error(&e)
+        Refusal::from(fmt::error(&e))
     })?;
     if let Some(m) = &made {
         crate::log_bot(h, &format!("↩️ {} changed the config: {}.", by.mention(), fmt::escape(&m.subject))).await;
@@ -53,7 +52,7 @@ pub async fn undo<H: Host>(h: &H, commit: &str, how: Undo, by: &Actor) -> Result
 }
 
 /// What [`undo`] came to, worded the same in every front end.
-pub fn undo_said(made: &Result<Option<Undid>, String>) -> crate::Said {
+pub fn undo_said(made: &Result<Option<Undid>, Refusal>) -> crate::Said {
     let said = crate::Said::new();
     match made {
         Ok(Some(m)) => {
@@ -67,7 +66,7 @@ pub fn undo_said(made: &Result<Option<Undid>, String>) -> crate::Said {
             }
         }
         Ok(None) => said.text("Nothing to change: the config already matches."),
-        Err(why) => said.text(format!("Not changed: {}.", why.trim().trim_end_matches('.'))),
+        Err(why) => crate::Said::md(&format!("Not changed: {}.", why.markdown().trim().trim_end_matches('.'))),
     }
 }
 

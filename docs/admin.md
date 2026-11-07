@@ -296,7 +296,9 @@ are pushed to the config repo (`git pull` to see them locally).
 
 The web server's `/api/v1`, with the CLI's bearer token. Edits are tried on
 a copy first and refused, with the problems, if `check` would fail; commits
-say who.
+say who. A refusal comes as `{"error"}`: 403 for what only the server owner
+may do, 409 for other admin work turned down, 422 for a bad request or an
+edit with problems (listed in `problems`).
 
 | Endpoint | Does |
 |---|---|

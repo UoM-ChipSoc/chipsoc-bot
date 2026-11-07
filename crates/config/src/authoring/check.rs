@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use anyhow::Result;
-use chipsoc_model::perms;
+use chipsoc_model::{MAX_CONTENT, perms};
 
 use crate::schema::{ChannelKind, ModAction, Overwrite, Peer, Snapshot};
 use crate::{Config, public_channels, template};
@@ -14,8 +14,7 @@ fn now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 
-/// Discord's limits that matter here.
-const MAX_MESSAGE: usize = template::MAX_MESSAGE;
+/// Discord's limits that matter here (and [`MAX_CONTENT`]).
 const MAX_TAGS: usize = 20;
 /// Tags on one forum post, and characters in its title.
 const MAX_POST_TAGS: usize = 5;
@@ -347,7 +346,7 @@ fn parts(r: &mut Report, file: &str, body: &str, parts: &[String]) {
     for n in template::too_long(parts) {
         let which = if parts.len() > 1 || breaks { format!("part {n} is") } else { "it's".to_owned() };
         r.err(format!(
-            "{file}: {which} longer than Discord's {MAX_MESSAGE}-character limit (counting each mention at its longest) \
+            "{file}: {which} longer than Discord's {MAX_CONTENT}-character limit (counting each mention at its longest) \
              with no blank line or heading to split it at; add one, or a `{}` line",
             template::PART_BREAK
         ));

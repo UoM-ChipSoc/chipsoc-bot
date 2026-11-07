@@ -147,7 +147,7 @@ pub fn post(p: &Project, lock: &Lock, brief: Option<&str>) -> Post {
         .iter()
         .map(|part| {
             let r = template::render(part, lock);
-            Rendered { content: truncate(&r.content, template::MAX_MESSAGE), buttons: Vec::new() }
+            Rendered { content: chipsoc_model::truncate(&r.content, template::MAX_CONTENT), buttons: Vec::new() }
         })
         .collect();
     if let Some(last) = parts.last_mut() {
@@ -199,10 +199,6 @@ fn text(p: &Project, lock: &Lock, brief: Option<&str>) -> (String, Vec<Button>) 
         s.push_str("\n\n_Not taking applications right now; ask in the channels above if you'd like to help._");
     }
     (s, buttons)
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max { s.to_owned() } else { s.chars().take(max - 1).chain(['…']).collect() }
 }
 
 #[cfg(test)]

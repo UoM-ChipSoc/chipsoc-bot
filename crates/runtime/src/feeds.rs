@@ -37,9 +37,8 @@ pub fn form() -> (String, Vec<Component>) {
 
 /// The check that costs nothing: a public web address.
 pub fn precheck(v: &Values) -> Result<(), Refusal> {
-    chipsoc_admin::feeds::check_address(&v.text("url")).map_err(|why| {
-        Refusal::fix(format!("{} **Couldn't read that feed:** {}", fmt::ATTENTION, fmt::error_str(&why)))
-    })
+    chipsoc_admin::feeds::check_address(&v.text("url"))
+        .map_err(|why| Refusal::fix(format!("{} **Couldn't read that feed:** {}", fmt::ATTENTION, fmt::error(&why))))
 }
 
 /// A suggested feed: fetched to check it's real (a website's feed is found
@@ -49,7 +48,7 @@ pub async fn vet(ctx: &Ctx, v: &Values) -> Result<Vetted, Refusal> {
     let (url, feed) = match find(&given).await {
         Ok(found) => found,
         Err(e) => {
-            let text = format!("{} **Couldn't read that feed:** {}", fmt::ATTENTION, fmt::error_str(&e));
+            let text = format!("{} **Couldn't read that feed:** {}", fmt::ATTENTION, fmt::error(&e));
             return Err(Refusal::fix(text));
         }
     };
@@ -126,7 +125,7 @@ pub async fn poll_loop(ctx: Arc<Ctx>) {
             let feed = match fetch(&f.url).await {
                 Ok(feed) => feed,
                 Err(e) => {
-                    tracing::warn!(url = f.url, e, "feed fetch failed");
+                    tracing::warn!(url = f.url, "feed fetch failed: {e:#}");
                     continue;
                 }
             };

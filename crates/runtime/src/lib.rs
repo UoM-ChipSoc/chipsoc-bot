@@ -53,7 +53,7 @@ use futures_util::StreamExt as _;
 use twilight_gateway::{CloseFrame, Event, EventTypeFlags, Intents, Message, Shard, ShardId, StreamExt};
 use twilight_model::application::interaction::Interaction;
 use twilight_model::channel::message::{AllowedMentions, Component};
-use twilight_model::guild::{PartialMember, Permissions};
+use twilight_model::guild::PartialMember;
 use twilight_model::http::interaction::InteractionResponse;
 use twilight_model::id::Id;
 use twilight_model::id::marker::{ApplicationMarker, ChannelMarker, GuildMarker, RoleMarker, UserMarker};
@@ -152,6 +152,42 @@ pub(crate) struct Ctx {
 }
 
 impl Ctx {
+    /// A server's context, with nothing yet queued, posted or cached.
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        rest: Discord,
+        app: Id<ApplicationMarker>,
+        me: Id<UserMarker>,
+        guild: Id<GuildMarker>,
+        store: Store,
+        cfg: Config,
+        autosave: bool,
+        rec: record::State,
+    ) -> Self {
+        let routes = Arc::new(federation::Routes::resolve(&cfg));
+        Self {
+            rest,
+            app,
+            me,
+            guild,
+            gkey: guild.to_string(),
+            store,
+            fed: fedsync::State::new(&cfg),
+            loaded: RwLock::new((Arc::new(cfg), routes)),
+            events: Queue::new("server events", EVENT_QUEUE),
+            plans: Default::default(),
+            drift: Default::default(),
+            changing: Default::default(),
+            announced: Default::default(),
+            own_applies: Default::default(),
+            limits: Default::default(),
+            seen_posts: Default::default(),
+            autosave,
+            admins: Default::default(),
+            rec,
+        }
+    }
+
     /// The current config (reloaded when its files change, and by the drift watch).
     pub fn cfg(&self) -> Arc<Config> {
         self.loaded.read().unwrap_or_else(|e| e.into_inner()).0.clone()
@@ -190,13 +226,16 @@ impl Ctx {
         self.cfg().bot.name.clone()
     }
 
-    /// Server admins, and members of `admin_role`.
+    /// Whether the member who pressed or typed something is an admin (see
+    /// [`chipsoc_admin::Admins`]), from the permissions that came with it.
     pub fn is_admin(&self, member: Option<&PartialMember>) -> bool {
         let Some(m) = member else { return false };
-        let perms = m.permissions.unwrap_or(Permissions::empty());
-        let admin_role = self.cfg().bot.admin_role.clone();
-        perms.intersects(Permissions::ADMINISTRATOR | Permissions::MANAGE_GUILD)
-            || admin_role.and_then(|k| self.role(&k)).is_some_and(|r| m.roles.contains(&r))
+        let perms = m.permissions.map_or(0, |p| p.bits());
+        let roles: Vec<chipsoc_config::Snowflake> =
+            m.roles.iter().map(|r| chipsoc_config::Snowflake(r.get())).collect();
+        let cfg = self.cfg();
+        let admin_role = cfg.bot.admin_role.as_deref().and_then(|k| cfg.desired.lock.role(k));
+        chipsoc_admin::Admins::by_permissions(perms, &roles, admin_role)
     }
 
     /// Send `body` to Discord, as JSON.
@@ -342,8 +381,14 @@ impl Ctx {
         chipsoc_admin::dm(self, chipsoc_config::Snowflake(user.get()), text, Some(rows)).await
     }
 
-    pub async fn audit(&self, actor: Option<&str>, action: &str, target: Option<&str>, detail: Option<&str>) {
-        self.log_err(self.db().audit(now(), actor, action, target, detail).await, "audit log");
+    pub async fn audit(
+        &self,
+        actor: Option<&str>,
+        action: chipsoc_admin::AuditAction,
+        target: Option<&str>,
+        detail: Option<&str>,
+    ) {
+        self.log_err(self.db().audit(now(), actor, action.as_str(), target, detail).await, "audit log");
     }
 
     /// Log a failed best-effort operation instead of dropping it.
@@ -360,34 +405,13 @@ impl Ctx {
     /// handler tests. Its member list is read afresh each time (the fake
     /// sends no member events).
     pub(crate) async fn on_fake(cfg: Config, fake: Arc<chipsoc_discord::fake::FakeDiscord>, autosave: bool) -> Self {
-        Self {
-            rest: Discord {
-                api: Api::Fake(fake),
-                guild: chipsoc_config::Snowflake(1000),
-                members: Arc::new(members::Members::new(Duration::ZERO)),
-            },
-            app: Id::new(1),
-            me: Id::new(42),
-            guild: Id::new(1000),
-            gkey: "1000".into(),
-            store: Store::open("sqlite::memory:").await.unwrap(),
-            fed: fedsync::State::new(&cfg),
-            loaded: {
-                let routes = Arc::new(federation::Routes::resolve(&cfg));
-                RwLock::new((Arc::new(cfg), routes))
-            },
-            events: Queue::new("server events", EVENT_QUEUE),
-            plans: Default::default(),
-            drift: Default::default(),
-            changing: Default::default(),
-            announced: Default::default(),
-            own_applies: Default::default(),
-            limits: Default::default(),
-            seen_posts: Default::default(),
-            autosave,
-            admins: Default::default(),
-            rec: Default::default(),
-        }
+        let rest = Discord {
+            api: Api::Fake(fake),
+            guild: chipsoc_config::Snowflake(1000),
+            members: Arc::new(members::Members::new(Duration::ZERO)),
+        };
+        let store = Store::open("sqlite::memory:").await.unwrap();
+        Self::new(rest, Id::new(1), Id::new(42), Id::new(1000), store, cfg, autosave, Default::default())
     }
 }
 
@@ -471,34 +495,13 @@ impl Shared {
     async fn start(&self, dir: &Path, cfg: Config, guild: Id<GuildMarker>) -> Arc<Ctx> {
         let d = dir.to_owned();
         let autosave = chipsoc_config::git::blocking(move || Ok(chipsoc_engine::autosaves(&d))).await.unwrap_or(false);
-        let ctx = Arc::new(Ctx {
-            autosave,
-            rest: Discord {
-                api: Api::Live(self.http.clone()),
-                guild: chipsoc_config::Snowflake(guild.get()),
-                members: Arc::new(members::Members::new(members::FRESH)),
-            },
-            app: self.app,
-            me: self.me,
-            guild,
-            gkey: guild.to_string(),
-            store: self.store.clone(),
-            fed: fedsync::State::new(&cfg),
-            loaded: {
-                let routes = Arc::new(federation::Routes::resolve(&cfg));
-                RwLock::new((Arc::new(cfg), routes))
-            },
-            events: Queue::new("server events", EVENT_QUEUE),
-            plans: Default::default(),
-            drift: Default::default(),
-            changing: Default::default(),
-            announced: Default::default(),
-            own_applies: Default::default(),
-            limits: Default::default(),
-            seen_posts: Default::default(),
-            admins: Default::default(),
-            rec: record::State::new(self.voice.clone()),
-        });
+        let rest = Discord {
+            api: Api::Live(self.http.clone()),
+            guild: chipsoc_config::Snowflake(guild.get()),
+            members: Arc::new(members::Members::new(members::FRESH)),
+        };
+        let rec = record::State::new(self.voice.clone());
+        let ctx = Arc::new(Ctx::new(rest, self.app, self.me, guild, self.store.clone(), cfg, autosave, rec));
         commands::register(&ctx).await;
         trust::review(&ctx, dir).await;
         start_jobs(&ctx, dir);

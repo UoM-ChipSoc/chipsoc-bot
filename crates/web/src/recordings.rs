@@ -332,10 +332,9 @@ pub(crate) async fn delete<R: Rest + Clone + 'static>(
             let id = id.clone();
             tokio::task::spawn_blocking(move || store::delete(&root, guild, &id)).await
         };
-        match gone {
-            Ok(Ok(true)) => {}
-            Ok(Ok(false)) => return Err("No such recording.".to_owned()),
-            Ok(Err(e)) => return Err(format!("Couldn't delete it: {e}")),
+        match gone.map_err(std::io::Error::other).and_then(|r| r) {
+            Ok(true) => {}
+            Ok(false) => return Err("No such recording.".to_owned()),
             Err(e) => return Err(format!("Couldn't delete it: {e}")),
         }
         let what = format!("{}, {} ({})", meta.channel_name, when(meta.started_at), duration(meta.length_ms));

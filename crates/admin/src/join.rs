@@ -43,7 +43,7 @@ pub async fn held<H: Host>(h: &H, user: Snowflake) -> Result<BTreeSet<String>> {
 /// Give what finished answers come to: their roles and the access role, and
 /// take the flow's roles they no longer pick (never any other role, nor ones
 /// partner sync gives). Saves the answers. `Err` says why nothing was done.
-pub async fn confirm<H: Host>(h: &H, user: Snowflake, answers: &Answers) -> Result<Confirmed, String> {
+pub async fn confirm<H: Host>(h: &H, user: Snowflake, answers: &Answers) -> Result<Confirmed, crate::Refusal> {
     let cfg = h.cfg();
     let Some(flow) = &cfg.join else { return Err("The join flow isn't set up here any more.".into()) };
     let Some(outcome) = flow.outcome(answers) else {
@@ -51,7 +51,7 @@ pub async fn confirm<H: Host>(h: &H, user: Snowflake, answers: &Answers) -> Resu
     };
     let held = held(h, user).await.map_err(|e| {
         tracing::warn!("reading a member's roles failed: {e:#}");
-        "Couldn't read your roles just now; please try again.".to_owned()
+        "Couldn't read your roles just now; please try again."
     })?;
     let partner: BTreeSet<String> =
         cfg.federation.peers.iter().flat_map(|p| &p.role_map).map(|m| m.ours.clone()).collect();

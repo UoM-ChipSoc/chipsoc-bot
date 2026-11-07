@@ -990,15 +990,9 @@ pub(crate) struct Confirmed {
     cancel: Option<String>,
 }
 
-/// `POST /auth/cli/confirm`: Continue hands the CLI its one-time code.
-///
-/// No code to type: the one-time code goes to `127.0.0.1` on the machine
-/// running this browser, and only trades for a token with the PKCE verifier
-/// the CLI that started the sign-in holds. So a link someone else started
-/// signs nobody in for them, unless they talk you into sending them the
-/// address the browser lands on. `--paste` mode shows the code instead, with
-/// a warning. The page's random id is the only way in, so another site can't
-/// post this.
+/// `POST /auth/cli/confirm`: Continue sends the one-time code to the CLI (or
+/// shows it, with `--paste`). It's worth a token only with the CLI's PKCE
+/// verifier, and the page's random id is the only way in.
 pub(crate) async fn cli_confirm(State(auth): State<Arc<Auth>>, Form(f): Form<Confirmed>) -> Response {
     let mut all = lock(&auth.confirms);
     let Some(_) = all.get(&f.id).filter(|c| c.expires > Instant::now()) else {
