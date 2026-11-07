@@ -121,18 +121,27 @@ pub fn bits_or_all(names: &[String]) -> u64 {
     bits(names).unwrap_or(u64::MAX)
 }
 
+/// A permission name [`bits`] doesn't know.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unknown(pub String);
+
+impl std::fmt::Display for Unknown {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown permission {:?}", self.0)
+    }
+}
+
+impl std::error::Error for Unknown {}
+
 /// Encode flag names back into a bitfield (for `apply`). Errors on an unknown name.
-pub fn bits(names: &[String]) -> Result<u64, String> {
+pub fn bits(names: &[String]) -> Result<u64, Unknown> {
     let mut acc = 0u64;
     for n in names {
-        if let Some(rest) = n.strip_prefix("BIT_") {
-            let b: u32 = rest.parse().ok().filter(|b| *b < 64).ok_or_else(|| format!("bad permission {n}"))?;
-            acc |= 1u64 << b;
-        } else if let Some((bit, _)) = NAMES.iter().find(|(_, name)| *name == n) {
-            acc |= 1u64 << bit;
-        } else {
-            return Err(format!("unknown permission {n:?}"));
-        }
+        let bit = match n.strip_prefix("BIT_") {
+            Some(rest) => rest.parse().ok().filter(|b| *b < 64),
+            None => NAMES.iter().find(|(_, name)| *name == n).map(|(bit, _)| *bit),
+        };
+        acc |= 1u64 << bit.ok_or_else(|| Unknown(n.clone()))?;
     }
     Ok(acc)
 }
