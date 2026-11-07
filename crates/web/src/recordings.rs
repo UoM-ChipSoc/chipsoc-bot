@@ -52,14 +52,20 @@ fn transcript_state(t: &Transcript) -> String {
     }
 }
 
-/// A server's recordings, and whether recording is set up.
-async fn load<R: Rest + Clone>(app: &App<R>, s: &Session) -> anyhow::Result<(Vec<Meta>, bool, u64)> {
+/// A server's recordings, whether recording is set up, and who may delete
+/// them ("someone in Committee").
+async fn load<R: Rest + Clone>(app: &App<R>, s: &Session) -> anyhow::Result<(Vec<Meta>, bool, u64, String)> {
     let desk = app.desk(s).await?;
-    let on = chipsoc_admin::Host::cfg(&desk).bot.recording.is_some();
+    let cfg = chipsoc_admin::Host::cfg(&desk);
+    let on = cfg.bot.recording.is_some();
+    let admins = match cfg.bot.admin_role.as_deref() {
+        Some(k) => format!("someone in {}", chipsoc_admin::role_name(&cfg, k)),
+        None => "an admin".to_owned(),
+    };
     let guild = chipsoc_admin::Host::guild(&desk).0;
     let root = app.recordings.clone();
     let list = tokio::task::spawn_blocking(move || store::list(&root, guild)).await?;
-    Ok((list, on, guild))
+    Ok((list, on, guild, admins))
 }
 
 pub(crate) async fn page<R: Rest + Clone + 'static>(
@@ -67,12 +73,12 @@ pub(crate) async fn page<R: Rest + Clone + 'static>(
     Extension(s): Extension<Session>,
 ) -> Response {
     match load(&app, &s).await {
-        Ok((list, on, _)) => list_page(&s, &list, on).into_response(),
+        Ok((list, on, _, admins)) => list_page(&s, &list, on, &admins).into_response(),
         Err(e) => view::broken(Tab::Recordings, &s, &e).into_response(),
     }
 }
 
-fn list_page(s: &Session, list: &[Meta], on: bool) -> Html<String> {
+fn list_page(s: &Session, list: &[Meta], on: bool, admins: &str) -> Html<String> {
     view::page(
         Tab::Recordings,
         s,
@@ -81,7 +87,7 @@ fn list_page(s: &Session, list: &[Meta], on: bool) -> Html<String> {
             if on {
                 p { class: "hint",
                     "Meetings recorded with /record in Discord: each speaker's track, everyone mixed, and the transcript. "
-                    "They're kept until an admin deletes one here."
+                    "They're kept until {admins} deletes one here."
                 }
             } else {
                 p { class: "note bad", role: "alert",
@@ -114,7 +120,7 @@ pub(crate) async fn one<R: Rest + Clone + 'static>(
     Path(id): Path<String>,
 ) -> Response {
     let loaded = async {
-        let (list, _, guild) = load(&app, &s).await?;
+        let (list, _, guild, admins) = load(&app, &s).await?;
         let meta = list.into_iter().find(|m| m.id == id);
         let text = match &meta {
             Some(m) if m.transcript == Transcript::Done => {
@@ -123,20 +129,20 @@ pub(crate) async fn one<R: Rest + Clone + 'static>(
             }
             _ => None,
         };
-        anyhow::Ok((meta, text))
+        anyhow::Ok((meta, text, admins))
     };
     match loaded.await {
-        Ok((Some(m), text)) => {
-            let mut res = detail(&s, &m, text.as_deref()).into_response();
+        Ok((Some(m), text, admins)) => {
+            let mut res = detail(&s, &m, text.as_deref(), &admins).into_response();
             res.headers_mut().insert(CONTENT_SECURITY_POLICY, csp());
             res
         }
-        Ok((None, _)) => said_back(HERE, Err("No such recording (it may have been deleted).".into())),
+        Ok((None, ..)) => said_back(HERE, Err("No such recording (it may have been deleted).".into())),
         Err(e) => view::broken(Tab::Recordings, &s, &e).into_response(),
     }
 }
 
-fn detail(s: &Session, m: &Meta, transcript: Option<&str>) -> Html<String> {
+fn detail(s: &Session, m: &Meta, transcript: Option<&str>, admins: &str) -> Html<String> {
     let file = |f: &str| format!("/recordings/{}/files/{f}", m.id);
     let ended = m.ended_because.clone().unwrap_or_else(|| "still recording".into());
     let lines: Vec<&str> = transcript.map(|t| t.lines().filter(|l| !l.trim().is_empty()).collect()).unwrap_or_default();
@@ -194,7 +200,7 @@ fn detail(s: &Session, m: &Meta, transcript: Option<&str>) -> Html<String> {
                 p { class: "hint", "{transcript_state(&m.transcript)}" }
             }
             h2 { "Delete" }
-            p { class: "hint", "Recordings are only ever deleted here, by an admin. It's logged." }
+            p { class: "hint", "Recordings are only ever deleted here, by {admins}. It's logged." }
             {confirm(s, "/recordings/delete", &[("id", &m.id)], "Delete this recording", "Yes, delete it for good",
                 "Its audio and transcript are deleted for good; this can't be undone.")}
         },

@@ -246,7 +246,7 @@ pub async fn approvals(ctx: &Ctx) -> String {
 /// and not whoever made the change (unless they own the server).
 pub async fn button(ctx: &Ctx, i: &Interaction, approve: bool, hash: &str) {
     if !ctx.is_admin(i.member.as_ref()) {
-        return ctx.respond(i, &ui::ephemeral("Only admins can approve or reject config changes.")).await;
+        return ctx.respond(i, &ui::ephemeral(&crate::manage::admins_only(&ctx.cfg()))).await;
     }
     let Some(user) = invoker(i) else { return };
     let dir = ctx.cfg().dir.clone();

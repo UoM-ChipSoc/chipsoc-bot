@@ -454,7 +454,7 @@ async fn discord_sign_in_refuses_people_who_do_not_run_the_server() {
         let mut b = Browser::discord();
         let page = b.sign_in_with_discord(code).await;
         assert_eq!(page.status, StatusCode::FORBIDDEN, "{code}");
-        assert!(page.body.contains("Only the committee") && page.body.contains("another account"), "{}", page.body);
+        assert!(page.body.contains("Only members of") && page.body.contains("another account"), "{}", page.body);
         assert!(!b.cookies.contains_key("session"), "{code} got no session");
         assert_eq!(b.get("/").await.location.as_deref(), Some("/login"));
     }

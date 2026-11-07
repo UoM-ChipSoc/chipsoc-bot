@@ -161,7 +161,7 @@ fn stat(label: &str, n: usize, detail: &str) -> Element {
 fn join_card(cfg: &Config, p: &Progress, names: &Names) -> Element {
     let gate = cfg.join.as_ref().is_some_and(|j| j.gate);
     let gate_text = if gate {
-        "The gate is on: members see most channels once they finish."
+        "Newcomers see most channels only after they finish."
     } else {
         "The gate is off: everyone sees everything; the flow is optional."
     };
@@ -169,9 +169,9 @@ fn join_card(cfg: &Config, p: &Progress, names: &Names) -> Element {
     rsx! {
         section { class: "card",
             h2 { "Join flow" }
-            p { "{count(p.finished, \"member\")} finished · {p.notified} sent the reminder. {gate_text}" }
+            p { "{count(p.finished, \"member\")} finished · {p.notified} DMed about it by the bot. {gate_text}" }
             if !waiting.is_empty() {
-                p { class: "note warn", "Still to finish, after the reminder: {waiting.join(\", \")}" }
+                p { class: "note warn", "Still to finish, though the bot reminded them: {waiting.join(\", \")}" }
             }
             p { class: "hint", "Tell members who haven't been through it with /server join notify or `chipsoc-bot join notify`." }
         }

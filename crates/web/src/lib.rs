@@ -294,6 +294,16 @@ impl<R: Rest + 'static> Members for App<R> {
         })
     }
 
+    fn who_may_use(&self) -> BoxFuture<'_, String> {
+        Box::pin(async move {
+            let cfg = self.config().await.ok().or_else(|| self.cached().map(|c| c.cfg));
+            match cfg.as_deref().and_then(|c| Some((c, c.bot.admin_role.as_deref()?))) {
+                Some((c, k)) => format!("members of {}, or anyone with Manage Server", chipsoc_admin::role_name(c, k)),
+                None => "anyone with Manage Server".to_owned(),
+            }
+        })
+    }
+
     fn note(&self, text: String) -> BoxFuture<'_, ()> {
         Box::pin(async move {
             let log = match self.config().await {
