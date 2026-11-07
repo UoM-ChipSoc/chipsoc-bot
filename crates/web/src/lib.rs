@@ -396,6 +396,7 @@ fn router<R: Rest + Clone + 'static>(engine: Engine<R>, db: String, sign_in: Sig
         .route("/feeds/{id}", delete(api::remove_feed::<R>))
         .route("/resources", get(api::resources::<R>).post(api::post_resource::<R>))
         .route("/ideas", get(api::ideas::<R>))
+        .route("/ideas/{id}/close", post(api::close_idea::<R>))
         .route("/share", post(api::share::<R>))
         .route("/activity", get(api::activity::<R>))
         .route("/changes", get(api::changes::<R>))

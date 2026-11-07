@@ -132,6 +132,13 @@ pub struct Pause {
     pub paused: bool,
 }
 
+/// `POST /ideas/{id}/close`: why, posted in the idea (optional).
+#[derive(Serialize, Deserialize)]
+pub struct CloseIdea {
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
 /// Someone to give a role members.toml lists, or make a project lead.
 #[derive(Serialize, Deserialize)]
 pub struct Appoint {
@@ -566,6 +573,12 @@ impl Client {
 
     pub async fn ideas(&self, limit: usize) -> Result<Vec<Post>> {
         self.get(&format!("ideas?limit={limit}")).await
+    }
+
+    /// Close an idea's post, `reason` posted in it; what was done.
+    pub async fn close_idea(&self, id: Snowflake, reason: Option<&str>) -> Result<String> {
+        let body = CloseIdea { reason: reason.map(str::to_owned) };
+        Ok(self.post::<Note>(&format!("ideas/{id}/close"), &body).await?.text)
     }
 
     pub async fn activity(&self, limit: usize) -> Result<Vec<Entry>> {

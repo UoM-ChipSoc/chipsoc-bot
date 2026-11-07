@@ -93,6 +93,30 @@ pub enum ResourceCmd {
     },
 }
 
+#[derive(Subcommand)]
+pub enum IdeaCmd {
+    /// The newest project ideas.
+    List {
+        /// How many.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Close an idea's post: tagged (if `[ideas] closed_tag` is set), locked, never deleted.
+    Close {
+        /// The post's id or link.
+        post: String,
+        /// Why, posted in the idea.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+}
+
+/// A post from its id or link (`https://discord.com/channels/<server>/<post>`).
+fn post_id(text: &str) -> Result<Snowflake> {
+    let last = text.trim().trim_end_matches('/').rsplit('/').next().unwrap_or_default();
+    last.parse().with_context(|| format!("`{text}` isn't a post's id or link"))
+}
+
 pub(crate) fn print_posts(posts: &[chipsoc_admin::Post], empty: &str) {
     if posts.is_empty() {
         println!("{empty}");
@@ -134,7 +158,7 @@ pub async fn resource<R: Rest + Clone>(c: &Ctx<'_, R>, cmd: ResourceCmd) -> Resu
             c.say(&format!("✓ Shared {} ({})", post.title, post.link), &post)
         }
         ResourceCmd::Archive { id } => {
-            let id: Snowflake = id.trim().parse().with_context(|| format!("`{id}` isn't a post id"))?;
+            let id = post_id(&id)?;
             if !confirm(&format!("Close and lock resource post {id}? It isn't deleted."), c.yes)? {
                 return Ok(());
             }
@@ -153,11 +177,26 @@ pub async fn share<R: Rest + Clone>(c: &Ctx<'_, R>, what: String, item: String, 
     c.say(&text, &serde_json::json!({ "partners": names }))
 }
 
-pub async fn ideas<R: Rest + Clone>(c: &Ctx<'_, R>, limit: usize) -> Result<()> {
-    let posts = c.b.ideas(limit).await?;
-    if c.json {
-        return print_json(&posts);
+pub async fn idea<R: Rest + Clone>(c: &Ctx<'_, R>, cmd: IdeaCmd) -> Result<()> {
+    match cmd {
+        IdeaCmd::List { limit } => {
+            let posts = c.b.ideas(limit).await?;
+            if c.json {
+                return print_json(&posts);
+            }
+            print_posts(&posts, "No project ideas yet.");
+            Ok(())
+        }
+        IdeaCmd::Close { post, reason } => {
+            let id = post_id(&post)?;
+            let reason = reason.filter(|r| !r.trim().is_empty());
+            let posted =
+                if reason.is_some() { "your reason is posted in it" } else { "a line saying so is posted in it" };
+            if !confirm(&format!("Close idea post {id}? It's locked and stays readable; {posted}."), c.yes)? {
+                return Ok(());
+            }
+            let text = c.b.close_idea(id, reason.as_deref()).await?;
+            c.done(&text)
+        }
     }
-    print_posts(&posts, "No project ideas yet.");
-    Ok(())
 }

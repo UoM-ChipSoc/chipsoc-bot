@@ -166,6 +166,7 @@ pub const REMOVE_POSITION: Binding = key!("x", 'x', "remove position", Remove);
 pub const REMOVE_FEED: Binding = key!("x", 'x', "remove feed", Remove);
 pub const REMOVE_CATEGORY: Binding = key!("x", 'x', "remove category", Remove);
 pub const ARCHIVE_POST: Binding = key!("x", 'x', "archive post", Remove);
+pub const CLOSE_IDEA: Binding = key!("x", 'x', "close idea", Remove);
 pub const PERMISSIONS: Binding = key!("p", 'p', "permissions", Permissions);
 pub const POST: Binding = key!("b", 'b', "bot post", Post);
 pub const STATUS: Binding = key!("s", 's', "status", SetStatus);

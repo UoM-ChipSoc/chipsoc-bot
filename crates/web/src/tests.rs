@@ -1346,6 +1346,39 @@ async fn resources_are_shared_and_taken_down_only_when_confirmed() {
     assert!(b.get("/resources").await.body.contains("The ideas forum is off"));
 }
 
+#[tokio::test]
+async fn an_idea_is_closed_from_the_web_with_a_reason() {
+    let mut b = ada().await;
+    let p = b.dir.path();
+    write(p, "bot.toml", "name = \"Test\"\nadmin_role = \"admin\"\n[ideas]\nforum = \"projects\"\n");
+    write(
+        p,
+        "lock.toml",
+        &format!("guild = \"1000\"\n[roles]\nadmin = \"{ADMIN_ROLE}\"\n[channels]\nprojects = \"1700\"\n"),
+    );
+    b.discord.state.lock().unwrap().channels.push(json!({ "id": "1700", "type": 15, "name": "projects" }));
+    let body = json!({ "name": "A tiny GPU", "message": { "content": "Let's build one." } });
+    let idea = b.discord.call(chipsoc_discord::Method::Post, "channels/1700/threads", Some(body)).await.unwrap();
+    let id = idea["id"].as_str().unwrap().to_owned();
+
+    let page = b.get("/resources").await;
+    assert!(page.body.contains("A tiny GPU") && page.body.contains("Yes, close this idea"), "{}", page.body);
+    assert!(page.body.contains("Reason (optional, posted on the idea)"), "{}", page.body);
+    let closed =
+        b.submit("/resources/close-idea", &[("id", &id), ("confirm", "yes"), ("reason", "Merged into Golem")]).await;
+    let page = b.follow(closed).await;
+    assert!(page.body.contains("Closed A tiny GPU: locked and archived; still readable."), "{}", page.body);
+    assert!(!page.body.contains("Yes, close this idea"), "a closed idea isn't offered again");
+    let st = b.discord.state.lock().unwrap();
+    let thread = st.channels.iter().find(|c| c["id"] == id).unwrap();
+    assert_eq!(thread["thread_metadata"]["locked"], true);
+    assert!(
+        st.messages
+            .iter()
+            .any(|m| m["channel_id"] == id && m["content"].as_str().unwrap().contains("Merged into Golem"))
+    );
+}
+
 /// A tiny router with just the theme parts.
 fn theme_test_router() -> axum::Router {
     use axum::routing::get;

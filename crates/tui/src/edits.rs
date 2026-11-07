@@ -34,6 +34,8 @@ pub enum Then {
     Appoint,
     AddFeed,
     AddResource,
+    /// Close this idea's post, with the reason given.
+    CloseIdea(Snowflake),
 }
 
 impl Then {
@@ -57,6 +59,7 @@ impl Then {
             Self::Appoint => "appoint",
             Self::AddFeed => "follow",
             Self::AddResource => "share",
+            Self::CloseIdea(_) => "close idea",
         }
     }
 }
@@ -199,6 +202,7 @@ impl App {
             Tab::Resources if self.resources.get().is_some() => {
                 v.extend(self.resources_on().then_some(NEW_RESOURCE));
                 v.extend(matches!(self.shared(), Some(Shared::Resource(_))).then_some(ARCHIVE_POST));
+                v.extend(self.open_idea().is_some().then_some(CLOSE_IDEA));
             }
             _ => {}
         }
@@ -661,8 +665,22 @@ impl App {
                 self.confirm("Archive post?", lines, Job::Admin(Admin::ArchiveResource(post.id)));
                 None
             }
+            (Act::Remove, Some(Shared::Idea(_))) => {
+                let post = self.open_idea()?;
+                let field = Input::text(Key::Reason, "")
+                    .labelled("Reason (optional, posted on the idea)")
+                    .hint("It's locked and stays readable; it's never deleted");
+                self.form(format!("Close \"{}\"", post.title), vec![field], Then::CloseIdea(post.id))
+            }
             _ => None,
         }
+    }
+
+    /// The idea selected, if it's still open.
+    fn open_idea(&self) -> Option<chipsoc_admin::Post> {
+        let Some(Shared::Idea(i)) = self.shared() else { return None };
+        let ideas = self.resources.get()?.1.as_ref().ok()?;
+        ideas.get(i).filter(|p| !p.locked).cloned()
     }
 
     // ---- saving ----
@@ -831,6 +849,7 @@ impl App {
             Then::Reject(id) => {
                 Ok(Some(Job::Admin(Admin::Decide { id: *id, accept: false, reason: f.opt(Key::Reason) })))
             }
+            Then::CloseIdea(post) => Ok(Some(Job::Admin(Admin::CloseIdea(*post, f.opt(Key::Reason))))),
             Then::Appoint => {
                 let role = f.picked(Key::PositionOrRole);
                 Ok(Some(Job::Admin(Admin::Appoint(role, user_id(&f.text(Key::UserId))?))))

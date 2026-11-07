@@ -414,6 +414,18 @@ impl<R: Rest + Clone> Backend<R> {
         }
     }
 
+    /// Close an idea's post (tagged, locked, never deleted), `reason` posted
+    /// in it; what was done.
+    pub async fn close_idea(&self, id: Snowflake, reason: Option<&str>) -> Result<String> {
+        match self {
+            Self::Remote(c) => c.close_idea(id, reason).await,
+            Self::Local(l) => match chipsoc_admin::close_idea(&l.desk().await?, id, reason, &l.actor).await? {
+                Some(c) => Ok(c.plain()),
+                None => bail!("no such post in the ideas forum"),
+            },
+        }
+    }
+
     /// Share an announcement or event with partners; whom it went to.
     pub async fn share(&self, r: &crate::remote::ShareRequest) -> Result<Vec<String>> {
         match self {

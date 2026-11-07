@@ -85,7 +85,7 @@ owner can …". The list is `owner_only` in `crates/engine/src/owner.rs`.
 
 **Undoing what someone did.** `/server history` (the web's Apply →
 History page, `history`, `GET /changes`) lists the config's changes with
-who made them; `/server history @admin` (`history --admin <id>`) is what
+who made them; `/server history @admin` (`history --admin <who>`) is what
 one admin did this week, from the audit log and the config's history. The
 owner undoes one with `/server revert <id>` (Revert on that page, `revert
 <id>`, `POST /undo`), or puts the whole config back as it was right after
@@ -169,7 +169,7 @@ card at once.
 | `/server project status\|applications\|rename`, `/server position open\|close` | Admins | Config edits: saved, then shown as a plan with an **Apply** button. Closing a position with a window posts its applicants' card. |
 | `/server project lead` | Admins | Make someone a project lead (the Lead role, and a DM). Refused, and nobody told, if the Lead role has moderator or admin permissions in Discord the config doesn't give it. |
 | `/server feed list\|add\|pause\|resume\|remove`, `/server resource list\|add\|archive` | Admins | Feeds (a paused one isn't checked) and the resources forum. |
-| `/server idea close <post> [reason]` | Admins | Close an idea's post, after **Confirm**: it gets `[ideas] closed_tag` if set (and loses the needs-lead tag), "🔒 **Closed:** <reason>" (or just "🔒 **Closed.**") is posted in it, then it's archived and locked (never deleted). The reply says whether it was tagged. |
+| `/server idea close <post> [reason]` | Admins | Close an idea's post, after **Confirm**: it gets `[ideas] closed_tag` if set (and loses the needs-lead tag), "🔒 **Closed:** <reason>" (or just "🔒 **Closed.**") is posted in it, then it's archived and locked (never deleted). The reply says whether it was tagged. Also on the dashboard's Resources page (**Close…**, a reason, then **Yes, close this idea**), the TUI's Resources tab, `idea close` and the API. |
 | `/server join notify` | Admins | Says how many members haven't been through the join flow, then DMs them once with **Send to N**. |
 | `/server share announcement\|event` | Admins | Share an announcement (its link) or one of our events with partners you pick from a menu; only partners whose `send` lists that kind are offered ([partners.md](partners.md#sharing-content)). Making an event with `/event` offers the same menu. |
 | `/record start [channel]`, `/record stop` | Admins, `[recording] who` | Record a meeting in the call you're in (or the one named); see below. |
@@ -258,8 +258,8 @@ Every command takes `--config <dir>`. Commands that edit files keep comments.
 | `position list\|new\|set\|questions\|intro\|open\|close\|move\|remove` | Positions and their forms. |
 | `member list\|info\|appoint\|remove\|restore\|forget` | Positions and who holds them (`add` still works for `appoint`). |
 | `queue list\|show\|accept\|reject [--reason]\|lead\|history` | The review queue. |
-| `feed`, `resource`, `ideas`, `activity` | Feeds, the resources forum, ideas, the audit log. |
-| `history [--admin <id>]`, `revert <id> [--rewind]` | Who changed the config; undo a change (the server owner). |
+| `feed`, `resource`, `idea list\|close <post> [--reason]`, `activity` | Feeds, the resources forum, ideas (closing asks first, as in Discord), the audit log. |
+| `history [--admin <who>]`, `revert <id> [--rewind]` | Who changed the config, or what one admin (@username, name or id) did this week; undo a change (the server owner). |
 | `join status\|notify` | The join flow's progress; the one-off DM (says how many and asks first). |
 | `post list\|show\|set`, `onboarding …` | Bot posts (shown as Discord will show them) and onboarding questions. |
 | `op '<json>'`, `schema` | Any config edit as an `Op`; what can be edited. |
@@ -311,7 +311,7 @@ say who.
 | `GET`/`POST /members`, `DELETE /members/{role}/{user}`, `POST /members/former/{user}/restore`, `DELETE /members/former/{user}` | Holders; appoint (`{"role", "user"}`) or take out; restore or forget a returner. |
 | `GET /members/find?q=`, `GET /members/about/{user}` | Members by name (`@ada`, `Ada Lovelace`), for picking someone; what someone told the bot (profile, join answers). |
 | `GET`/`POST /feeds`, `POST /feeds/{id}/pause` (`{"paused"}`), `DELETE /feeds/{id}` | Feeds. |
-| `GET`/`POST /resources`, `DELETE /resources/{id}`, `GET /ideas` | The resources forum (archiving closes and locks, never deletes); ideas. |
+| `GET`/`POST /resources`, `DELETE /resources/{id}`, `GET /ideas`, `POST /ideas/{id}/close` (`{"reason"?}`) | The resources forum (archiving closes and locks, never deletes); ideas, and closing one. |
 | `POST /share` (`{"what": "announcement"\|"event", "item", "partners"}`) | Share an announcement (its message link) or an event (its link or id) with partners (`partners` empty: every partner we send that kind to). |
 | `GET /activity`, `GET /join`, `GET`/`POST /join/notify` | The audit log; join-flow progress; the join-flow DM. |
 | `GET /changes` (`?user=`), `POST /undo` (`{"commit", "how": "revert"\|"rewind"}`) | Who changed the config (or what one admin did this week); undo a change (the server owner). |

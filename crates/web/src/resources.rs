@@ -1,5 +1,6 @@
 //! Resources members share (posts in the resources forum): share a link,
-//! take one down (closed and locked, never deleted); and the ideas forum.
+//! take one down (closed and locked, never deleted); and the ideas forum,
+//! where an idea can be closed with a reason.
 
 use std::sync::Arc;
 
@@ -95,6 +96,20 @@ pub(crate) async fn act<R: Rest + Clone + 'static>(
             });
             said_back(HERE, done)
         }
+        "close-idea" => {
+            let Ok(id) = f.get("id").parse::<Snowflake>() else { return said_back(HERE, Err("Which idea?".into())) };
+            if !f.confirmed() {
+                return said_back(HERE, Err(crate::form::CONFIRM_FIRST.into()));
+            }
+            let reason = Some(f.get("reason")).filter(|r| !r.is_empty()).map(str::to_owned);
+            let done =
+                spawned!(app, s, |d| match chipsoc_admin::close_idea(d, id, reason.as_deref(), &d.actor).await {
+                    Ok(Some(c)) => Ok(c.plain()),
+                    Ok(None) => Err("That isn't a post in the ideas forum any more.".into()),
+                    Err(e) => Err(format!("{e:#}")),
+                });
+            said_back(HERE, done)
+        }
         _ => said_back(HERE, Err("Unknown action.".into())),
     }
 }
@@ -127,17 +142,64 @@ fn render(s: &Session, resources: &Listed, ideas: &Listed, tags: &[String], sh: 
                 },
             }
             h2 { "Project ideas" }
-            p { class: "hint", "Ideas accepted from the review queue, as posted in the ideas forum." }
+            p { class: "hint",
+                "Ideas accepted from the review queue, as posted in the ideas forum. Closing one locks it, with your "
+                "reason posted in it; it stays there to read."
+            }
             match ideas {
                 Err(why) => rsx! { p { class: "muted", {view::plain(why)} } },
                 Ok(posts) if posts.is_empty() => empty("No project ideas yet. Members propose them with /propose-project; accepted ones are posted here."),
-                Ok(posts) => posts_list(s, posts, false),
+                Ok(posts) => ideas_list(s, posts),
             }
         },
     )
 }
 
 fn posts_list(s: &Session, posts: &[Post], can_archive: bool) -> Element {
+    posts_with(posts, |p| {
+        if can_archive && !p.archived {
+            confirm(
+                s,
+                "/resources/archive",
+                &[("id", &p.id.to_string())],
+                "Archive",
+                "Yes, archive it",
+                "Archiving closes and locks the post; it stays readable in Discord and is never deleted.",
+            )
+        } else {
+            rsx! {}
+        }
+    })
+}
+
+/// The ideas, each open one with **Close…**: a reason (optional, posted on
+/// the idea), then **Yes, close this idea**.
+fn ideas_list(s: &Session, posts: &[Post]) -> Element {
+    posts_with(posts, |p| {
+        if p.locked {
+            return rsx! {};
+        }
+        let form = format!("idea-{}", p.id);
+        rsx! {
+            details { class: "confirm-box",
+                summary { class: "button quiet danger",
+                    span { class: "closed", "Close…" }
+                    span { class: "opened", "Cancel" }
+                }
+                form { method: "post", action: "/resources/close-idea",
+                    {csrf(s)}
+                    {crate::form::hidden(&[("id", &p.id.to_string()), ("confirm", "yes")])}
+                    label { r#for: "{form}-reason", "Reason (optional, posted on the idea)" }
+                    textarea { id: "{form}-reason", name: "reason", rows: "3" }
+                    p { class: "hint", "It's locked and stays readable in Discord; it's never deleted." }
+                    button { class: "danger", "Yes, close this idea" }
+                }
+            }
+        }
+    })
+}
+
+fn posts_with(posts: &[Post], action: impl Fn(&Post) -> Element) -> Element {
     rsx! {
         ul { class: "plain card",
             for p in posts {
@@ -147,16 +209,16 @@ fn posts_list(s: &Session, posts: &[Post], can_archive: bool) -> Element {
                         for t in &p.tags {
                             span { class: "tag", "{t}" }
                         }
-                        if p.archived {
+                        if p.locked {
+                            span { class: "tag", "closed" }
+                        } else if p.archived {
                             span { class: "tag", "archived" }
                         }
                         if !p.content.is_empty() {
                             div { class: "hint clip", "{p.content}" }
                         }
                     }
-                    if can_archive && !p.archived {
-                        {confirm(s, "/resources/archive", &[("id", &p.id.to_string())], "Archive", "Yes, archive it", "Archiving closes and locks the post; it stays readable in Discord and is never deleted.")}
-                    }
+                    {action(p)}
                 }
             }
         }

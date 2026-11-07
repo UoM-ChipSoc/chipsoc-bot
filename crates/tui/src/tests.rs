@@ -516,6 +516,28 @@ async fn resources_are_shared_and_archived_after_a_yes() {
 }
 
 #[tokio::test]
+async fn an_idea_is_closed_with_a_reason() {
+    let d = fixture();
+    let bot = fs::read_to_string(d.path().join("bot.toml")).unwrap();
+    // One forum for both, so a shared link is an idea too.
+    write(d.path(), "bot.toml", &format!("{bot}[resources]\nforum = \"projects\"\n[ideas]\nforum = \"projects\"\n"));
+    let mut h = Harness::on(d).await;
+    h.keys("0fay7n").await;
+    h.keys("A tiny GPU").await;
+    h.key(KeyCode::Down).await;
+    h.keys("https://example.org/gpu").await;
+    h.ctrl('s').await;
+    assert_shows(&h.screen(), "Shared A tiny GPU.");
+    h.select("x  close idea").await;
+    h.keys("x").await;
+    assert_shows(&h.screen(), "Reason (optional, posted on the idea)");
+    h.keys("Merged into Golem").await;
+    h.key(KeyCode::Enter).await;
+    assert_shows(&h.screen(), "Closed A tiny GPU: locked and archived; still readable.");
+    assert!(!h.screen().contains("close idea"), "a closed idea isn't offered again");
+}
+
+#[tokio::test]
 async fn plan_confirm_apply_with_progress_then_nothing_left() {
     let mut h = Harness::new().await;
     h.keys("0").await;
