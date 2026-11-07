@@ -608,6 +608,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn flashes_say_what_changed_by_name() {
+        use chipsoc_config::ops::PositionField;
+        let mut cfg = Config::default();
+        cfg.bot.positions.push(chipsoc_config::bot::Position {
+            role: "treasurer".into(),
+            label: Some("Treasurer".into()),
+            ..Default::default()
+        });
+        let close = Op::SetPosition { role: "treasurer".into(), set: PositionField::Open(false) };
+        assert_eq!(saved(&cfg, &close).unwrap(), "Saved: Treasurer stopped taking applications.");
+        let brief = Op::SetBrief { slug: "golem".into(), body: String::new() };
+        assert_eq!(saved(&cfg, &brief).unwrap(), "Saved golem's post text.", "a slug when there's no such project");
+        let change = Change { summary: "2 changes: …".into(), files: vec!["bot.toml".into()], warnings: Vec::new() };
+        assert_eq!(said(Some(&cfg), &[close.clone(), close], &change), "Saved: 2 changes: ….");
+    }
+
+    #[test]
     fn dates_and_ids_read_right() {
         // `when` itself uses whichever config a test last read: the zone is tested in config.
         let utc = |ts| chipsoc_config::bot::local_minute("UTC", ts);
