@@ -39,8 +39,25 @@ pub(crate) struct Members {
 struct Inner {
     /// When it was read, and the members (sorted by user id).
     list: Option<(Instant, Arc<Vec<Value>>)>,
-    /// Being read: events meanwhile, applied once it's in.
-    missed: Option<Vec<Seen>>,
+    /// Events not in `list` yet: it was being read, or someone still held
+    /// it (changing it then would copy it all for each event).
+    pending: Vec<Seen>,
+    /// Whether it's being read.
+    reading: bool,
+}
+
+/// Marks the list as being read; a read that's dropped half way leaves
+/// nothing to fold in later (the next one reads again).
+struct Reading<'a>(&'a Members);
+
+impl Drop for Reading<'_> {
+    fn drop(&mut self) {
+        let mut inner = self.0.inner();
+        if inner.reading {
+            inner.reading = false;
+            inner.pending.clear();
+        }
+    }
 }
 
 impl Members {
@@ -58,17 +75,28 @@ impl Members {
         let _one = self.reading.lock().await;
         {
             let mut inner = self.inner();
-            if let Some((at, list)) = &inner.list
+            let Inner { list, pending, .. } = &mut *inner;
+            if let Some((at, list)) = list
                 && at.elapsed() < self.fresh
             {
+                // One copy for everything since, if someone still holds it.
+                if !pending.is_empty() {
+                    let l = Arc::make_mut(list);
+                    pending.drain(..).for_each(|s| apply(l, s));
+                }
                 return Ok(list.clone());
             }
             inner.list = None;
-            inner.missed = Some(Vec::new());
+            inner.pending.clear();
+            inner.reading = true;
         }
+        let guard = Reading(self);
         let read = chipsoc_discord::export::fetch_members(rest, guild).await;
         let mut inner = self.inner();
-        let missed = inner.missed.take().unwrap_or_default();
+        // Read: what came meanwhile is folded in below, under the same lock.
+        std::mem::forget(guard);
+        inner.reading = false;
+        let missed = std::mem::take(&mut inner.pending);
         let mut list = read?;
         list.sort_by_key(user);
         for s in missed {
@@ -84,16 +112,26 @@ impl Members {
     /// A member event: the list kept follows it.
     pub fn seen(&self, s: Seen) {
         let mut inner = self.inner();
-        if let Some(missed) = &mut inner.missed {
-            missed.push(s);
-        } else if let Some((_, list)) = &mut inner.list {
-            apply(Arc::make_mut(list), s);
+        let Inner { list, pending, reading } = &mut *inner;
+        match list.as_mut().map(|(_, l)| Arc::get_mut(l)) {
+            _ if *reading => pending.push(s),
+            Some(Some(l)) => {
+                for s in pending.drain(..).chain([s]) {
+                    apply(l, s);
+                }
+            }
+            Some(None) => pending.push(s),
+            None => {}
         }
     }
 
     /// Read the list again next time (the gateway reconnected, say, and events may be lost).
     pub fn forget(&self) {
-        self.inner().list = None;
+        let mut inner = self.inner();
+        inner.list = None;
+        if !inner.reading {
+            inner.pending.clear();
+        }
     }
 }
 
@@ -182,6 +220,45 @@ mod tests {
         m.forget();
         assert_eq!(m.get(&fake, Snowflake(1000)).await.unwrap().len(), 2, "read again: the fake has 7 and 8");
         assert!(fake.requests() > reads);
+    }
+
+    #[tokio::test]
+    async fn a_list_someone_holds_is_left_as_it_is_until_the_next_get() {
+        let fake = FakeDiscord::new();
+        fake.join(7);
+        let m = Members::new(FRESH);
+        let held = m.get(&fake, Snowflake(1000)).await.unwrap();
+        for u in 8..20 {
+            m.seen(Seen::Joined(json!({ "user": { "id": u.to_string() }, "roles": [] })));
+        }
+        assert_eq!(held.len(), 1, "what's held doesn't change under its holder");
+        assert_eq!(m.inner().pending.len(), 12, "kept to fold in, not copied for each");
+        let now = m.get(&fake, Snowflake(1000)).await.unwrap();
+        assert_eq!(now.len(), 13);
+        assert!(m.inner().pending.is_empty());
+        drop((held, now));
+        m.seen(Seen::Left(7));
+        assert!(m.inner().pending.is_empty(), "nobody holds it: changed in place");
+        assert_eq!(m.get(&fake, Snowflake(1000)).await.unwrap().len(), 12);
+    }
+
+    /// Never answers.
+    struct Stuck;
+
+    impl Rest for Stuck {
+        async fn call(&self, _: chipsoc_discord::Method, _: &str, _: Option<Value>) -> Result<Value> {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_read_given_up_half_way_keeps_no_events() {
+        let m = Members::new(FRESH);
+        let read = tokio::time::timeout(Duration::from_millis(10), m.get(&Stuck, Snowflake(1000))).await;
+        assert!(read.is_err());
+        m.seen(Seen::Left(7));
+        let inner = m.inner();
+        assert!(!inner.reading && inner.pending.is_empty() && inner.list.is_none());
     }
 
     #[test]
