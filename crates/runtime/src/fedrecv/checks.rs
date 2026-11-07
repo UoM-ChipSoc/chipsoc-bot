@@ -143,7 +143,7 @@ pub(super) async fn check_peers<E: Env>(e: &E) {
                     plain(id, 100)
                 );
                 e.log_bot(&text).await;
-                e.audit("revoke_partner", id, &r.to_string()).await;
+                e.audit(AuditAction::RevokePartner, id, &r.to_string()).await;
             }
             Ok(_) => {}
             Err(err) => tracing::warn!(?err, peer = id, "taking back a removed partner's roles failed"),
@@ -172,7 +172,7 @@ pub(super) async fn check_peers<E: Env>(e: &E) {
                             "🔒 **A key was removed from {name}'s public keys**, so the bot took back the roles given on messages it signed ({r}). Their next full sync gives back what they still vouch for (held for an admin if it's many)."
                         );
                         e.log_bot(&text).await;
-                        e.audit("revoke_partner_key", id, &removed.join(",")).await;
+                        e.audit(AuditAction::RevokePartnerKey, id, &removed.join(",")).await;
                     }
                     if r.failed > 0 {
                         continue; // keep the old keys on record, so the next check tries again
@@ -223,7 +223,7 @@ pub(super) async fn check_roles<E: Env>(e: &E, cfg: &Config, peer: &Peer) {
         match revoke_grants(e.rest(), e.store(), e.gkey(), &cfg.desired, &peer.id, Which::Roles(&only)).await {
             Ok(r) if worth_saying(e, &format!("{}/role/{key}", peer.id), &r).await => {
                 e.log_bot(&format!("🔒 **Took back roles {}'s word gave:** {why} ({r}).", peer.name)).await;
-                e.audit("revoke_partner_role", &peer.id, &format!("{key}: {r}")).await;
+                e.audit(AuditAction::RevokePartnerRole, &peer.id, &format!("{key}: {r}")).await;
             }
             Ok(_) => {}
             Err(err) => tracing::warn!(?err, peer = peer.name, role = key, "taking back a partner role failed"),
@@ -250,6 +250,9 @@ pub async fn revoke_partner(rest: &impl Rest, cfg: &Config, peer: &str, kid: Opt
         fed.forget_seqs(id).await?;
     }
     let what = kid.map_or_else(|| "all".to_owned(), |k| format!("key {k}"));
-    store.guild(&guild).audit(now(), Some("cli"), "revoke_partner", Some(id), Some(&format!("{what}: {r}"))).await?;
+    store
+        .guild(&guild)
+        .audit(now(), Some("cli"), AuditAction::RevokePartner.as_str(), Some(id), Some(&format!("{what}: {r}")))
+        .await?;
     Ok(format!("Took back what `{id}` gave ({what}): {r}."))
 }

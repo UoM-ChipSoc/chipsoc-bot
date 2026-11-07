@@ -96,7 +96,7 @@ fn update(text: &str, components: Vec<Component>) -> InteractionResponse {
     InteractionResponse {
         kind: InteractionResponseType::UpdateMessage,
         data: Some(InteractionResponseData {
-            content: Some(ui::truncate(text, ui::MAX_CONTENT - 1)),
+            content: Some(ui::truncate(text, ui::MAX_CONTENT)),
             components: Some(components),
             ..Default::default()
         }),
@@ -114,7 +114,7 @@ pub async fn start(ctx: &Ctx, i: &Interaction, from: Option<&str>) {
 }
 
 async fn start_in(ctx: &Ctx, i: &Interaction, from: Option<&str>, place: bool) {
-    let Some(user) = invoker(i) else { return };
+    let Some(user) = invoker(i) else { return crate::apps::nobody(ctx, i).await };
     let Some(j) = ctx.cfg().join.clone() else {
         let gone = "That isn't set up here any more.";
         return ctx.respond(i, &if place { ui::update(gone) } else { ui::ephemeral(gone) }).await;
@@ -324,7 +324,7 @@ pub async fn component(ctx: &Ctx, i: &Interaction, action: &str, values: &[Strin
         "keep" => return keep(ctx, i).await,
         _ => {}
     }
-    let Some(user) = invoker(i).map(|u| u.id.get()) else { return };
+    let Some(user) = invoker(i).map(|u| u.id.get()) else { return crate::apps::nobody(ctx, i).await };
     let Some(j) = ctx.cfg().join.clone() else {
         return ctx.respond(i, &ui::update("That isn't set up here any more.")).await;
     };
@@ -429,7 +429,7 @@ fn text_box(f: &Field, value: Option<&String>) -> Component {
 /// A step's form sent.
 pub async fn modal(ctx: &Ctx, i: &Interaction, action: &str, v: &HashMap<String, String>) {
     let Some(key) = action.strip_prefix("form:") else { return };
-    let Some(user) = invoker(i).map(|u| u.id.get()) else { return };
+    let Some(user) = invoker(i).map(|u| u.id.get()) else { return crate::apps::nobody(ctx, i).await };
     let Some(j) = ctx.cfg().join.clone() else { return };
     let Some(mut d) = draft(ctx, user).await else { return ctx.respond(i, &ui::update(TIMED_OUT)).await };
     let Some(step) = j.step(key).filter(|_| d.at.as_deref() == Some(key)) else {
@@ -477,7 +477,7 @@ fn profile_from(j: &Join, user: &str, fields: &std::collections::BTreeMap<String
 }
 
 async fn confirm(ctx: &Ctx, i: &Interaction, j: &Join, d: Draft) {
-    let Some(user) = invoker(i).map(|u| u.id) else { return };
+    let Some(user) = invoker(i).map(|u| u.id) else { return crate::apps::nobody(ctx, i).await };
     // Reading the member list and giving roles cost: past the free checks, the turn counts.
     let turn = match ctx.limits.turn(Kind::Profile, user.get()) {
         Ok(t) => t,
@@ -550,7 +550,7 @@ async fn confirm(ctx: &Ctx, i: &Interaction, j: &Join, d: Draft) {
     }
     text.push_str("\nTo change anything later, press the button again or use `/profile`.");
     let detail = format!("+{} -{}", done.added.join(","), done.removed.join(","));
-    ctx.audit(Some(&user.to_string()), "join_flow", None, Some(&detail)).await;
+    ctx.audit(Some(&user.to_string()), chipsoc_admin::AuditAction::JoinFlow, None, Some(&detail)).await;
     ctx.edit_response(i, &text, &[]).await;
 }
 
@@ -566,7 +566,7 @@ fn done_message(j: &Join, let_in: bool, lock: &chipsoc_config::Lock) -> Option<S
 
 /// "Still right" on the yearly DM.
 async fn keep(ctx: &Ctx, i: &Interaction) {
-    let Some(user) = invoker(i).map(|u| u.id.to_string()) else { return };
+    let Some(user) = invoker(i).map(|u| u.id.to_string()) else { return crate::apps::nobody(ctx, i).await };
     let kept = match ctx.db().join_record(&user).await {
         Ok(Some(r)) => ctx.db().set_join_answers(&user, &r.answers, true, now()).await.is_ok(),
         _ => false,
@@ -622,7 +622,7 @@ async fn notify_button(ctx: &Ctx, i: &Interaction, send: bool) {
     if !send {
         return ctx.respond(i, &ui::update("Cancelled; nobody was sent anything.")).await;
     }
-    let Some(by) = invoker(i).map(crate::apps::actor) else { return };
+    let Some(by) = invoker(i).map(crate::apps::actor) else { return crate::apps::nobody(ctx, i).await };
     ctx.respond(i, &ui::update("Sending; the bot log hears when it's done.")).await;
     if let Err(e) = effects::send_notice(ctx, &by, PACE).await {
         tracing::warn!("sending the join flow notice failed: {e:#}");

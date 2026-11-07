@@ -184,7 +184,7 @@ pub async fn allow(ctx: &Ctx, i: &Interaction, peer: &str, batch: &str) {
     if !ctx.is_admin(i.member.as_ref()) {
         return ctx.respond(i, &ui::ephemeral(&crate::manage::admins_only(&ctx.cfg()))).await;
     }
-    let Some(user) = invoker(i) else { return };
+    let Some(user) = invoker(i) else { return crate::apps::nobody(ctx, i).await };
     let n = {
         let inbox = ctx.fed.inbox.lock().await;
         let held = inbox.held.get(peer).map(Vec::as_slice).unwrap_or_default();
@@ -201,11 +201,16 @@ pub async fn allow(ctx: &Ctx, i: &Interaction, peer: &str, batch: &str) {
             t.release.push(item);
         }
     });
-    ctx.audit(Some(&user.id.to_string()), "allow_partner_sync", Some(peer), Some(&format!("{batch}: {n} held"))).await;
-    let original = i.message.as_ref().map(|m| m.content.clone()).unwrap_or_default();
-    let text =
-        format!("{original}\n{} **Allowed by <@{}>** ({}).", fmt::DONE, user.id, fmt::count(n, "update", "updates"));
-    ctx.respond(i, &ui::update(&text)).await;
+    ctx.audit(
+        Some(&user.id.to_string()),
+        chipsoc_admin::AuditAction::AllowPartnerSync,
+        Some(peer),
+        Some(&format!("{batch}: {n} held")),
+    )
+    .await;
+    let original = i.message.as_ref().map(|m| m.content.as_str()).unwrap_or_default();
+    let note = format!("\n{} **Allowed by <@{}>** ({}).", fmt::DONE, user.id, fmt::count(n, "update", "updates"));
+    ctx.respond(i, &ui::update(&fmt::with_note(original, &note))).await;
 }
 
 /// "Refuse" on a held sync: drops the batch the question was about, if it's
@@ -214,21 +219,27 @@ pub async fn refuse_button(ctx: &Ctx, i: &Interaction, peer: &str, batch: &str) 
     if !ctx.is_admin(i.member.as_ref()) {
         return ctx.respond(i, &ui::ephemeral(&crate::manage::admins_only(&ctx.cfg()))).await;
     }
-    let Some(user) = invoker(i) else { return };
+    let Some(user) = invoker(i) else { return crate::apps::nobody(ctx, i).await };
     let n = refuse(ctx, peer, batch).await;
     if n == 0 {
         let text = "That's no longer held: it was allowed or refused already, or replaced. Anything held since has its own question.";
         return ctx.respond(i, &ui::ephemeral(text)).await;
     }
-    ctx.audit(Some(&user.id.to_string()), "refuse_partner_sync", Some(peer), Some(&format!("{batch}: {n} held"))).await;
-    let original = i.message.as_ref().map(|m| m.content.clone()).unwrap_or_default();
-    let text = format!(
-        "{original}\n{} **Refused by <@{}>** ({}): dropped, and the partner isn't told. Their next full sync is checked afresh.",
+    ctx.audit(
+        Some(&user.id.to_string()),
+        chipsoc_admin::AuditAction::RefusePartnerSync,
+        Some(peer),
+        Some(&format!("{batch}: {n} held")),
+    )
+    .await;
+    let original = i.message.as_ref().map(|m| m.content.as_str()).unwrap_or_default();
+    let note = format!(
+        "\n{} **Refused by <@{}>** ({}): dropped, and the partner isn't told. Their next full sync is checked afresh.",
         fmt::FAILED,
         user.id,
         fmt::count(n, "update", "updates")
     );
-    ctx.respond(i, &ui::update(&text)).await;
+    ctx.respond(i, &ui::update(&fmt::with_note(original, &note))).await;
 }
 
 /// Drop one held batch from a partner: nothing in it is applied, and it

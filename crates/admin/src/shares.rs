@@ -893,9 +893,7 @@ async fn card_body<H: Host>(h: &H, app: &Application) -> Result<Value> {
         { "type": 2, "style": 3, "label": "Accept", "custom_id": crate::rounds::review_seen(app.id, &version(app)) },
         { "type": 2, "style": 4, "label": "Reject", "custom_id": crate::rounds::review_button(false, app.id) },
     ]}]);
-    Ok(
-        json!({ "content": truncate(&text, MAX_CONTENT - 1), "components": buttons, "allowed_mentions": { "parse": [] } }),
-    )
+    Ok(json!({ "content": truncate(&text, MAX_CONTENT), "components": buttons, "allowed_mentions": { "parse": [] } }))
 }
 
 /// Post the card for a partner's entry in the review channel, with Accept and Reject.
@@ -1094,7 +1092,7 @@ fn content(peer: &Peer, item: &Share, forum: bool) -> String {
         parts.push(text);
     }
     parts.push(format!("{credit}{note}"));
-    truncate(&parts.join("\n\n"), MAX_CONTENT - 1)
+    truncate(&parts.join("\n\n"), MAX_CONTENT)
 }
 
 /// The scheduled event we make for a partner's.
@@ -1213,7 +1211,7 @@ mod tests {
         let peer = Peer { name: "x".repeat(3000), id: "them".into(), ..Default::default() };
         let mut item = Share::new(ShareKind::Announcement, "1", "News");
         item.text = "Words.".into();
-        assert!(content(&peer, &item, false).chars().count() < MAX_CONTENT);
+        assert!(content(&peer, &item, false).chars().count() <= MAX_CONTENT);
     }
 
     #[test]

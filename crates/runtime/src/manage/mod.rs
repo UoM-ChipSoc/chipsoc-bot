@@ -513,7 +513,7 @@ pub fn help(cfg: &Config) -> String {
     if let Some(w) = &b.web {
         out.push(format!("Terminal: `chipsoc-bot login --server {}`, then any command.", w.url));
     }
-    ui::truncate(&out.join("\n"), ui::MAX_CONTENT - 1)
+    ui::truncate(&out.join("\n"), ui::MAX_CONTENT)
 }
 
 /// Whether any partner takes announcements or events from us.
@@ -1159,7 +1159,7 @@ mod tests {
         });
         assert!(shares_on_demand(&cfg));
         let text = help(&cfg);
-        assert!(text.chars().count() < ui::MAX_CONTENT, "{} characters: {text}", text.chars().count());
+        assert!(text.chars().count() <= ui::MAX_CONTENT, "{} characters: {text}", text.chars().count());
         assert!(text.ends_with("then any command."), "nothing cut: {text}");
         for cmd in ["/record start|stop", "/server feed", "/server idea close", "/server resource", "approvals"] {
             assert!(text.contains(cmd), "{cmd} missing: {text}");

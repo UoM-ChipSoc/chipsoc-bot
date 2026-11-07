@@ -46,7 +46,7 @@ use crate::apps::invoker;
 use crate::commands::CustomId;
 use crate::fedsync::{self, peer_keys};
 use crate::{Ctx, now, ui};
-use chipsoc_admin::fmt;
+use chipsoc_admin::{AuditAction, fmt};
 
 mod catch_up;
 mod checks;
@@ -86,7 +86,7 @@ pub(crate) trait Env: chipsoc_admin::Host {
     fn gkey(&self) -> &str;
     fn state(&self) -> &fedsync::State;
     fn log_bot(&self, text: &str) -> impl Future<Output = ()> + Send;
-    fn audit(&self, action: &str, target: &str, detail: &str) -> impl Future<Output = ()> + Send;
+    fn audit(&self, action: AuditAction, target: &str, detail: &str) -> impl Future<Output = ()> + Send;
     /// Post `text` to the bot log with an "Allow" button carrying `button` (and "Refuse" beside it).
     fn ask(&self, text: &str, button: &str) -> impl Future<Output = ()> + Send;
     /// Post a sealed envelope into `peer`'s inbox. Whether it went.
@@ -110,7 +110,7 @@ impl Env for Ctx {
         Ctx::log_bot(self, text)
     }
 
-    fn audit(&self, action: &str, target: &str, detail: &str) -> impl Future<Output = ()> + Send {
+    fn audit(&self, action: AuditAction, target: &str, detail: &str) -> impl Future<Output = ()> + Send {
         Ctx::audit(self, None, action, Some(target), Some(detail))
     }
 

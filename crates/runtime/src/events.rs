@@ -88,7 +88,7 @@ async fn made(ctx: &Ctx, user: &User, e: &NewEvent) -> Result<Vetted, Refusal> {
         tracing::warn!("creating a scheduled event failed: {err:#}");
         Refusal::fix(format!("⚠️ **Discord refused the event:** {}", chipsoc_admin::fmt::error(&err)))
     })?;
-    let action = chipsoc_admin::AuditAction::CreateEvent.as_str();
+    let action = chipsoc_admin::AuditAction::CreateEvent;
     ctx.audit(Some(&user.id.to_string()), action, Some(&e.title), Some(&e.start.to_string())).await;
     let link = made.link.as_deref().map(|l| format!("\n{l}")).unwrap_or_default();
     let text = format!("{}{link}", made.said(&e.title, e.start).markdown());

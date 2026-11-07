@@ -170,7 +170,7 @@ async fn render<H: Host>(h: &H, head: &str, rows: &[Decision]) -> (String, Value
         blocks.push((top, answers.join("\n"), status));
     }
     // Each applicant gets an even share of the message; their answers are what's cut.
-    let room = (MAX_CONTENT - 1).saturating_sub(head.chars().count() + 1);
+    let room = MAX_CONTENT.saturating_sub(head.chars().count() + 1);
     let share = room / rows.len().max(1);
     let mut text = head.to_owned();
     for (top, answers, status) in &blocks {
@@ -182,7 +182,7 @@ async fn render<H: Host>(h: &H, head: &str, rows: &[Decision]) -> (String, Value
         }
         text.push_str(status);
     }
-    let text = truncate(&text, MAX_CONTENT - 1);
+    let text = truncate(&text, MAX_CONTENT);
 
     let button =
         |label: String, id: String, style: u8| json!({ "type": 2, "style": style, "label": label, "custom_id": id });

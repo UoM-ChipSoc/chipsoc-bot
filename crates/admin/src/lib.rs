@@ -141,6 +141,21 @@ pub enum AuditAction {
     JoinNotice,
     SharePartners,
     CreateEvent,
+    /// A help thread marked solved.
+    Solved,
+    /// Someone finished the join flow.
+    JoinFlow,
+    ApproveConfigChange,
+    RejectConfigChange,
+    /// A partner's held sync allowed or refused.
+    AllowPartnerSync,
+    RefusePartnerSync,
+    /// A partner's grant taken back: all of it, its key, or a role it gave.
+    RevokePartner,
+    RevokePartnerKey,
+    RevokePartnerRole,
+    RecordingStarted,
+    RecordingStopped,
 }
 
 impl AuditAction {
@@ -166,6 +181,17 @@ impl AuditAction {
             Self::JoinNotice => "join_notice",
             Self::SharePartners => "share_partners",
             Self::CreateEvent => "create_event",
+            Self::Solved => "solved",
+            Self::JoinFlow => "join_flow",
+            Self::ApproveConfigChange => "approve_config_change",
+            Self::RejectConfigChange => "reject_config_change",
+            Self::AllowPartnerSync => "allow_partner_sync",
+            Self::RefusePartnerSync => "refuse_partner_sync",
+            Self::RevokePartner => "revoke_partner",
+            Self::RevokePartnerKey => "revoke_partner_key",
+            Self::RevokePartnerRole => "revoke_partner_role",
+            Self::RecordingStarted => "recording_started",
+            Self::RecordingStopped => "recording_stopped",
         }
     }
 }
@@ -701,10 +727,18 @@ pub async fn add_project_lead<H: Host>(h: &H, slug: &str, user: Snowflake, by: &
     Ok(said.then(queue::tell_lead(h, slug, user).await))
 }
 
-/// Who runs a server, read from Discord once and then asked of each member:
-/// whoever holds `admin_role` or a role with Administrator or Manage Server
-/// (`@everyone`'s too), or owns the server. The one rule for `/server`, web
-/// sign-in, CLI login and Tailscale shares.
+/// Who runs a server: its owner, whoever holds `admin_role`, and whoever
+/// has Administrator or Manage Server from a role (`@everyone`'s too). The
+/// one rule for `/server` and the bot's admin buttons, web sign-in, CLI
+/// login and Tailscale shares.
+///
+/// It's read two ways, which agree. Here, from the server's roles and owner
+/// (read from Discord once, then asked of each member with
+/// [`Admins::include`], or of one person with [`is_admin`]). And, in the bot,
+/// from the permissions Discord works out for each button press or command
+/// ([`Admins::by_permissions`]): that needs no request, and there the owner
+/// has every permission. Channel overwrites can't give or take either
+/// permission, so where it was pressed doesn't matter.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Admins {
     guild: Snowflake,
@@ -715,13 +749,12 @@ pub struct Admins {
 impl Admins {
     /// From the guild as Discord sends it (`GET guilds/{id}`).
     pub fn of(guild: Snowflake, g: &serde_json::Value, admin_role: Option<Snowflake>) -> Self {
-        let powerful = chipsoc_model::perms::bits(&["ADMINISTRATOR".into(), "MANAGE_GUILD".into()]).unwrap_or(0);
         let bits = |r: &serde_json::Value| r["permissions"].as_str().and_then(|p| p.parse::<u64>().ok()).unwrap_or(0);
         let mut roles: std::collections::BTreeSet<Snowflake> = g["roles"]
             .as_array()
             .into_iter()
             .flatten()
-            .filter(|r| bits(r) & powerful != 0)
+            .filter(|r| bits(r) & Self::POWERS != 0)
             .filter_map(|r| chipsoc_discord::wire::id(&r["id"]))
             .collect();
         roles.extend(admin_role);
@@ -733,9 +766,18 @@ impl Admins {
         Ok(Self::of(guild, &g, admin_role))
     }
 
+    /// Administrator and Manage Server: either makes an admin.
+    const POWERS: u64 = (1 << chipsoc_model::perms::ADMINISTRATOR) | (1 << 5);
+
     /// Whether someone holding `roles` is an admin. `@everyone`'s id is the server's.
     pub fn include(&self, user: Snowflake, roles: &[Snowflake]) -> bool {
         self.owner == Some(user) || self.roles.contains(&self.guild) || roles.iter().any(|r| self.roles.contains(r))
+    }
+
+    /// The same rule, from the permissions Discord worked out for someone
+    /// holding `roles` (as an interaction gives them).
+    pub fn by_permissions(permissions: u64, roles: &[Snowflake], admin_role: Option<Snowflake>) -> bool {
+        permissions & Self::POWERS != 0 || admin_role.is_some_and(|a| roles.contains(&a))
     }
 }
 

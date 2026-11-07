@@ -200,13 +200,13 @@ pub(crate) async fn check(ctx: &Ctx) -> Result<Option<(String, bool)>> {
                 if u.unconfirmed == 1 { "it is" } else { "they are" },
                 if u.unconfirmed == 1 { "it" } else { "them" },
             ),
-            ui::MAX_CONTENT - 1,
+            ui::MAX_CONTENT,
         );
     }
     if let Some(why) = u.failed {
         report = ui::truncate(
             &format!("{} **Couldn't put back changes made in Discord:** {why}\n\n{report}", fmt::FAILED),
-            ui::MAX_CONTENT - 1,
+            ui::MAX_CONTENT,
         );
     }
     Ok(Some((report, !undone.is_empty())))
@@ -346,7 +346,7 @@ fn describe(cfg: &chipsoc_config::Config, plan: &Plan, undone: &[Action], stale:
             if stale == 1 { "was" } else { "were" }
         ));
     }
-    ui::truncate(&parts.join("\n\n"), ui::MAX_CONTENT - 1)
+    ui::truncate(&parts.join("\n\n"), ui::MAX_CONTENT)
 }
 
 /// Who made the latest change to each object, from the audit log's last 100 entries.

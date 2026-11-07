@@ -1201,7 +1201,7 @@ async fn a_big_round_is_split_over_cards_that_fit_discord() {
     assert_eq!(rounds::post_closed(&h).await.unwrap(), 2);
     for card in h.messages_in("review") {
         let text = card["content"].as_str().unwrap();
-        assert!(text.chars().count() < fmt::MAX_CONTENT, "{}", text.chars().count());
+        assert!(text.chars().count() <= fmt::MAX_CONTENT, "{}", text.chars().count());
         assert!(card["components"].as_array().unwrap().len() <= 5);
         assert!(text.contains("(part "), "{text}");
     }

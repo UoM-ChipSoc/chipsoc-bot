@@ -133,7 +133,7 @@ pub fn ephemeral_with(content: &str, components: Vec<Component>) -> InteractionR
     InteractionResponse {
         kind: InteractionResponseType::ChannelMessageWithSource,
         data: Some(InteractionResponseData {
-            content: Some(truncate(content, MAX_CONTENT - 1)),
+            content: Some(truncate(content, MAX_CONTENT)),
             flags: Some(MessageFlags::EPHEMERAL),
             components: Some(components),
             ..Default::default()
@@ -174,7 +174,7 @@ pub fn ephemeral(content: &str) -> InteractionResponse {
     InteractionResponse {
         kind: InteractionResponseType::ChannelMessageWithSource,
         data: Some(InteractionResponseData {
-            content: Some(truncate(content, MAX_CONTENT - 1)),
+            content: Some(truncate(content, MAX_CONTENT)),
             flags: Some(MessageFlags::EPHEMERAL),
             ..Default::default()
         }),
@@ -185,7 +185,7 @@ pub fn ephemeral(content: &str) -> InteractionResponse {
 pub fn reply(content: &str) -> InteractionResponse {
     InteractionResponse {
         kind: InteractionResponseType::ChannelMessageWithSource,
-        data: Some(InteractionResponseData { content: Some(truncate(content, MAX_CONTENT - 1)), ..Default::default() }),
+        data: Some(InteractionResponseData { content: Some(truncate(content, MAX_CONTENT)), ..Default::default() }),
     }
 }
 
@@ -194,7 +194,7 @@ pub fn update_with(content: &str, components: Vec<Component>) -> InteractionResp
     InteractionResponse {
         kind: InteractionResponseType::UpdateMessage,
         data: Some(InteractionResponseData {
-            content: Some(truncate(content, MAX_CONTENT - 1)),
+            content: Some(truncate(content, MAX_CONTENT)),
             components: Some(components),
             ..Default::default()
         }),
@@ -206,7 +206,7 @@ pub fn update(content: &str) -> InteractionResponse {
     InteractionResponse {
         kind: InteractionResponseType::UpdateMessage,
         data: Some(InteractionResponseData {
-            content: Some(truncate(content, MAX_CONTENT - 1)),
+            content: Some(truncate(content, MAX_CONTENT)),
             components: Some(Vec::new()),
             ..Default::default()
         }),
@@ -321,7 +321,7 @@ mod tests {
     fn fit_stays_under_the_limit_and_counts_the_rest() {
         let lines: Vec<String> = (0..500).map(|n| format!("• step number {n}")).collect();
         let text = fit("**Head**", &lines);
-        assert!(text.chars().count() < MAX_CONTENT);
+        assert!(text.chars().count() <= MAX_CONTENT);
         assert!(text.starts_with("**Head**\n• step number 0") && text.contains("more."), "{text}");
         assert_eq!(fit("h", &["a".into(), "b".into()]), "h\na\nb");
     }

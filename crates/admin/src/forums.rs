@@ -331,7 +331,7 @@ pub async fn post_resource<H: Host>(h: &H, r: &NewResource, by: &Actor) -> Resul
     let body = json!({
         "name": truncate(r.title.trim(), MAX_TITLE),
         "applied_tags": tags,
-        "message": { "content": truncate(&text, crate::MAX_CONTENT - 1), "allowed_mentions": { "parse": [] } },
+        "message": { "content": truncate(&text, crate::MAX_CONTENT), "allowed_mentions": { "parse": [] } },
     });
     let thread = h.rest().call(Method::Post, &format!("channels/{forum}/threads"), Some(body)).await?;
     if let Some(s) = h.seen_posts() {
@@ -424,7 +424,7 @@ pub async fn post_idea<H: Host>(h: &H, idea: &NewIdea, by: Snowflake) -> Result<
     let body = json!({
         "name": title,
         "applied_tags": tags,
-        "message": { "content": truncate(&text, crate::MAX_CONTENT - 1), "allowed_mentions": { "parse": [] } },
+        "message": { "content": truncate(&text, crate::MAX_CONTENT), "allowed_mentions": { "parse": [] } },
     });
     let thread = h.rest().call(Method::Post, &format!("channels/{forum}/threads"), Some(body)).await?;
     Ok(post(h.guild(), &thread, &tag_names(&info), text))
@@ -496,7 +496,7 @@ pub async fn archive_resource<H: Host>(h: &H, post: Snowflake, by: &Actor) -> Re
 /// so members never just find a locked post.
 pub fn closing_line(reason: Option<&str>) -> String {
     match reason.map(str::trim).filter(|r| !r.is_empty()) {
-        Some(why) => truncate(&format!("🔒 **Closed:** {why}\nIt stays here to read."), crate::MAX_CONTENT - 1),
+        Some(why) => truncate(&format!("🔒 **Closed:** {why}\nIt stays here to read."), crate::MAX_CONTENT),
         None => "🔒 **Closed.** It stays here to read.".to_owned(),
     }
 }

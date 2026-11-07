@@ -529,6 +529,18 @@ pub fn utc_minute(ts: i64) -> String {
     format!("{y:04}-{m:02}-{d:02} {:02}:{:02}", secs / 3600, secs % 3600 / 60)
 }
 
+/// Discord's limit on one message's text, in characters.
+pub const MAX_CONTENT: usize = 2000;
+
+/// At most `max` characters, the last one `…` if it had to be cut.
+pub fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_owned();
+    }
+    let keep: String = s.chars().take(max.saturating_sub(1)).collect();
+    format!("{keep}…")
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
