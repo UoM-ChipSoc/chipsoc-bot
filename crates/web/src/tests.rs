@@ -1068,7 +1068,7 @@ async fn roles_are_edited_through_ops_with_a_flash_once() {
     assert_eq!(added.location.as_deref(), Some("/roles"));
     let page = b.follow(added).await;
     assert!(
-        page.body.contains("class=\"note good flash\"") && page.body.contains("Add role Mods (mods)"),
+        page.body.contains("class=\"note good flash\"") && page.body.contains("Saved: added the role Mods."),
         "{}",
         page.body
     );

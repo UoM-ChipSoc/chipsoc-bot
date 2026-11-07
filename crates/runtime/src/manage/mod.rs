@@ -814,9 +814,15 @@ async fn edit(ctx: &Ctx, op: &Op, by: &Actor) -> (String, Vec<Component>) {
     match saved {
         Ok(change) if change.files.is_empty() => ("Nothing to change: it's already like that.".into(), Vec::new()),
         Ok(change) => {
-            ctx.log_bot(&format!("✏️ {} changed the config: {}.", by.mention(), change.summary)).await;
             let warnings = change.warnings.iter().map(|w| format!("\n{} {w}", fmt::ATTENTION)).collect::<String>();
-            control::planned(ctx, &format!("{} **Saved:** {}.{warnings}", fmt::DONE, change.summary), false).await
+            let planned =
+                control::planned(ctx, &format!("{} **Saved:** {}.{warnings}", fmt::DONE, change.summary), false).await;
+            // With something to apply, the bot log gets the plan soon, headed
+            // by the commit ("… by ada"): one post, not two.
+            if planned.1.is_empty() || crate::reload::last_commit(&ctx.cfg().dir).await.is_none() {
+                ctx.log_bot(&format!("✏️ {} changed the config: {}.", by.mention(), change.summary)).await;
+            }
+            planned
         }
         Err(e) => {
             let text = match e.downcast_ref::<chipsoc_config::authoring::Problems>() {

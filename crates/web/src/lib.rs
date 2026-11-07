@@ -219,6 +219,7 @@ impl<R: Rest> App<R> {
         if let Some(b) = &self.baseline {
             chipsoc_engine::vet_with(&**b, &mut cfg).await?;
         }
+        crate::form::set_zone(&cfg.bot.timezone);
         let cfg = Arc::new(cfg);
         *self.loaded.lock().unwrap_or_else(|e| e.into_inner()) = Some(Loaded { files, trusted, cfg: cfg.clone() });
         Ok(cfg)

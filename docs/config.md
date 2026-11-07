@@ -103,9 +103,10 @@ and unknown keys.
 
 ## bot.toml
 
-At the top: `name`, `timezone` (default `Europe/London`), `admin_role` and
-`archive` (the category key for removed channels). Each section turns a
-feature on; leave it out to turn it off.
+At the top: `name`, `timezone` (default `Europe/London`; event times are read
+in it, and the bot and the dashboard show times in it, as "UK time" or
+"Paris time"), `admin_role` and `archive` (the category key for removed
+channels). Each section turns a feature on; leave it out to turn it off.
 
 | Section | Turns on |
 |---|---|
@@ -304,10 +305,12 @@ who changed it since the last apply:
   order, settings; permissions with `--permissions`) and lists the rest.
 - **Plans in `log.bot`.** A merged commit is pulled within 2 minutes; an
   edit from the web or `/server` within 30 seconds. Its plan is posted once,
-  with an **Apply** button, under "📥 Config changed: <commit subject>":
-  grouped by Roles, Channels, Posts, Members and Server settings, with role
-  moves summed up ("Treasurer above Member"). A config that doesn't load is
-  reported and the bot keeps the last good one.
+  with an **Apply** button, under "📥 Config changed: <commit subject>" (an
+  edit's subject ends "by <who>"): grouped by Roles, Channels, Posts,
+  Members and Server settings, with role moves summed up ("Treasurer above
+  Member"). An edit with nothing to apply in Discord gets one line instead
+  ("✏️ @x changed the config: …"). A config that doesn't load is reported
+  and the bot keeps the last good one.
 - **The bot's role on top.** Discord only lets a bot manage roles below its
   own. If any role it manages sits above the bot's role, the plan names
   them and leaves them alone until the server owner drags the bot's role to

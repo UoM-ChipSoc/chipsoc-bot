@@ -293,7 +293,7 @@ async fn a_meeting_is_recorded_everyone_is_told_and_the_committee_gets_it() {
 
     // The committee's summary.
     let summary = s.messages_in("committee-chat").join("\n");
-    assert!(summary.contains("Recording of #meeting ended** (stopped by Ada) after 4s"), "{summary}");
+    assert!(summary.contains("Recording of #meeting ended** after 4s: stopped by Ada."), "{summary}");
     assert!(summary.contains("People: Ada, Ben."), "{summary}");
     assert!(summary.contains(&format!("Recordings page (`{}`)", m.id)), "{summary}");
     assert!(summary.contains("No transcript: transcripts are turned off"), "{summary}");
@@ -379,12 +379,12 @@ fn limits_stop_a_recording() {
     assert_eq!(r(0, Some(min(1)), min(10), false, None), None, "empty only a minute");
     assert_eq!(r(0, Some(min(2)), min(10), false, None).unwrap(), "the call was empty for 2 minutes");
     assert!(r(1, None, min(180), false, None).unwrap().contains("3-hour limit"));
-    assert!(r(1, None, min(1), true, None).unwrap().contains("4 GB"));
+    assert!(r(1, None, min(1), true, None).unwrap().contains("the 4 GB limit"));
     let broken = super::reason(1, None, min(1), max, super::Files::Broken, None, (4.0, None)).unwrap();
     assert_eq!(broken, "writing the files failed (see the bot's log)", "not the size limit");
     assert_eq!(r(1, None, min(1), false, Some(1000)).unwrap(), "the disk is nearly full");
     let all = super::reason(1, None, min(1), max, files(true), None, (4.0, Some(20.0))).unwrap();
-    assert!(all.contains("20 GB (recording.max_total_gb)"), "{all}");
+    assert_eq!(all, "the recordings here reached their 20 GB limit in all");
 }
 
 #[tokio::test]

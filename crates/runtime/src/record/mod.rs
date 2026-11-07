@@ -690,7 +690,7 @@ pub(crate) fn summary_text(meta: &Meta, link: &str, transcript: Result<(), &str>
     let people = if people.is_empty() { "nobody".to_owned() } else { people.join(", ") };
     let why = chipsoc_voice::md_name(meta.ended_because.as_deref().unwrap_or("stopped"));
     let mut t = format!(
-        "🎙️ **Recording of {} ended** ({why}) after {}.\nPeople: {people}.\nListen or download: {link}\n",
+        "🎙️ **Recording of {} ended** after {}: {why}.\nPeople: {people}.\nListen or download: {link}\n",
         channel_shown(&meta.channel_name),
         chipsoc_voice::duration(meta.length_ms),
     );
@@ -753,15 +753,15 @@ fn reason(
     }
     if ran >= max {
         let h = max.as_secs_f64() / 3600.0;
-        return Some(format!("it reached the {h}-hour limit (recording.max_hours)"));
+        return Some(format!("it reached the {h}-hour limit"));
     }
     if files == Files::Broken {
         return Some("writing the files failed (see the bot's log)".to_owned());
     }
     if files == Files::Full {
         return Some(match total_gb {
-            Some(t) => format!("all the recordings here reached their size limit, {t} GB (recording.max_total_gb)"),
-            None => format!("it reached its size limit, {max_gb} GB (recording.max_gb)"),
+            Some(t) => format!("the recordings here reached their {t} GB limit in all"),
+            None => format!("it reached the {max_gb} GB limit"),
         });
     }
     if free.is_some_and(|f| f < MIN_FREE_WHILE) {
@@ -1053,7 +1053,7 @@ async fn make_transcript(ctx: &Ctx, rec: &Recording, meta: &Meta) {
             format!(
                 "📝 **Transcript ready** for the recording of {} ({}): {link}",
                 channel_shown(&meta.channel_name),
-                when(meta.started_at)
+                ctx.cfg().bot.local_minute(meta.started_at)
             ),
         ),
         Err(e) => {
@@ -1064,16 +1064,11 @@ async fn make_transcript(ctx: &Ctx, rec: &Recording, meta: &Meta) {
                 format!(
                     "⚠️ The transcript of the recording of {} ({}) couldn't be made: {why}. The audio is kept: {link}",
                     channel_shown(&meta.channel_name),
-                    when(meta.started_at)
+                    ctx.cfg().bot.local_minute(meta.started_at)
                 ),
             )
         }
     };
     ctx.log_err(transcribe::set_state(&dir, state), "saving a recording's state");
     ctx.say_in(Some(&rec.channel), &text).await;
-}
-
-/// `ts` as "2026-11-06 18:00 UTC".
-fn when(ts: i64) -> String {
-    format!("{} UTC", chipsoc_model::utc_minute(ts))
 }
