@@ -22,9 +22,19 @@ Put `.env*`, `lock.toml.bak`, `.apply.lock`, `.write.lock`, `*.tmp` and
 warns about a `.env` that isn't ignored.
 
 All fields are in [`schema.rs`](../crates/config/src/schema.rs),
-[`bot.rs`](../crates/config/src/bot.rs) and
-[`join.rs`](../crates/config/src/join.rs). `check` catches typos and unknown
-keys.
+[`bot.rs`](../crates/config/src/bot.rs),
+[`join.rs`](../crates/config/src/join.rs) and
+[`recording.rs`](../crates/config/src/recording.rs). `check` catches typos
+and unknown keys.
+
+- **Common fields.** Role: `key`, `name`, `color` (`"#e67e22"`), `hoist`,
+  `mentionable`, `permissions`. Channel: `key`, `name`, `type` (`text`,
+  `voice`, `announcement`, `stage`, `forum`, `media`), `topic`, `slowmode`,
+  `nsfw`, `user_limit`, `tags`, `overwrites` (`role` or `member`, `allow`,
+  `deny`). Project: `slug`, `name`, `blurb`, `kind`, `status`, `stage`,
+  `github`, `brief`, `channels`, `tags`, `team_role`/`lead_role`, `leads`,
+  and `[project.application]` with `open`, `lead_question` (which adds
+  **Make lead**) and `questions` (up to 3).
 
 - **Keys:** every role, category and channel has a permanent `key` of
   lower-case letters, digits and dashes. Change `name` freely; a new `key`
@@ -64,9 +74,11 @@ keys.
   the config (the bot deletes the "changed the post title" notice Discord
   leaves when it renames one, as it does for project posts, and at start
   any older ones of its own). lock.toml keeps it among the posts as `"<forum>/<key>"`
-  (older versions of the bot pass it by). Taken out of the config, it's
-  archived and locked, never deleted; with lock.toml lost, it's found
-  again by its title and text. `check` errors on a missing title or one
+  (older versions of the bot pass it by). One Discord archived for
+  inactivity is opened again when it's edited. Taken out of the config, it's
+  archived and locked, never deleted (one the bot never made isn't touched,
+  and the plan says so); with lock.toml lost, it's found again by its title
+  and text. `check` errors on a missing title or one
   over 100 characters, a tag the forum lacks, and the usual post problems.
 - **Forum order:** `sort = "activity"` (latest activity first) or
   `"creation"` (newest post first) on a forum or media channel sets how
@@ -82,10 +94,12 @@ keys.
   added is posted after the last (after any replies), and ones no longer
   needed are deleted. lock.toml keeps the later parts' ids as `parts`.
 - **Lists:** `{positions}` becomes a bullet per position open in
-  `/volunteer` ("- **Label**: first line of its intro", plus "applications
-  close <date>" for one with `closes`) and `{projects:open}` one per
-  project taking applications ("- **Name**: blurb"), or "Nothing open right
-  now.". Opening or closing one changes the post on the next apply.
+  `/volunteer` ("- **Label**: first line of its intro") and
+  `{projects:open}` one per project taking applications ("- **Name**:
+  blurb"), or "Nothing open right now.". Positions with `closes` say when,
+  with the weekday: once under the list ("Applications close Tuesday 10
+  November 2026, 23:59.") when they all close at the same time, else on each
+  line. Opening or closing one changes the post on the next apply.
 
 ## bot.toml
 
@@ -95,12 +109,12 @@ feature on; leave it out to turn it off.
 
 | Section | Turns on |
 |---|---|
-| `[log]` | `bot`: plans to apply, approvals, drift, partner sync, errors (called `log.bot` in these docs; the committee should read it). `people`: edits, deletes, joins, leaves, review decisions (text kept `keep_days`, default 90; text from a channel that keeps out any role or member is left out). |
+| `[log]` | `bot`: plans to apply, approvals, drift, partner sync, the yearly refresh, errors (called `log.bot` in these docs; the committee should read it). `people`: edits, deletes, joins, leaves, review decisions (text kept `keep_days`, default 90, 0: none; text from a channel that keeps out any role or member is left out). |
 | `[[position]]` | A role for `/volunteer`. `admin = true` also grants `admin_role` (the position's own role can't be `admin_role`); `open = false` leaves it out of `/volunteer`; `label`; `intro` is shown above `questions` (each a string, or `{ ask, long, optional, hint }`; default: hours per week, committee or organising experience (optional), electronics / chip design experience (optional), why this position; course and year aren't asked, as the card shows the applicant's join answers). Discord forms hold 5 boxes, the intro taking one. `closes = "2026-11-20"` (the end of that day) or `"2026-11-20 18:00"`, in `timezone`, gives it an application window ([admin.md](admin.md#application-windows)). |
 | `[review]` | `channel` where applications, project ideas, feeds, links, event suggestions and rejoin cards wait for Accept or Reject. |
 | `[events]` | `channel` for `/event` announcements. `suggest` (default true): members' `/event` is a suggestion for review (needs `[review]`); admins' events are made at once. |
 | `[feeds]` | `channel` for feed posts (feeds are checked every 15 minutes). |
-| `[ideas]` | `forum` where accepted `/propose-project` ideas are posted (needs `[review]`); `needs_lead_tag` marks ideas nobody leads yet; `closed_tag` marks ones closed with `/server idea close` (`check` errors if it isn't one of the forum's `tags`); `questions` and `post` make the form and the post your own (see *Project ideas*). |
+| `[ideas]` | `forum` where accepted `/propose-project` ideas are posted (needs `[review]`); `needs_lead_tag` marks ideas nobody leads yet; `closed_tag` (optional) marks ones closed with `/server idea close` (`check` errors if it isn't one of the forum's `tags`); neither is offered in the form's Area menu; `questions` and `post` make the form and the post your own (see *Project ideas*). |
 | `[help]` | `forum` for `/solved`; `solved_tag` (default `solved`). |
 | `[projects]` | `forum` for project posts; `areas` suggested in `project new`; `default_channels` for new projects; `pinned = "<slug>"` pins that project's post at the top of the forum (Discord pins one post per forum, so the forum can't have its own `post` too; changing it unpins the old one). |
 | `[resources]` | `forum` for shared links: `/share-resource` from members (needs `[review]`), and straight from admins (`/server resource add`, web, CLI, API). The same link can't be shared twice; tags must be the forum's. |
@@ -127,9 +141,15 @@ onboarding asks every question of everyone; this one branches.
   roles that no longer apply (never others, nor partner-sync ones), sets the
   nickname (not the owner's or anyone above the bot: they're told to) and
   saves the answers. Admins see them in `member info`. The summary lists the
-  roles they'll get, but not `access_role`. The last message says
-  `done_message` (default with the gate on: "The rest of the server is open
-  now.").
+  roles they'll get, but not `access_role`. The last message says "The rest
+  of the server is open now." when the gate just let them in, then
+  `done_message` if set (`{#key}` and `{@key}` become mentions; `check`
+  errors on unknown keys).
+- Other fields: `start` (the first step's key), `intro`, `notify_message`
+  (`/server join notify`'s DM), `reminder_message` (the reminder DM); a
+  step's `[[step.field]]` boxes (`key`, `label`, `hint`, `required`,
+  `long`); an option's `description` and `emoji`; `next = "end"` ends the
+  flow there.
 - `check` refuses loops, steps nothing leads to, unknown roles, menus over 25
   options, forms over 5 boxes, and roles that are Discord's, the admin role,
   managed by members.toml or project leads, moderator-powered, able to see
@@ -145,7 +165,7 @@ onboarding asks every question of everyone; this one branches.
   plan takes View Channel from @everyone, gives it to `access_role`, and lets
   @everyone view each open channel; hidden categories stay hidden. Discord's
   onboarding must be off (`enabled = false`). New members who haven't
-  finished after `remind_after_hours` (default 24) get one reminder DM, and
+  finished after `remind_after_hours` (default 24, 0: never) get one reminder DM, and
   `log.bot` lists them. `grandfather = true` gives `access_role` to members
   who were here before the gate.
 - Nobody is DMed when the flow or the gate is turned on. Members already
@@ -153,7 +173,16 @@ onboarding asks every question of everyone; this one branches.
   button) and `/server join notify` (or `join notify`), once each.
 - `yearly_refresh = "09-15"`: from that date each year, members whose answers
   include a `yearly = true` step get a DM to confirm it or update it (not in
-  the year it's turned on, if the date has passed).
+  the year it's turned on, if the date has passed), a few at a time.
+  `log.bot` says when it starts, lists anyone whose DMs are closed, and
+  says when everyone due has been asked.
+- **If the bot is down** while the gate is on, **Get started** fails and
+  newcomers can't get in. Give them `access_role` by hand in Discord (the
+  member's profile → Roles); the bot leaves the flow's roles alone. To open
+  everything for a while, set `gate = false` and apply; or, with the bot
+  down, give @everyone View Channels in Discord's role settings, and once
+  it's back either apply `gate = false` or let the next apply (or drift
+  watch, with `mode = "undo"`) take it away again.
 
 **Going live:** try it with `gate = false` (everyone still sees everything);
 check the flow from a test account; then set `gate = true`, apply (the plan

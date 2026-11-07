@@ -375,10 +375,7 @@ fn told(
     match (app.kind, accept) {
         (AppKind::Position, true) => match waits {
             None => format!("🎉 Your application for **{what}**{here} was accepted: you now hold **{what}**."),
-            Some(w) => format!(
-                "🎉 Your application for **{what}**{here} was approved. The role follows once {}.",
-                w.for_them()
-            ),
+            Some(w) => format!("🎉 Your application for **{what}**{here} was accepted. {}", w.for_them()),
         },
         (AppKind::Project, true) => format!(
             "🎉 Your application to join **{what}**{here} was accepted: you're on the team, and its channels are open to you."

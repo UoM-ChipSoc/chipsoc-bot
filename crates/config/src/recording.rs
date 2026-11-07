@@ -169,7 +169,7 @@ impl Recording {
     pub fn problems(&self, dir: &Path) -> Vec<String> {
         let mut out = Vec::new();
         if !(self.max_hours > 0.0 && self.max_hours <= 24.0) {
-            out.push("bot.toml recording.max_hours: give a number of hours from 0 to 24".to_owned());
+            out.push("bot.toml recording.max_hours: give a number of hours above 0, at most 24".to_owned());
         }
         if self.max_gb.is_nan() || self.max_gb <= 0.0 {
             out.push("bot.toml recording.max_gb: give a size above 0".to_owned());

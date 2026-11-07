@@ -304,13 +304,13 @@ async fn a_long_posts_parts_in_the_repo_lock_arent_refused() {
     // …and lock.toml with the parts an apply just posted.
     edit(&|l| drop(l.project_posts.insert("cpu".into(), post(20, &[21, 22]))));
     assert!(crate::reload::reload(&ctx, &dir).await);
-    assert!(!logged(&fake, &ctx).contains("Refused"), "{}", logged(&fake, &ctx));
+    assert!(!logged(&fake, &ctx).contains("Ignored"), "{}", logged(&fake, &ctx));
     assert_eq!(ctx.cfg().desired.lock.project_posts["cpu"], post(20, &[]), "parts are only ever the bot's");
 
     edit(&|l| drop(l.project_posts.insert("cpu".into(), post(30, &[]))));
     assert!(crate::reload::reload(&ctx, &dir).await);
     let log = logged(&fake, &ctx);
-    assert!(log.contains("**Refused:**") && log.contains("`project_posts.cpu`"), "{log}");
+    assert!(log.contains("**Ignored:**") && log.contains("`project_posts.cpu`"), "{log}");
     assert_eq!(ctx.cfg().desired.lock.project_posts["cpu"].thread, Snowflake(20));
 }
 
@@ -408,4 +408,33 @@ async fn a_lost_approval_card_is_posted_again() {
     let said = crate::trust::approvals(&ctx).await;
     assert!(said.contains("Posted the card again"), "{said}");
     assert_eq!(cards(&fake), 2);
+}
+
+/// R5 (ux D2): the yearly refresh says in the bot log when it starts, who
+/// couldn't be DMed, and when it's done.
+#[tokio::test]
+async fn the_yearly_refresh_is_said_in_the_bot_log() {
+    let (_root, fake, ctx) = server().await;
+    let dir = ctx.cfg().dir.clone();
+    let flow = "yearly_refresh = \"01-01\"\n[[step]]\nkey = \"who\"\nquestion = \"Student?\"\nyearly = true\n\
+                [[step.option]]\nlabel = \"Yes\"\n";
+    write(&dir, "join.toml", flow);
+    ctx.set_cfg(Arc::new(Config::load(&dir).unwrap()));
+    finish_join(&ctx).await;
+    let db = ctx.db();
+    let answers = db.join_record(&ADA.to_string()).await.unwrap().unwrap().answers;
+    for user in [ADA, BEN] {
+        db.set_join_answers(&user.to_string(), &answers, true, 0).await.unwrap();
+    }
+    db.first_prompt("*", crate::join::YEARLY_SEEN, 0).await.unwrap();
+    fake.fail("POST users/@me/channels", 403, false);
+    let j = ctx.cfg().join.clone().unwrap();
+    crate::join::yearly(&ctx, &j, &mut 10).await;
+    let log = logged(&fake, &ctx);
+    assert!(log.contains("📅 **Yearly refresh:** asking 2 members by DM"), "{log}");
+    assert!(log.contains("couldn't DM these members"), "{log}");
+    crate::join::yearly(&ctx, &j, &mut 10).await;
+    let log = logged(&fake, &ctx);
+    assert!(log.contains("**Yearly refresh done**"), "{log}");
+    assert_eq!(log.matches("asking 2 members").count(), 1, "started once: {log}");
 }

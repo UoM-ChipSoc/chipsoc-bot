@@ -129,13 +129,13 @@ enum Cmd {
     /// Projects: add, change, status, applications, brief, leads.
     #[command(subcommand)]
     Project(manage::ProjectCmd),
-    /// Roles: list, add, change, move, remove.
+    /// Roles: list, new, set, move, remove.
     #[command(subcommand)]
     Role(manage::RoleCmd),
-    /// Categories: list, add, rename, move, remove, permissions.
+    /// Categories: list, new, rename, move, remove, perms.
     #[command(subcommand)]
     Category(manage::CategoryCmd),
-    /// Channels: list, add, change, move, archive, permissions.
+    /// Channels: list, new, set, move, move-to, archive, perms.
     #[command(subcommand)]
     Channel(manage::ChannelCmd),
     /// Committee positions (/volunteer): list, add, change, questions, open, close.

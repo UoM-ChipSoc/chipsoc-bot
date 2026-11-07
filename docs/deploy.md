@@ -27,8 +27,10 @@ up with `deploy.sh`, the secrets file (`.env.server`) becomes the server's
 | `RUST_LOG` | all | Log level (the units set `info`). |
 
 The web UI never gets the partner-sync key, partner webhooks or
-`TAILSCALE_API_KEY`: the web unit unsets them and the web UI drops them on
-start. Git runs without the bot's secrets in its environment.
+`TAILSCALE_API_KEY`: the web unit unsets `FED_SIGNING_KEY` and
+`TAILSCALE_API_KEY`, and the binary drops the rest (a signing key renamed
+with `key_env`, and partner webhooks) when the web UI starts. Git
+runs without the bot's secrets in its environment.
 
 ## deploy.sh
 
@@ -367,6 +369,19 @@ backups' age private key (or they make their own and run `backup-setup`).
 Then they rotate the secrets and remove the old maintainer's access.
 
 ## Recovering from failures
+
+**While the bot is down,** Discord itself carries on, but nothing the bot
+does happens: `/server`, `/volunteer` and the other commands and every
+button fail ("This interaction failed"), no plans, cards or reminders are
+posted, feeds and drift watch pause, and a recording in progress stops (what
+was saved is kept and reported when it's back). Nothing is lost: config
+pushed meanwhile is synced and planned when it starts, and the review queue
+is where it was. With the join gate on, newcomers can't get past **Get
+started**: give them `access_role` by hand in Discord, or open the server
+for a while ([config.md](config.md#join-flow), *If the bot is down*).
+Nothing outside the bot notices it's down, so check it if commands stop
+answering (`ssh HOST systemctl status discord-bot`), or have an outside
+check (a cron job or uptime service) ping the committee.
 
 - *The bot won't start or connect:* `scripts/deploy.sh` already switched
   back if a new release didn't come up. Look at

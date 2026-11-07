@@ -213,7 +213,7 @@ async fn managed_roles_are_not_given_behind_the_config_s_back() {
     let h = host(true).await;
     let id = h.apply_for(AppKind::Position, "secretary", BEN, false).await;
     let d = decide(&h, id, true, &reviewer()).await.unwrap();
-    assert!(d.outcome.contains("the config doesn't say who holds Secretary"), "{d:?}");
+    assert!(d.outcome.contains("the config doesn't say who holds **Secretary**"), "{d:?}");
     assert!(h.holds(BEN, "secretary") && !h.holds(BEN, "committee"));
 }
 
@@ -1262,7 +1262,7 @@ async fn an_accept_that_gives_no_role_yet_says_why_and_a_grown_role_stays_queued
     let dm = &h.discord.dms_to(BEN)[0];
     assert_eq!(
         dm,
-        "🎉 Your application for **Treasurer** in Test was approved. The role follows once an admin has given it to you."
+        "🎉 Your application for **Treasurer** in Test was accepted. You'll get the role once an admin has given it to you."
     );
 
     // Too powerful now: nothing given, nothing recorded, still in the queue.
@@ -1285,7 +1285,7 @@ async fn an_accept_that_gives_no_role_yet_says_why_and_a_grown_role_stays_queued
     assert_eq!(Waits::of(&Recorded { unapplied: true, ..Default::default() }, &roles), Some(Waits::Apply));
     let given = Recorded { holds: roles.iter().cloned().collect(), held_back: true, ..Default::default() };
     assert_eq!(Waits::of(&given, &roles), None, "held back, but not this");
-    assert!(Waits::Approval.for_them().contains("another admin has approved"));
+    assert!(Waits::Approval.for_them().contains("another admin has confirmed it"));
 }
 
 #[tokio::test]

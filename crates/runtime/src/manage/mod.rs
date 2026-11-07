@@ -673,13 +673,14 @@ async fn run(ctx: &Ctx, cmd: &Cmd, by: &Actor) -> (String, Vec<Component>) {
                 ),
                 Ok(d) => {
                     let mark = if d.accepted { "✅ Accepted" } else { "❌ Rejected" };
+                    let told = if d.told { " They were told by DM." } else { "" };
                     let buttons = if d.lead {
                         let lead = CustomId::MakeLead(*id).to_string();
                         vec![ui::row(vec![ui::button(&lead, "Make lead", ButtonStyle::Primary)])]
                     } else {
                         Vec::new()
                     };
-                    (format!("{mark} application #{id}.{}", d.outcome.spaced()), buttons)
+                    (format!("{mark} #{id}.{told}{}", d.outcome.spaced()), buttons)
                 }
                 Err(why) => (why.markdown(), Vec::new()),
             };
@@ -860,7 +861,7 @@ fn list(cfg: &Config, head: &str, lines: Vec<String>, empty: &str) -> String {
 async fn queue(ctx: &Ctx) -> String {
     let cfg = ctx.cfg();
     if cfg.bot.review.is_none() {
-        return "Applications are off: bot.toml has no `[review]` section, so nothing comes into the queue.".into();
+        return "The review queue is off. Ask whoever runs the bot to turn it on (bot.toml, `[review]`).".into();
     }
     match chipsoc_admin::pending(ctx).await {
         Ok(q) => list(
@@ -869,10 +870,11 @@ async fn queue(ctx: &Ctx) -> String {
             q.iter()
                 .map(|p| {
                     let who = chipsoc_admin::submitted_by(&cfg, &p.user);
-                    format!("`#{}` {} · {} · {who}", p.id, p.kind, chipsoc_admin::fmt::plain(&p.what, 100))
+                    let kind = chipsoc_admin::AppKind::label_of(&p.kind);
+                    format!("`#{}` {kind} · {} · {who}", p.id, chipsoc_admin::fmt::plain(&p.what, 100))
                 })
                 .collect(),
-            "No applications are waiting.",
+            "Nothing is waiting.",
         ),
         Err(e) => failed("read the queue", &e),
     }
@@ -889,7 +891,9 @@ async fn history(ctx: &Ctx) -> String {
                     let why = p.reason.as_deref().map(|r| format!(": {}", ui::truncate(r, 80))).unwrap_or_default();
                     let who = chipsoc_admin::submitted_by(&ctx.cfg(), &p.user);
                     let what = chipsoc_admin::fmt::plain(&p.what, 100);
-                    format!("`#{}` {what} · {who} · {}{by}{why}", p.id, p.status)
+                    let decision = if p.status == "accepted" { "Accepted" } else { "Rejected" };
+                    let kind = chipsoc_admin::AppKind::label_of(&p.kind);
+                    format!("`#{}` {kind} · {what} · {who} · {decision}{by}{why}", p.id)
                 })
                 .collect(),
             "No decisions yet.",
@@ -949,8 +953,8 @@ async fn members(ctx: &Ctx) -> String {
         &ctx.cfg(),
         "**Who holds what:**",
         lines,
-        "**No roles are managed yet.** Add positions in bot.toml, or `role = []` lines in members.toml, and the bot \
-         keeps who holds them in step with the config.",
+        "**Nobody is appointed to anything yet.** Add a position on the dashboard's Positions page (or in bot.toml), \
+         and the bot keeps who holds it in step with the config.",
     )
 }
 

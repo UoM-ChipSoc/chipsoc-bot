@@ -64,9 +64,10 @@ fn confirm_text(lines: &[String]) -> Vec<Line<'static>> {
 
 fn apply_text(app: &App) -> Vec<Line<'static>> {
     let n = app.changes.plan().map_or(0, |p| p.changes());
-    let server = app.cfg.as_ref().map_or(String::new(), |c| c.desired.server.guild.name.clone());
+    let server = app.cfg.as_ref().map(|c| c.desired.server.guild.name.clone()).filter(|n| !n.is_empty());
+    let to = server.map_or_else(|| "Discord".to_owned(), |s| format!("the Discord server \"{s}\""));
     vec![
-        Line::from(format!("Send {} to the Discord server \"{server}\"?", super::count(n, "change", "changes"))),
+        Line::from(format!("Send {} to {to}?", super::count(n, "change", "changes"))),
         Line::default(),
         Line::from("Members see them straight away. Removed channels move to the archive; nothing is deleted."),
     ]

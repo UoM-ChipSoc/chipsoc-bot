@@ -18,10 +18,11 @@ suggestions to Accept or Reject in the second.
    with them. Appoint first: taking someone out of an admin position needs
    another admin's Approve, so with the old committee gone first only the
    server owner could approve the new one.
-3. If `join.toml` has `yearly_refresh`, members are asked from that date to
-   confirm or update their yearly answers (year of study, say); check in
-   `log.bot` that the DMs went out. Otherwise, announce that members should
-   press **Update my details**.
+3. If `join.toml` has `yearly_refresh`, from that date the bot DMs members
+   whose answers include a `yearly` step (year of study, say), a few at a
+   time, asking them to confirm or update it. `log.bot` says when it
+   starts, lists anyone whose DMs are closed, and says when it's done.
+   Otherwise, announce that members should press **Update my details**.
 4. Retire finished projects (below) and refresh posts in `content/`.
 
 **Appointing committee.** `/server member appoint <position> @someone` (or
@@ -96,12 +97,16 @@ the same way ("Saved as a new change: …" or "Not changed: …"), and
 `log.bot` notes who did it. Once saved it stands: if pushing it to the
 config repo fails, that's said as a warning and the bot pushes it on its
 next sync. History names whoever the bot signed a change for, else the
-commit's git author.
+commit's git author (for reading only: approvals never go by it; see
+[security.md](security.md#what-a-push-cant-do)).
 
 ## What asks first
 
-Removing, archiving, taking a role away, changing a project's status and
-applying ask first in every front end (`--yes` skips it in the CLI). An
+Removing, archiving, taking a role away, changing a project's status,
+closing an idea, reverting or rewinding, and applying ask first in every
+front end (**Confirm**/**Cancel** in Discord, a second button on the web;
+`--yes` skips it in the CLI). On the web, a revert's result is shown on the
+page it sends you to, so reloading never sends it again. An
 **Apply** button under a posted plan applies exactly that plan; it lasts 24
 hours or until the bot restarts, and an old one offers a fresh plan. Once
 anything is applied, from Discord, the dashboard, the API or the CLI, the
@@ -156,14 +161,15 @@ card at once.
 | `/server drift` | Admins | Does Discord match the config? What changed, and who. |
 | `/server plan\|apply\|pull` | Admins | Like the CLI commands; plans come with an **Apply** button. |
 | `/server history [admin]` | Admins | The config's latest changes and who made them, or what one admin did this week. |
-| `/server revert <change> [rewind]` | Owner | Undo a config change (or rewind to it), then a plan to apply. |
+| `/server revert <change> [rewind]` | Owner | Undo a config change (or rewind to it), after **Confirm**; then a plan to apply. |
+| `/server approvals` | Admins | What waits for an **Approve**, with its card posted again in `log.bot` (for one lost or buried there). |
 | `/server web` | Admins | DMs a fresh one-time Tailscale link to the dashboard. |
-| `/server queue list\|accept\|reject\|history` | Admins | The review queue by number; a reject can give a reason (Reject on a card asks too). |
+| `/server queue list\|accept\|reject\|history` | Admins | The review queue by number; a reject can give a reason (Reject on a card asks too). A member who sent something is told by DM either way, with the reason; a partner is never told (its reason is only kept in the history). Every front end says which. |
 | `/server member list\|info\|appoint\|remove` | Admins | Positions and who holds them, and who left; what someone answered when they joined; appoint or take out. |
 | `/server project status\|applications\|rename`, `/server position open\|close` | Admins | Config edits: saved, then shown as a plan with an **Apply** button. Closing a position with a window posts its applicants' card. |
-| `/server project lead` | Admins | Make someone a project lead (the Lead role, and a DM). |
+| `/server project lead` | Admins | Make someone a project lead (the Lead role, and a DM). Refused, and nobody told, if the Lead role has moderator or admin permissions in Discord the config doesn't give it. |
 | `/server feed list\|add\|pause\|resume\|remove`, `/server resource list\|add\|archive` | Admins | Feeds (a paused one isn't checked) and the resources forum. |
-| `/server idea close <thread> [reason]` | Admins | Close an idea's post: it gets `[ideas] closed_tag` (and loses the needs-lead tag), the reason is posted in it, then it's archived and locked (never deleted). |
+| `/server idea close <post> [reason]` | Admins | Close an idea's post, after **Confirm**: it gets `[ideas] closed_tag` if set (and loses the needs-lead tag), "🔒 **Closed:** <reason>" (or just "🔒 **Closed.**") is posted in it, then it's archived and locked (never deleted). The reply says whether it was tagged. |
 | `/server join notify` | Admins | Says how many members haven't been through the join flow, then DMs them once with **Send to N**. |
 | `/server share announcement\|event` | Admins | Share an announcement (its link) or one of our events with partners you pick from a menu; only partners whose `send` lists that kind are offered ([partners.md](partners.md#sharing-content)). Making an event with `/event` offers the same menu. |
 | `/record start [channel]`, `/record stop` | Admins, `[recording] who` | Record a meeting in the call you're in (or the one named); see below. |
@@ -206,7 +212,8 @@ the transcript. If the bot stops while recording, what was saved is kept,
 closed and reported when it starts again.
 
 Recordings are never deleted by the bot. An admin deletes one on its page
-(**Delete**, then **Yes**); it's logged in the audit log and `log.bot`. Do
+(**Delete this recording**, then **Yes, delete it for good**); it's logged
+in the audit log and `log.bot`. Do
 that when someone asks for their recording to be erased, or when your
 retention period is up.
 
@@ -238,7 +245,7 @@ Every command takes `--config <dir>`. Commands that edit files keep comments.
 
 | Command | Does |
 |---|---|
-| *(none)*, `tui [--demo]` | Terminal UI: the dashboard's areas as tabs (keys in the footer, `?` for help; posts, briefs, questions and permissions open in `$EDITOR`), except onboarding, project renames and questions, member info and the full activity log. `--demo` runs on a copy of the config against a pretend server. |
+| *(none)*, `tui [--demo]` | Terminal UI: the dashboard's areas as tabs (keys in the footer, `?` for help; posts, briefs, questions and permissions open in `$EDITOR`), except onboarding, project renames and questions, member info, recordings and the full activity log. `--demo` runs on a copy of the config against a pretend server. |
 | `web [--addr]` | Web UI (default `127.0.0.1:8080`); on the bot's server only (`--local`). |
 | `check` | Checks the config without touching Discord. |
 | `plan`, `apply [--yes] [--dry-run]` | Shows changes, or makes them (asks first). `--delete` deletes instead of archiving; `--sweep` also archives unmanaged channels. |
@@ -246,7 +253,7 @@ Every command takes `--config <dir>`. Commands that edit files keep comments.
 | `export <dir>`, `template <code> <dir>` | Starts a config from the server (through the bot's server) or a public template. |
 | `open <kind> [key]` | Opens the right file in `$EDITOR`. |
 | `status`, `drift` | The server at a glance; does Discord match the config, by who changed what. |
-| `role`, `category`, `channel` `list\|new\|set\|move\|remove…` | Names, topics, colours, tags, permissions (`perms`), order; `channel archive`. |
+| `role list\|new\|set\|move\|remove`, `category list\|new\|rename\|move\|remove\|perms`, `channel list\|new\|set\|move\|move-to\|archive\|perms` | Names, topics, colours, tags, permissions, order. Channels are archived, not removed. |
 | `project list\|new\|show\|set\|status\|applications\|rename\|brief\|lead` | Projects. |
 | `position list\|new\|set\|questions\|intro\|open\|close\|move\|remove` | Positions and their forms. |
 | `member list\|info\|appoint\|remove\|restore\|forget` | Positions and who holds them (`add` still works for `appoint`). |
@@ -293,11 +300,12 @@ say who.
 |---|---|
 | `GET /me`, `POST /logout`, `GET /tokens`, `DELETE /tokens/{id}` | Who you are; sign out; your CLI sign-ins (never the token), revoke one. |
 | `GET /status`, `GET /drift`, `GET /check` | The server at a glance; how Discord differs; config problems. |
-| `GET /plan` (`?delete&sweep`), `POST /apply` (`{"id"}` from the plan), `POST /pull` | Plan, apply that plan, pull. |
+| `GET /plan` (`?delete=true&sweep=true`), `POST /apply` (`{"plan_id", "steps"?}`), `POST /pull` (`{"permissions"}`) | Plan, apply that plan (or some of its steps), pull. |
+| `GET /export` | The server as it is now, as a new config's files. |
 | `GET /ops/schema`, `POST /ops`, `POST /ops/preview` | What can be edited; one edit (an `Op`, e.g. `{"op": "set_role", "key": "member", "set": {"hoist": true}}`), or a list of them made as one change (one check, one commit, all or nothing); a post's markdown as Discord shows it. |
 | `GET`/`POST /projects`, `POST /projects/{slug}/status`, `POST /projects/{slug}/applications` | Projects; add one; change status; open or close applications. |
 | `POST /projects/{slug}/leads`, `DELETE /projects/{slug}/leads/{user}` | Make someone a lead, or not. |
-| `GET /queue`, `POST /queue/{id}` (`{"accept", "reason"}`), `POST /queue/{id}/lead`, `GET /queue/history` | The review queue. |
+| `GET /queue`, `POST /queue/{id}` (`{"accept", "reason", "seen"}`), `POST /queue/{id}/lead`, `GET /queue/history` | The review queue; entries carry `from`, who sent them by name. An Accept with `seen` (the entry's `version`) is refused if the entry changed since. |
 | `GET`/`POST /members`, `DELETE /members/{role}/{user}`, `POST /members/former/{user}/restore`, `DELETE /members/former/{user}` | Holders; appoint (`{"role", "user"}`) or take out; restore or forget a returner. |
 | `GET /members/find?q=`, `GET /members/about/{user}` | Members by name (`@ada`, `Ada Lovelace`), for picking someone; what someone told the bot (profile, join answers). |
 | `GET`/`POST /feeds`, `POST /feeds/{id}/pause` (`{"paused"}`), `DELETE /feeds/{id}` | Feeds. |

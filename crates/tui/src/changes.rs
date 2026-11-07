@@ -37,7 +37,7 @@ pub struct Row {
 }
 
 pub const START: &str = "Press f to plan: see what would change in Discord. d shows who changed what (drift).";
-pub const STALE: &str = "Your files changed since the last plan. Press f to plan again.";
+pub const STALE: &str = "The config changed since the last plan. Press f to plan again.";
 
 pub struct Changes {
     pub view: View,

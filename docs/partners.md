@@ -84,7 +84,12 @@ events = true                                        # or { review = false }
   if they're plain https, and nobody is ever pinged.
 - **Questions** are mirrored as a post linking to the original thread
   ("Answer there"). Replies don't sync either way (in this version): answers
-  belong in their thread, and the mirror says so.
+  belong in their thread, and the mirror says so. Questions are shared as
+  they're posted, with the asker's name: say so in the help forum's post
+  (e.g. "Posts here are also shown on partner servers X and Y").
+- **Our side of the queue:** accepting a partner's item posts it here as
+  shown; rejecting leaves it out. The partner is told neither way, and a
+  reason is only kept in our history (every front end says so).
 - **Edits and take-downs** follow, best effort: when the original is edited
   (a question's or announcement's text, an event's details) partners who had
   it get the new version. Only edits by whoever shared it here (the member

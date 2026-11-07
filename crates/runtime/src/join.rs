@@ -39,7 +39,7 @@ const PACE: Duration = Duration::from_secs(2);
 const DMS_PER_ROUND: usize = 30;
 /// Store notes (in `prompted`, user `*`): when the gate and the yearly refresh were first seen.
 const GATE_SEEN: &str = "join:gate";
-const YEARLY_SEEN: &str = "join:yearly";
+pub(crate) const YEARLY_SEEN: &str = "join:yearly";
 const GRANDFATHERED: &str = "join:grandfather";
 
 /// Answers in progress, until confirmed: kept in the store (see [`draft`]).
@@ -744,7 +744,7 @@ fn reminder_text(name: &str) -> String {
     )
 }
 
-async fn yearly(ctx: &Ctx, j: &Join, budget: &mut usize) {
+pub(crate) async fn yearly(ctx: &Ctx, j: &Join, budget: &mut usize) {
     use chrono::{Datelike, NaiveDate};
     let Some((month, day)) = j.yearly_refresh.as_deref().and_then(flow::month_day) else { return };
     let tz: chrono_tz::Tz = ctx.cfg().bot.timezone.parse().unwrap_or(chrono_tz::UTC);
@@ -770,13 +770,38 @@ async fn yearly(ctx: &Ctx, j: &Join, budget: &mut usize) {
         Err(e) => return tracing::warn!(?e, "listing members for the yearly refresh failed"),
     };
     let kind = format!("join:yearly:{}", today.year());
+    let (started, finished) = (format!("{kind}:started"), format!("{kind}:done"));
+    let mut todo = Vec::new();
     for r in due.into_iter().filter(|r| here.contains(&r.user_id)) {
+        let answers = Answers::parse(&r.answers);
+        let has_yearly = j.walk(&answers).done.iter().filter_map(|k| j.step(k)).any(|s| s.yearly);
+        if has_yearly && !done(ctx, &r.user_id, &kind).await {
+            todo.push(r);
+        }
+    }
+    // Said in the bot log: when it starts, whoever couldn't be DMed, and when it's done.
+    if todo.is_empty() {
+        if done(ctx, "*", &started).await && first(ctx, "*", &finished).await {
+            ctx.log_bot(&format!("📅 **Yearly refresh done** for {}: everyone due has been asked.", today.year()))
+                .await;
+        }
+        return;
+    }
+    if first(ctx, "*", &started).await {
+        ctx.log_bot(&format!(
+            "📅 **Yearly refresh:** asking {} by DM to confirm or update their answers, a few at a time.",
+            chipsoc_admin::fmt::count(todo.len(), "member", "members")
+        ))
+        .await;
+    }
+    let mut unreached = Vec::new();
+    for r in todo {
         let answers = Answers::parse(&r.answers);
         let done = j.walk(&answers).done;
         let steps: Vec<&Step> = done.iter().filter_map(|k| j.step(k)).filter(|s| s.yearly).collect();
         let Some(first_step) = steps.first() else { continue };
         if *budget == 0 {
-            return;
+            break;
         }
         if !first(ctx, &r.user_id, &kind).await {
             continue;
@@ -798,8 +823,14 @@ async fn yearly(ctx: &Ctx, j: &Join, budget: &mut usize) {
             && let Err(why) = ctx.dm_with(user, &text, &rows).await
         {
             tracing::info!(%user, %why, "yearly join DM not sent");
+            unreached.push(format!("<@{user}>"));
         }
         tokio::time::sleep(PACE).await;
+    }
+    if !unreached.is_empty() {
+        let head = "📅 Yearly refresh: couldn't DM these members (their DMs are closed); they can press \
+                    **Update my details** or use `/profile`:";
+        ctx.log_bot(&ui::fit(head, &unreached)).await;
     }
 }
 

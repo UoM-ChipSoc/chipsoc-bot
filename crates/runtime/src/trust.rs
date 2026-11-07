@@ -136,11 +136,10 @@ fn text(cfg: &Config, p: &Pending, authors: &Authors, owner: Option<chipsoc_mode
     if !p.refused.is_empty() {
         let keys: Vec<String> = p.refused.iter().map(|r| format!("`{r}`")).collect();
         out.push(format!(
-            "{} **Refused:** lock.toml in the repo changes which Discord object {} {}. The bot keeps its own ids \
-             (it never takes new ids for existing keys from the repo).",
+            "{} **Ignored:** a pushed change to lock.toml points {} at a different Discord object. The bot keeps \
+             the one it had; nothing to do unless that was meant (ask whoever runs the bot).",
             fmt::ATTENTION,
             fmt::collapse(&keys, 5),
-            if keys.len() == 1 { "is" } else { "are" }
         ));
     }
     ui::truncate(&out.join("\n"), ui::MAX_CONTENT - 1)
@@ -387,7 +386,7 @@ They change who's an admin or what the bot trusts; until then the bot keeps the 
 • <@&70> (members.toml): give to <@5>
 • lock.toml drops `channels.mods`: the bot would stop managing it
 Only the server owner can approve changes to who's an admin (`admin_role`, admin positions) or to partner sync's key and partners.
-⚠️ **Refused:** lock.toml in the repo changes which Discord object `roles.member` is. The bot keeps its own ids (it never takes new ids for existing keys from the repo)."
+⚠️ **Ignored:** a pushed change to lock.toml points `roles.member` at a different Discord object. The bot keeps the one it had; nothing to do unless that was meant (ask whoever runs the bot)."
         );
         // A new admin in members.toml is any other admin's to approve.
         let mut holders = p.approved.clone();

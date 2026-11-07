@@ -271,9 +271,9 @@ impl Waits {
     /// For the person given the role: "… follows once {this}".
     pub fn for_them(self) -> &'static str {
         match self {
-            Self::Approval => "another admin has approved the change",
-            Self::Apply => "the change has been applied",
-            Self::Discord => "an admin has given it to you",
+            Self::Approval => "You'll get the role once another admin has confirmed it.",
+            Self::Apply => "You'll get the role soon; an admin is finishing it.",
+            Self::Discord => "You'll get the role once an admin has given it to you.",
         }
     }
 }
@@ -622,7 +622,7 @@ pub async fn add_holder<H: Host>(h: &H, role: &str, user: Snowflake) -> Result<A
 pub(crate) async fn add_holder_unless<H: Host>(h: &H, role: &str, user: Snowflake) -> Result<Added, (Said, bool)> {
     let cfg = h.cfg();
     if !cfg.desired.holders.contains_key(role) {
-        let why = Said::new().text(format!("The config doesn't say who holds {}", role_name(&cfg, role)));
+        let why = Said::new().text("The config doesn't say who holds ").strong(role_name(&cfg, role));
         return Err((why, false));
     }
     if let Some(why) = h.unwritable() {
