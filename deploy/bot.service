@@ -21,6 +21,11 @@ Environment=BOT_LOCAL=1
 # /server edits, appointments, leavers, pulls from Discord).
 Environment=CONFIG_AUTOSAVE=1
 Environment=DATABASE_URL=sqlite:/var/lib/@SERVICE@/bot.db?mode=rwc
+# Written about once a minute while Discord's gateway talks to the bot;
+# `deploy.sh monitor-setup`'s timer checks it.
+Environment=HEARTBEAT_FILE=/var/lib/@SERVICE@/heartbeat
+# The monitor's URLs are for it alone.
+UnsetEnvironment=MONITOR_WEBHOOK MONITOR_PING_URL
 # The config is a git checkout the bot pulls and pushes with its own deploy key.
 Environment="GIT_SSH_COMMAND=ssh -F /dev/null -i @DIR@/.ssh/deploy_key -o UserKnownHostsFile=@DIR@/.ssh/known_hosts -o IdentitiesOnly=yes"
 StateDirectory=@SERVICE@
@@ -29,7 +34,8 @@ StateDirectoryMode=0700
 UMask=0077
 # One config per unit; `deploy.sh revoke` runs `fed revoke` with these settings.
 ExecStart=@DIR@/current/bot run --config @DIR@/config
-Restart=on-failure
+# Always: the bot also stops cleanly when Discord's gateway ends the connection.
+Restart=always
 RestartSec=5
 
 # Sandbox: read-only system; writable only where the bot keeps state.
