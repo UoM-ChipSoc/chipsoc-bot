@@ -120,11 +120,11 @@ pub async fn position<R: Rest + Clone>(c: &Ctx<'_, R>, cmd: PositionCmd) -> Resu
             let s = c.schema().await?;
             let p = s.bot.positions.iter().find(|p| p.role == role).with_context(|| format!("no position `{role}`"))?;
             let json = file.as_ref().is_some_and(|f| f.extension().is_some_and(|e| e == "json"));
-            let text = text_from(file.as_deref(), &edits::questions_to_text(&p.questions), ".txt")?;
+            let text = text_from(file.as_deref(), &chipsoc_config::ops::text::questions_text(&p.questions), ".txt")?;
             let questions = if json {
                 serde_json::from_str(&text).context("reading the questions as JSON")?
             } else {
-                edits::questions_from_text(&text)
+                chipsoc_config::ops::text::parse_questions(&text).map_err(anyhow::Error::msg)?
             };
             if questions == p.questions {
                 println!("Nothing changed.");

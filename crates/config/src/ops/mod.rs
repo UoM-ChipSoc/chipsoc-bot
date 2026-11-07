@@ -5,6 +5,7 @@
 
 mod rename;
 mod schema;
+pub mod text;
 mod write;
 
 #[cfg(test)]

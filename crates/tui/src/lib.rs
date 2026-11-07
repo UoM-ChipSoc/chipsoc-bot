@@ -20,12 +20,11 @@ mod tests;
 use std::fs;
 use std::io::stdout;
 use std::path::Path;
-use std::process::Command as Process;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use chipsoc_client::{Backend, Client, Local};
+use chipsoc_client::{Backend, Client, Local, editor};
 use chipsoc_discord::fake::FakeDiscord;
 use chipsoc_discord::{MaybeHttp, Rest};
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyEventKind};
@@ -143,13 +142,13 @@ async fn event_loop<R: Rest + Clone + 'static>(
             Some(Command::Edit(path, line)) => {
                 // The editor needs the keyboard: stop reading it until we're back.
                 drop(events);
-                let result = suspended(terminal, || open_editor(&path, line))?;
+                let result = suspended(terminal, || editor::open_editor(&path, line))?;
                 events = EventStream::new();
                 app.edited(result);
             }
             Some(Command::Text(text, target)) => {
                 drop(events);
-                let result = suspended(terminal, || edit_text(&text))?;
+                let result = suspended(terminal, || editor::edit_text(&text, ".md"))?;
                 events = EventStream::new();
                 if let Some(Command::Discord(job)) = app.text_edited(target, &text, result) {
                     worker.spawn(job);
@@ -171,31 +170,4 @@ fn suspended<T>(terminal: &mut DefaultTerminal, f: impl FnOnce() -> T) -> Result
     let size = terminal.size()?;
     terminal.resize(size.into())?;
     Ok(out)
-}
-
-/// $VISUAL or $EDITOR (else nano) at a line, waiting for it to close.
-fn open_editor(path: &Path, line: usize) -> Result<()> {
-    let editor = std::env::var("VISUAL").or_else(|_| std::env::var("EDITOR")).unwrap_or_else(|_| "nano".into());
-    let mut words = editor.split_whitespace();
-    let program = words.next().context("$EDITOR is empty")?;
-    let mut cmd = Process::new(program);
-    cmd.args(words);
-    if program.ends_with("code") || program.ends_with("codium") {
-        cmd.arg("--wait").arg("--goto").arg(format!("{}:{line}", path.display()));
-    } else {
-        cmd.arg(format!("+{line}")).arg(path);
-    }
-    let status = cmd.status().with_context(|| format!("couldn't start {editor}"))?;
-    if !status.success() {
-        bail!("{editor} exited with {status}");
-    }
-    Ok(())
-}
-
-/// Edit `text` in $EDITOR, in a scratch file; what it says after.
-fn edit_text(text: &str) -> Result<String> {
-    let file = tempfile::Builder::new().suffix(".md").tempfile()?;
-    fs::write(file.path(), text)?;
-    open_editor(file.path(), 1)?;
-    Ok(fs::read_to_string(file.path())?)
 }

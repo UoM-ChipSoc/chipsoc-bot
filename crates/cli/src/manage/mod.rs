@@ -103,20 +103,7 @@ fn text_from(file: Option<&Path>, initial: &str, suffix: &str) -> Result<String>
     if !tty() {
         bail!("not a terminal: give --file (or `--file -` for stdin)");
     }
-    let tmp = tempfile::Builder::new().suffix(suffix).tempfile()?;
-    std::fs::write(tmp.path(), initial)?;
-    let editor = std::env::var("VISUAL").or_else(|_| std::env::var("EDITOR")).unwrap_or_else(|_| "nano".into());
-    let mut words = editor.split_whitespace();
-    let program = words.next().context("$EDITOR is empty")?;
-    let status = std::process::Command::new(program)
-        .args(words)
-        .arg(tmp.path())
-        .status()
-        .with_context(|| format!("couldn't start {editor}"))?;
-    if !status.success() {
-        bail!("{editor} exited with {status}");
-    }
-    Ok(std::fs::read_to_string(tmp.path())?)
+    chipsoc_client::editor::edit_text(initial, suffix)
 }
 
 fn print_json(v: &impl Serialize) -> Result<()> {

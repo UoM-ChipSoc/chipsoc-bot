@@ -273,6 +273,15 @@ Every command takes `--config <dir>`. Commands that edit files keep comments.
 lead. On Apply: `f` plan, `a` apply, `p` pull. The footer lists the rest;
 Enter in a form names what it does ("Enter  reject", "appoint", …).
 
+**Text you edit.** Posts, briefs, questions and permissions open in
+`$VISUAL` or `$EDITOR` (else nano); VS Code, Zed and Sublime Text are asked
+to wait until you close the file. Questions go one per line: add `[long]` for
+a big box, `[optional]` if it may be left blank, and a hint for the box after
+` // `, as in `Why this position? [long] // a line or two`. Permissions go one
+per line, as Discord writes them (`MANAGE_MESSAGES`) or in words (`manage
+messages`), and the same goes for `--permissions`, `--allow` and `--deny`.
+Lines starting with `#` are notes.
+
 Every edit is checked first and refused (with the problems) if `check` would
 fail. bot.toml sections, screening, AutoMod rules and partners are edited
 only as files or with `op`. `--json` prints JSON for scripts. Without a

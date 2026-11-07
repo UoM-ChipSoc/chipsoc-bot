@@ -144,7 +144,7 @@ const MIGRATIONS: &[&str] = &[
     fed::SCHEMA_V17,
     fed::SCHEMA_V18,
     guild::SCHEMA_V19,
-    SCHEMA_V20,
+    SCHEMA_V22,
 ];
 
 const SCHEMA_V1: &str = r#"
@@ -230,7 +230,7 @@ CREATE TABLE IF NOT EXISTS role_assignments (
 /// Indexes for the queries run often on tables that grow: pruning the
 /// message archive and the nonces seen (on every inbox message), the review
 /// queue, and finding a review card's applications (on every button).
-const SCHEMA_V20: &str = r#"
+const SCHEMA_V22: &str = r#"
 CREATE INDEX message_archive_by_ts ON message_archive (guild_id, ts);
 CREATE INDEX fed_nonces_by_ts ON fed_nonces (guild_id, ts);
 CREATE INDEX applications_by_status ON applications (guild_id, status);

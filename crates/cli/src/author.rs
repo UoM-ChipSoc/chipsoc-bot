@@ -3,9 +3,8 @@
 
 use std::io::IsTerminal;
 use std::path::Path;
-use std::process::Command;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use chipsoc_config::authoring::{self, Kind, Report};
 use chipsoc_config::schema::{Channel, ChannelKind, Project, ProjectStatus, Role};
 use chipsoc_config::slug;
@@ -135,7 +134,7 @@ pub fn ask_role(a: NewRole, all_permissions: &[String]) -> Result<Role> {
     };
     let hoist = a.hoist || (asking && Confirm::new("List its members separately?").with_default(false).prompt()?);
     let permissions = match a.permissions {
-        Some(p) => crate::edits::list(&p).iter().map(|p| crate::edits::permission(p)).collect(),
+        Some(p) => crate::edits::permissions(&p),
         None if asking => MultiSelect::new("Extra permissions (most roles need none)", all_permissions.to_vec())
             .with_page_size(15)
             .prompt()?,
@@ -214,17 +213,7 @@ pub fn ask_channel(a: NewChannel, cats: &[(String, String)]) -> Result<(Option<S
 /// `open <kind> [key]`: $VISUAL/$EDITOR at the definition, then re-check.
 pub fn open(config: &Path, kind: Kind, key: Option<&str>) -> Result<()> {
     let (path, line) = authoring::locate(config, kind, key)?;
-    let editor = std::env::var("VISUAL").or_else(|_| std::env::var("EDITOR")).unwrap_or_else(|_| "nano".into());
-    let mut cmd = Command::new(&editor);
-    if editor.ends_with("code") || editor.ends_with("codium") {
-        cmd.arg("--goto").arg(format!("{}:{line}", path.display()));
-    } else {
-        cmd.arg(format!("+{line}")).arg(&path);
-    }
-    let status = cmd.status().with_context(|| format!("launching {editor}"))?;
-    if !status.success() {
-        bail!("{editor} exited with {status}");
-    }
+    chipsoc_client::editor::open_editor(&path, line)?;
     let r = authoring::check(config)?;
     print_report(&r);
     if r.errors.is_empty() {

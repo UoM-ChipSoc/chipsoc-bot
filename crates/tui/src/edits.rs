@@ -4,12 +4,15 @@
 
 use chipsoc_client::remote::NewResource;
 use chipsoc_config::bot::Position;
+use chipsoc_config::ops::text::{
+    overwrites_text, parse_overwrites, parse_permissions, parse_questions, permissions_text, questions_text,
+};
 use chipsoc_config::ops::{ChannelField, Move, Op, PositionField, ProjectField, RoleField, Schema};
 use chipsoc_config::schema::{Channel, ChannelKind, ProjectStatus, Role};
 use chipsoc_config::{Snowflake, slug};
 
 use crate::app::{App, Command, Overlay, Tab};
-use crate::form::{self, Form, Input, Key, StatusPicker, status_help};
+use crate::form::{Form, Input, Key, StatusPicker, status_help};
 use crate::keys::{self, Act, Binding};
 use crate::lists::{self, Shared, Spot, Who};
 use crate::worker::{Admin, Job};
@@ -280,7 +283,7 @@ impl App {
             }
             Act::Permissions => {
                 let all = self.schema.as_ref().map(|s| s.choices.permissions.clone()).unwrap_or_default();
-                self.text(form::permissions_text(&r.permissions, &all), Target::RolePerms(key))
+                self.text(permissions_text(&r.permissions, &all), Target::RolePerms(key))
             }
             Act::MoveUp => self.moved(-1, Op::MoveRole { key, to: Move::Up }),
             Act::MoveDown => self.moved(1, Op::MoveRole { key, to: Move::Down }),
@@ -353,7 +356,7 @@ impl App {
                     }
                     Spot::Channel(k, _) => (self.channel(&k)?.overwrites.clone(), Target::ChannelPerms(k)),
                 };
-                self.text(form::overwrites_text(&ows, &roles), target)
+                self.text(overwrites_text(&ows, &roles), target)
             }
             (Act::Post, Some(Spot::Channel(k, _))) => {
                 let body = self.schema.as_ref()?.posts.get(&k).map(|p| p.body.clone()).unwrap_or_default();
@@ -524,7 +527,7 @@ impl App {
             }
             Act::ToggleOpen => self.ops(vec![Op::SetPosition { role, set: PositionField::Open(!p.open) }]),
             Act::Intro => self.text(p.intro.clone().unwrap_or_default(), Target::Intro(role)),
-            Act::Questions => self.text(form::questions_text(&p.questions), Target::Questions(role)),
+            Act::Questions => self.text(questions_text(&p.questions), Target::Questions(role)),
             Act::MoveUp => self.moved(-1, Op::MovePosition { role, to: Move::Up }),
             Act::MoveDown => self.moved(1, Op::MovePosition { role, to: Move::Down }),
             Act::Remove => {
@@ -875,16 +878,14 @@ impl App {
                 Ok(Op::SetPosition { role, set: PositionField::Intro(intro) })
             }
             Target::Questions(role) => {
-                form::parse_questions(&text).map(|q| Op::SetPosition { role, set: PositionField::Questions(q) })
+                parse_questions(&text).map(|q| Op::SetPosition { role, set: PositionField::Questions(q) })
             }
-            Target::RolePerms(key) => {
-                Ok(Op::SetRole { key, set: RoleField::Permissions(form::parse_permissions(&text)) })
-            }
+            Target::RolePerms(key) => Ok(Op::SetRole { key, set: RoleField::Permissions(parse_permissions(&text)) }),
             Target::ChannelPerms(key) => {
-                form::parse_overwrites(&text).map(|o| Op::SetChannel { key, set: ChannelField::Overwrites(o) })
+                parse_overwrites(&text).map(|o| Op::SetChannel { key, set: ChannelField::Overwrites(o) })
             }
             Target::CategoryPerms(key) => {
-                form::parse_overwrites(&text).map(|overwrites| Op::SetCategoryOverwrites { key, overwrites })
+                parse_overwrites(&text).map(|overwrites| Op::SetCategoryOverwrites { key, overwrites })
             }
         };
         match op {

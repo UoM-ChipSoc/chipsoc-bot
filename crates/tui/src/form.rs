@@ -1,9 +1,9 @@
 //! Forms: a list of fields to type in, pick from or switch on and off, and
-//! the status picker. Also the plain-text layouts used when a list is edited
-//! in $EDITOR (questions, permissions).
+//! the status picker. Lists edited in $EDITOR (questions, permissions) are
+//! laid out by [`chipsoc_config::ops::text`].
 
-use chipsoc_config::bot::Question;
-use chipsoc_config::schema::{Overwrite, ProjectStatus};
+use chipsoc_config::ops::text;
+use chipsoc_config::schema::ProjectStatus;
 
 /// What each status means, in a few words.
 pub fn status_help(s: ProjectStatus) -> &'static str {
@@ -307,131 +307,8 @@ impl<T> Form<T> {
 
     /// A comma-separated text field as a list.
     pub fn list(&self, key: Key) -> Vec<String> {
-        split_list(&self.text(key))
+        text::list(&self.text(key))
     }
-}
-
-/// "a, b ,c" as ["a", "b", "c"].
-pub fn split_list(s: &str) -> Vec<String> {
-    s.split(',').map(str::trim).filter(|x| !x.is_empty()).map(str::to_owned).collect()
-}
-
-/// Lines that aren't blank or `#` comments.
-fn content(text: &str) -> impl Iterator<Item = &str> {
-    text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#'))
-}
-
-const QUESTIONS_HELP: &str = "# One question per line. Add [long] for a big box, [optional] if it may be left\n\
-# blank, and a hint for the box after \" // \". Discord shows 5 boxes at most\n\
-# (the intro, if there is one, takes one).\n";
-
-/// Questions as text to edit.
-pub fn questions_text(qs: &[Question]) -> String {
-    let mut out = QUESTIONS_HELP.to_owned();
-    for q in qs {
-        out.push_str(&q.ask);
-        if q.long {
-            out.push_str(" [long]");
-        }
-        if q.optional {
-            out.push_str(" [optional]");
-        }
-        if let Some(h) = &q.hint {
-            out.push_str(&format!(" // {h}"));
-        }
-        out.push('\n');
-    }
-    out
-}
-
-pub fn parse_questions(text: &str) -> Result<Vec<Question>, String> {
-    let qs: Vec<Question> = content(text)
-        .map(|line| {
-            let (rest, hint) = match line.split_once(" // ") {
-                Some((r, h)) => (r, Some(h.trim().to_owned()).filter(|h| !h.is_empty())),
-                None => (line, None),
-            };
-            let long = rest.contains("[long]");
-            let optional = rest.contains("[optional]");
-            let ask = rest.replace("[long]", "").replace("[optional]", "").trim().to_owned();
-            Question { ask, long, optional, hint }
-        })
-        .collect();
-    if qs.is_empty() {
-        return Err("Give at least one question.".into());
-    }
-    Ok(qs)
-}
-
-/// Permission names as text to edit, one per line, with the others listed.
-pub fn permissions_text(have: &[String], all: &[String]) -> String {
-    let mut out = "# One permission per line. Delete a line to take it away.\n".to_owned();
-    for p in have {
-        out.push_str(p);
-        out.push('\n');
-    }
-    out.push_str("#\n# All permissions:\n");
-    for chunk in all.chunks(4) {
-        out.push_str(&format!("#   {}\n", chunk.join(" ")));
-    }
-    out
-}
-
-pub fn parse_permissions(text: &str) -> Vec<String> {
-    content(text).flat_map(|l| l.split([' ', ','])).filter(|w| !w.is_empty()).map(str::to_uppercase).collect()
-}
-
-/// Overwrites as text to edit: `<role> allow PERM … deny PERM …` per line.
-pub fn overwrites_text(ows: &[Overwrite], roles: &[String]) -> String {
-    let mut out = "# Who can see and do what here, one line per role:\n\
-                   #   <role key> allow PERMISSION … deny PERMISSION …\n\
-                   # e.g.  everyone deny VIEW_CHANNEL\n\
-                   #       committee allow VIEW_CHANNEL SEND_MESSAGES\n"
-        .to_owned();
-    out.push_str(&format!("# Roles: {}\n", roles.join(", ")));
-    for o in ows {
-        let mut line = match (&o.role, o.member) {
-            (Some(r), _) => r.clone(),
-            (None, Some(m)) => format!("member:{m}"),
-            (None, None) => continue,
-        };
-        if !o.allow.is_empty() {
-            line.push_str(&format!(" allow {}", o.allow.join(" ")));
-        }
-        if !o.deny.is_empty() {
-            line.push_str(&format!(" deny {}", o.deny.join(" ")));
-        }
-        out.push_str(&line);
-        out.push('\n');
-    }
-    out
-}
-
-pub fn parse_overwrites(text: &str) -> Result<Vec<Overwrite>, String> {
-    let mut out = Vec::new();
-    for line in content(text) {
-        let mut words = line.split_whitespace();
-        let who = words.next().unwrap_or_default();
-        let mut o = Overwrite::default();
-        match who.strip_prefix("member:") {
-            Some(id) => o.member = Some(id.parse().map_err(|_| format!("`{who}`: a member is member:<their id>"))?),
-            None => o.role = Some(who.to_owned()),
-        }
-        let mut allow = None;
-        for w in words {
-            match w {
-                "allow" => allow = Some(true),
-                "deny" => allow = Some(false),
-                p => match allow {
-                    Some(true) => o.allow.push(p.to_uppercase()),
-                    Some(false) => o.deny.push(p.to_uppercase()),
-                    None => return Err(format!("`{line}`: say allow or deny before {p}")),
-                },
-            }
-        }
-        out.push(o);
-    }
-    Ok(out)
 }
 
 #[cfg(test)]
@@ -460,34 +337,5 @@ mod tests {
         assert!(f.on(Key::ListedApart), "space flips a toggle");
         assert!(!f.on(Key::Mentionable) && f.text(Key::Topic).is_empty(), "a field the form hasn't is empty");
         assert_eq!(f.fields[0].label, "Name", "shown by its key's label");
-    }
-
-    #[test]
-    fn questions_round_trip_through_text() {
-        let qs = vec![
-            Question::new("Course?"),
-            Question { long: true, optional: true, hint: Some("a line or two".into()), ..Question::new("Why?") },
-        ];
-        assert_eq!(parse_questions(&questions_text(&qs)).unwrap(), qs);
-        assert!(parse_questions("# nothing\n").is_err());
-    }
-
-    #[test]
-    fn overwrites_and_permissions_round_trip_through_text() {
-        let ows = vec![
-            Overwrite { role: Some("everyone".into()), deny: vec!["VIEW_CHANNEL".into()], ..Default::default() },
-            Overwrite {
-                member: Some(chipsoc_config::Snowflake(7)),
-                allow: vec!["SEND_MESSAGES".into()],
-                ..Default::default()
-            },
-        ];
-        let text = overwrites_text(&ows, &["everyone".into()]);
-        assert_eq!(parse_overwrites(&text).unwrap(), ows);
-        assert!(parse_overwrites("admin VIEW_CHANNEL").unwrap_err().contains("allow or deny"));
-        let perms = parse_permissions("# x\nsend_messages\nVIEW_CHANNEL, KICK_MEMBERS");
-        assert_eq!(perms, ["SEND_MESSAGES", "VIEW_CHANNEL", "KICK_MEMBERS"]);
-        let all = vec!["A".to_owned(), "B".to_owned()];
-        assert_eq!(parse_permissions(&permissions_text(&perms, &all)), perms, "the list of all is a comment");
     }
 }

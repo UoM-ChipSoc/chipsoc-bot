@@ -2,7 +2,6 @@
 //! so each mapping is tested without a config or a server.
 
 use anyhow::{Context, Result, bail};
-use chipsoc_config::bot::Question;
 use chipsoc_config::ops::{ChannelField, Move, Op, PositionField, ProjectField, RoleField};
 use chipsoc_config::schema::{ChannelKind, Overwrite, ProjectStatus};
 
@@ -38,15 +37,7 @@ pub fn parse_bool(s: &str) -> Result<bool> {
     }
 }
 
-/// `a, b ,c` as a list; empty items dropped.
-pub fn list(s: &str) -> Vec<String> {
-    s.split(',').map(|x| x.trim().to_owned()).filter(|x| !x.is_empty()).collect()
-}
-
-/// `MANAGE_MESSAGES`, from `manage messages` or `manage-messages`.
-pub fn permission(s: &str) -> String {
-    s.trim().to_uppercase().replace([' ', '-'], "_")
-}
+pub use chipsoc_config::ops::text::{list, parse_permissions as permissions};
 
 /// Text, or none when blank (or `none`).
 pub fn optional(s: &str) -> Option<String> {
@@ -73,8 +64,7 @@ pub fn role_ops(key: &str, s: &RoleSet) -> Vec<Op> {
     fields.extend(s.hoist.map(RoleField::Hoist));
     fields.extend(s.mentionable.map(RoleField::Mentionable));
     fields.extend(s.permissions.as_deref().map(|p| {
-        let perms = if p.trim().eq_ignore_ascii_case("none") { Vec::new() } else { list(p) };
-        RoleField::Permissions(perms.iter().map(|p| permission(p)).collect())
+        RoleField::Permissions(if p.trim().eq_ignore_ascii_case("none") { Vec::new() } else { permissions(p) })
     }));
     fields.into_iter().map(|set| Op::SetRole { key: key.to_owned(), set }).collect()
 }
@@ -164,44 +154,6 @@ pub fn project_op(slug: &str, field: &str, value: &str) -> Result<Op> {
     Ok(Op::SetProject { slug: slug.to_owned(), set })
 }
 
-/// Questions as text: one per line; `* ` first makes a paragraph box,
-/// ` (optional)` last lets it be left blank, ` -- hint` adds a placeholder.
-/// Lines starting with `#` are notes and left out.
-pub fn questions_from_text(text: &str) -> Vec<Question> {
-    let mut out = Vec::new();
-    for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
-        let (long, line) = match line.strip_prefix("* ") {
-            Some(rest) => (true, rest.trim()),
-            None => (false, line),
-        };
-        let (line, hint) = match line.split_once(" -- ") {
-            Some((q, h)) => (q.trim(), optional(h)),
-            None => (line, None),
-        };
-        let (ask, optional) = match line.strip_suffix("(optional)") {
-            Some(q) => (q.trim(), true),
-            None => (line, false),
-        };
-        out.push(Question { ask: ask.to_owned(), long, optional, hint });
-    }
-    out
-}
-
-/// The other way: what [`questions_from_text`] reads.
-pub fn questions_to_text(qs: &[Question]) -> String {
-    let mut out = String::from(
-        "# One question per line. `* ` first: a paragraph box. ` (optional)` last: may be left blank.\n\
-         # ` -- some text` adds a placeholder. Discord shows 5 boxes at most, the intro taking one.\n",
-    );
-    for q in qs {
-        let long = if q.long { "* " } else { "" };
-        let opt = if q.optional { " (optional)" } else { "" };
-        let hint = q.hint.as_deref().map(|h| format!(" -- {h}")).unwrap_or_default();
-        out.push_str(&format!("{long}{}{opt}{hint}\n", q.ask));
-    }
-    out
-}
-
 /// What `perms` was told about one list of overwrites.
 #[derive(Default, Debug, Clone)]
 pub struct Perms {
@@ -226,7 +178,7 @@ fn role_perms(s: &str) -> Result<(String, Vec<String>)> {
     if role.is_empty() {
         bail!("say which role in `{s}` (`everyone` for everybody)");
     }
-    Ok((role, list(perms).iter().map(|p| permission(p)).collect()))
+    Ok((role, permissions(perms)))
 }
 
 /// `current` with `p`'s changes: a role named in `allow` or `deny` gets that
@@ -352,17 +304,6 @@ mod tests {
         );
         assert_eq!(project_op("golem", "team_role", "off").unwrap(), k(ProjectField::TeamRole(false)));
         assert!(project_op("golem", "colour", "red").unwrap_err().to_string().contains("the fields are name"));
-    }
-
-    #[test]
-    fn questions_round_trip_through_text() {
-        let qs = vec![
-            Question::new("Course and year?"),
-            Question { long: true, optional: true, hint: Some("A sentence or two".into()), ..Question::new("Why?") },
-        ];
-        let text = questions_to_text(&qs);
-        assert_eq!(questions_from_text(&text), qs);
-        assert_eq!(questions_from_text("# note\n\n  Hours a week?  \n"), [Question::new("Hours a week?")]);
     }
 
     #[test]
