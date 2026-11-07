@@ -109,7 +109,7 @@ WHERE kind = 'resource' AND json_valid(answers) AND json_type(answers) = 'array'
 "#;
 
 /// A feed's title, as it last read, so people see it rather than its address.
-pub(crate) const SCHEMA_V21: &str = r#"
+pub(crate) const SCHEMA_V20: &str = r#"
 ALTER TABLE feeds ADD COLUMN title TEXT;
 "#;
 
