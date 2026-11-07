@@ -514,7 +514,7 @@ async fn confirm(ctx: &Ctx, i: &Interaction, j: &Join, d: Draft) {
     };
     let done = match effects::confirm(ctx, Snowflake(user.get()), &d.answers).await {
         Ok(done) => done,
-        Err(why) => return ctx.edit_response(i, &why, &[ui::row(vec![back()])]).await,
+        Err(why) => return ctx.edit_response(i, &why.markdown(), &[ui::row(vec![back()])]).await,
     };
     ctx.log_err(ctx.db().forget_join_draft(&user.to_string()).await, "forgetting a join draft");
     let mut text = "✅ All done".to_owned();

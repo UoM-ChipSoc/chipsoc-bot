@@ -399,7 +399,7 @@ fn a_resource_keeps_its_tags_in_the_queue_commas_and_all() {
 
 /// What a refusal says (refusals, not Discord failures).
 fn refused(e: anyhow::Error) -> String {
-    e.downcast_ref::<Refused>().map(ToString::to_string).unwrap_or_else(|| panic!("not a refusal: {e:#}"))
+    e.downcast_ref::<Refusal>().map(Refusal::markdown).unwrap_or_else(|| panic!("not a refusal: {e:#}"))
 }
 
 #[tokio::test]
@@ -957,13 +957,14 @@ async fn nobody_but_the_owner_takes_the_owners_roles() {
     let ada = Actor { id: Some(Snowflake(ADA)), name: "ada".into() };
     appoint(&h, "treasurer", Snowflake(ADA), &reviewer()).await.unwrap();
     let err = unappoint(&h, "treasurer", Snowflake(ADA), &reviewer()).await.unwrap_err();
+    assert_eq!(err, Refusal::OwnerOnly(chipsoc_engine::OwnerOnly::TakeFromOwner));
     assert_eq!(err, "Only the server owner can take a role from the server owner.");
     assert!(h.holds(ADA, "treasurer"));
     unappoint(&h, "treasurer", Snowflake(ADA), &ada).await.unwrap();
     assert!(!h.holds(ADA, "treasurer"));
     // Nor can anyone but the owner revert config changes.
     let err = undo(&h, "abc1234", chipsoc_config::git::Undo::Revert, &reviewer()).await.unwrap_err();
-    assert!(err.starts_with("Only the server owner can revert"), "{err}");
+    assert!(err.owner_only() && err.starts_with("Only the server owner can revert"), "{err}");
 }
 
 #[tokio::test]

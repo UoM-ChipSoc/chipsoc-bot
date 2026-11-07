@@ -372,7 +372,7 @@ pub async fn reject_rest(ctx: &Ctx, i: &Interaction, role: &str, reason: &str) {
             chipsoc_admin::rounds::label(&ctx.cfg(), role),
             if why.is_some() { " why" } else { "" }
         ),
-        Err(why) => why,
+        Err(why) => why.markdown(),
     };
     ctx.edit_response(i, &text, &[]).await;
 }

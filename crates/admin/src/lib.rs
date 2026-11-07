@@ -40,7 +40,7 @@ pub use chipsoc_store::AppKind;
 pub use feeds::{FeedInfo, accept_feed, add_feed, feeds, pause_feed, remove_feed};
 pub use find::{Found, Member, Unresolved, find_members, members_of, resolve_user};
 pub use forums::{
-    Closed, Lead, NewIdea, NewResource, Post, Refused, archive_resource, close_idea, closing_line, ideas, post_idea,
+    Closed, Lead, NewIdea, NewResource, Post, archive_resource, close_idea, closing_line, ideas, post_idea,
     post_resource, precheck_resource, resources, vet_resource,
 };
 pub use owner::{Done, history_of, only_owner, owner_id, undo, undo_question, undo_question_for, undo_said};
@@ -52,7 +52,7 @@ pub use queue::{
     decide_seen, decide_with, history, lead, made_lead, make_lead, mark_card, pending, reason_label, reject_says,
     says_of, settle, settle_with, submitted_by, what, what_md,
 };
-pub use said::{Part, Said};
+pub use said::{Part, Refusal, Said};
 pub use status::{Drift, Line, drift};
 
 /// What giving roles through the config said, and whether it went through.
@@ -388,11 +388,11 @@ pub fn with_admin(cfg: &Config, roles: &[String]) -> Vec<String> {
 }
 
 /// Give a role straight away, not through the config. `Err` says why not.
-pub async fn give<H: Host>(h: &H, user: Snowflake, key: &str) -> Result<Said, Said> {
+pub async fn give<H: Host>(h: &H, user: Snowflake, key: &str) -> Result<Said, Refusal> {
     let cfg = h.cfg();
     let name = role_name(&cfg, key);
     let Some(role) = cfg.desired.lock.role(key) else {
-        return Err(Said::new().text(format!("{} ", fmt::ATTENTION)).strong(name).text(" isn't set up yet."));
+        return Err(Said::new().text(format!("{} ", fmt::ATTENTION)).strong(name).text(" isn't set up yet.").into());
     };
     let path = format!("guilds/{}/members/{user}/roles/{role}", h.guild());
     match h.rest().call(Method::Put, &path, None).await {
@@ -402,7 +402,8 @@ pub async fn give<H: Host>(h: &H, user: Snowflake, key: &str) -> Result<Said, Sa
             Err(Said::new()
                 .text(format!("{} Couldn't give ", fmt::ATTENTION))
                 .strong(name)
-                .text(" (is the bot's role above it?)."))
+                .text(" (is the bot's role above it?).")
+                .into())
         }
     }
 }
@@ -439,9 +440,9 @@ pub async fn give_unrecorded<H: Host>(h: &H, user: Snowflake, keys: &[String], w
         }
         match give(h, user, key).await {
             Ok(said) => out = out.then(said),
-            Err(said) => {
+            Err(why) => {
                 ok = false;
-                out = out.then(said);
+                out = out.then(why.said());
             }
         }
     }
@@ -534,19 +535,16 @@ pub async fn grown_too_powerful<H: Host>(h: &H, keys: &[String]) -> Option<Said>
 }
 
 /// [`LivePowers`] if any of `keys` is set up (else there's nothing to ask).
-async fn live_for<H: Host>(h: &H, keys: &[String]) -> Result<LivePowers, String> {
+async fn live_for<H: Host>(h: &H, keys: &[String]) -> Result<LivePowers> {
     let cfg = h.cfg();
     if !keys.iter().any(|k| cfg.desired.lock.role(k).is_some()) {
         return Ok(LivePowers::default());
     }
-    LivePowers::fetch(h).await.map_err(|e| {
-        tracing::warn!("checking roles' permissions failed: {e:#}");
-        format!("{e:#}")
-    })
+    LivePowers::fetch(h).await.inspect_err(|e| tracing::warn!("checking roles' permissions failed: {e:#}"))
 }
 
 /// [`grown_too_powerful`] for one role, from what was fetched.
-fn grown(cfg: &Config, live: &Result<LivePowers, String>, key: &str) -> Option<Said> {
+fn grown(cfg: &Config, live: &Result<LivePowers>, key: &str) -> Option<Said> {
     let refused = |why: &str| {
         Some(Said::new().text(format!("{} Didn't give ", fmt::ATTENTION)).strong(role_name(cfg, key)).text(why))
     };
@@ -639,8 +637,8 @@ pub struct Added {
 /// says why it can't go through the config (the caller gives it directly),
 /// or that the role has grown too powerful to give. The edit is checked
 /// like any other [`Op`].
-pub async fn add_holder<H: Host>(h: &H, role: &str, user: Snowflake) -> Result<Added, Said> {
-    add_holder_unless(h, role, user).await.map_err(|(why, _)| why)
+pub async fn add_holder<H: Host>(h: &H, role: &str, user: Snowflake) -> Result<Added, Refusal> {
+    add_holder_unless(h, role, user).await.map_err(|(why, _)| why.into())
 }
 
 /// [`add_holder`], whose `Err` also says whether it's because the role
@@ -675,8 +673,8 @@ pub(crate) async fn add_holder_unless<H: Host>(h: &H, role: &str, user: Snowflak
 /// Add someone to a project's leads and give them its Lead role. `Err` says
 /// why not: it can't go through the config, or the Lead role has grown too
 /// powerful to give (then nothing is recorded or given).
-pub async fn add_lead<H: Host>(h: &H, slug: &str, lead_role: &str, user: Snowflake) -> Result<Said, Said> {
-    add_lead_unless(h, slug, lead_role, user).await.map_err(|(why, _)| why)
+pub async fn add_lead<H: Host>(h: &H, slug: &str, lead_role: &str, user: Snowflake) -> Result<Said, Refusal> {
+    add_lead_unless(h, slug, lead_role, user).await.map_err(|(why, _)| why.into())
 }
 
 /// [`add_lead`], whose `Err` also says whether it's because the Lead role
@@ -711,7 +709,7 @@ fn couldnt_make_lead(name: &str, user: Snowflake) -> Said {
 
 /// Make someone a lead of a project: checked, recorded, given and audited.
 /// The mirror of [`remove_lead`].
-pub async fn add_project_lead<H: Host>(h: &H, slug: &str, user: Snowflake, by: &Actor) -> Result<Said, Said> {
+pub async fn add_project_lead<H: Host>(h: &H, slug: &str, user: Snowflake, by: &Actor) -> Result<Said, Refusal> {
     let cfg = h.cfg();
     let p = cfg
         .projects
@@ -719,10 +717,11 @@ pub async fn add_project_lead<H: Host>(h: &H, slug: &str, user: Snowflake, by: &
         .find(|p| p.slug == slug)
         .ok_or_else(|| Said::new().text("No project ").code(slug).text("."))?;
     if !p.lead_role {
-        return Err(Said::new().strong(&p.name).text(" has no Lead role."));
+        return Err(Said::new().strong(&p.name).text(" has no Lead role.").into());
     }
-    let said =
-        add_lead(h, slug, &p.lead_role_key(), user).await.map_err(|why| couldnt_make_lead(&p.name, user).then(why))?;
+    let said = add_lead(h, slug, &p.lead_role_key(), user)
+        .await
+        .map_err(|why| couldnt_make_lead(&p.name, user).then(why.said()))?;
     audit(h, by, AuditAction::MadeLead, Some(slug), Some(&user.to_string())).await;
     Ok(said.then(queue::tell_lead(h, slug, user).await))
 }

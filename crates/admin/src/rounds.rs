@@ -232,10 +232,10 @@ pub async fn redraw<H: Host>(h: &H, channel: &str, message: &str) -> Result<()> 
 
 /// Reject everyone still waiting on `role`'s round cards, telling each
 /// `why`; then draw the cards again. Says how many were rejected.
-pub async fn reject_rest<H: Host>(h: &H, role: &str, why: Option<&str>, by: &Actor) -> Result<usize, String> {
+pub async fn reject_rest<H: Host>(h: &H, role: &str, why: Option<&str>, by: &Actor) -> Result<usize, crate::Refusal> {
     let waiting = h.db().posted_round(AppKind::Position, role).await.map_err(|e| {
         tracing::warn!("reading a round failed: {e:#}");
-        "Couldn't read who's waiting; try again.".to_owned()
+        "Couldn't read who's waiting; try again."
     })?;
     let mut cards = std::collections::BTreeSet::new();
     let mut done = 0;

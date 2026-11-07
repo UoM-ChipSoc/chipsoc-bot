@@ -397,7 +397,7 @@ pub(crate) async fn share<R: Rest + Clone + 'static>(
     Json(r): Json<crate::remote::ShareRequest>,
 ) -> Reply<crate::remote::Shared> {
     let pick = chipsoc_admin::shares::Pick::parse(&r.what, &r.item)
-        .map_err(|why| failure(StatusCode::UNPROCESSABLE_ENTITY, why))?;
+        .map_err(|why| failure(StatusCode::UNPROCESSABLE_ENTITY, why.to_string()))?;
     let shared = to_end(async move {
         let desk = app.desk(&s).await?;
         chipsoc_admin::shares::share_now(&desk, pick, &r.partners, &desk.actor).await
@@ -455,8 +455,8 @@ pub(crate) async fn undo<R: Rest + Clone + 'static>(
             subject: made.as_ref().map(|m| m.subject.clone()),
             warning: made.and_then(|m| m.warning),
         })),
-        Err(why) if why.starts_with("Only the server owner") => Err(failure(StatusCode::FORBIDDEN, why)),
-        Err(why) => Err(failure(StatusCode::CONFLICT, why)),
+        Err(why) if why.owner_only() => Err(failure(StatusCode::FORBIDDEN, why.to_string())),
+        Err(why) => Err(failure(StatusCode::CONFLICT, why.to_string())),
     }
 }
 
@@ -543,11 +543,14 @@ macro_rules! finish {
             let $d = &desk;
             anyhow::Ok(match $work {
                 Ok(v) => Ok(v),
-                Err(why) => Err(why.spoken(&desk).await),
+                Err(why) => {
+                    let status = if why.owner_only() { StatusCode::FORBIDDEN } else { StatusCode::CONFLICT };
+                    Err((status, why.spoken(&desk).await))
+                }
             })
         };
-        let done: Result<_, String> = tokio::spawn(run).await.map_err(|e| anyhow!(e))??;
-        done.map(Json).map_err(|why| failure(StatusCode::CONFLICT, why))
+        let done: Result<_, (StatusCode, String)> = tokio::spawn(run).await.map_err(|e| anyhow!(e))??;
+        done.map(Json).map_err(|(status, why)| failure(status, why))
     }};
 }
 

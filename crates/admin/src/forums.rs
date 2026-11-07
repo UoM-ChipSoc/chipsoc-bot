@@ -219,19 +219,8 @@ impl SeenPosts {
 }
 
 /// Why a post wasn't made, in words for whoever asked (not a Discord failure).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Refused(pub String);
-
-impl std::fmt::Display for Refused {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for Refused {}
-
 fn refuse<T>(why: impl Into<String>) -> Result<T> {
-    Err(Refused(why.into()).into())
+    Err(crate::Refusal::from(why.into()).into())
 }
 
 /// The checks on a resource a member shares that ask nothing of Discord: a

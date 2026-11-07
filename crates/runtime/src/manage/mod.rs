@@ -560,7 +560,7 @@ pub async fn server(ctx: &Ctx, i: &Interaction, options: &[CommandDataOption]) {
         if let (Sure::Undo { .. }, Some(by)) = (&s, actor(i))
             && let Err(why) = chipsoc_admin::only_owner(ctx, &by, &chipsoc_engine::Ask::Undo).await
         {
-            return ctx.respond(i, &ui::ephemeral(&format!("{} {why}", fmt::ATTENTION))).await;
+            return ctx.respond(i, &ui::ephemeral(&format!("{} {}", fmt::ATTENTION, why.markdown()))).await;
         }
         if let Cmd::CloseIdea { reason, .. } = &cmd {
             keep_reason(reason.as_deref());
@@ -688,7 +688,7 @@ async fn run(ctx: &Ctx, cmd: &Cmd, by: &Actor) -> (String, Vec<Component>) {
         Cmd::Feeds => feeds(ctx).await,
         Cmd::AddFeed(url) => match chipsoc_admin::add_feed(ctx, url, by).await {
             Ok(title) => format!("{} Now following **{title}**.", fmt::DONE),
-            Err(why) => format!("{} **Couldn't follow it:** {why}", fmt::ATTENTION),
+            Err(why) => format!("{} **Couldn't follow it:** {}", fmt::ATTENTION, why.markdown()),
         },
         Cmd::PauseFeed { id, paused } => match chipsoc_admin::pause_feed(ctx, *id, *paused, by).await {
             Ok(true) => format!("Feed #{id} {}.", if *paused { "paused" } else { "resumed" }),

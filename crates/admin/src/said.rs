@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use chipsoc_config::{Config, Snowflake};
+use chipsoc_engine::OwnerOnly;
 use serde::{Deserialize, Serialize};
 
 use crate::Host;
@@ -322,6 +323,107 @@ impl std::fmt::Display for Said {
         f.write_str(&self.plain(None))
     }
 }
+
+/// Why admin work wasn't done: words for whoever asked, not a failure to
+/// log. The one refusal type of the shared admin code, so every front end
+/// draws it as it draws a [`Said`] and can tell who could do it instead
+/// (the web API answers 403 for the owner's, 409 for the rest).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refusal {
+    /// Only the server owner may do it.
+    OwnerOnly(OwnerOnly),
+    /// Only the server owner may do it, and Discord couldn't say just now who that is.
+    OwnerUnknown,
+    /// Anything else, in words.
+    Said(Said),
+}
+
+impl Refusal {
+    /// In words, as for anything else said.
+    pub fn said(&self) -> Said {
+        match self {
+            Self::OwnerOnly(o) => Said::md(&format!("{o}.")),
+            Self::OwnerUnknown => Said::new().text(chipsoc_engine::OWNER_UNKNOWN),
+            Self::Said(s) => s.clone(),
+        }
+    }
+
+    /// Whether only the server owner could do it.
+    pub fn owner_only(&self) -> bool {
+        matches!(self, Self::OwnerOnly(_) | Self::OwnerUnknown)
+    }
+
+    /// See [`Said::markdown`].
+    pub fn markdown(&self) -> String {
+        self.said().markdown()
+    }
+
+    /// See [`Said::plain`].
+    pub fn plain(&self, cfg: Option<&Config>) -> String {
+        self.said().plain(cfg)
+    }
+
+    /// See [`Said::spaced`].
+    pub fn spaced(&self) -> String {
+        self.said().spaced()
+    }
+
+    /// See [`Said::contains`].
+    pub fn contains(&self, s: &str) -> bool {
+        self.said().contains(s)
+    }
+
+    /// See [`Said::starts_with`].
+    pub fn starts_with(&self, s: &str) -> bool {
+        self.said().starts_with(s)
+    }
+
+    /// See [`Said::named`].
+    pub async fn named<H: Host>(self, h: &H) -> Said {
+        self.said().named(h).await
+    }
+}
+
+impl From<OwnerOnly> for Refusal {
+    fn from(o: OwnerOnly) -> Self {
+        Self::OwnerOnly(o)
+    }
+}
+
+impl From<Said> for Refusal {
+    fn from(s: Said) -> Self {
+        Self::Said(s)
+    }
+}
+
+impl From<&str> for Refusal {
+    /// Older prose, lifted (see [`Said::md`]).
+    fn from(s: &str) -> Self {
+        Self::Said(s.into())
+    }
+}
+
+impl From<String> for Refusal {
+    fn from(s: String) -> Self {
+        Self::Said(s.into())
+    }
+}
+
+impl PartialEq<&str> for Refusal {
+    /// Its markdown is `other`.
+    fn eq(&self, other: &&str) -> bool {
+        self.markdown() == *other
+    }
+}
+
+impl std::fmt::Display for Refusal {
+    /// As plain text (see [`Said`]'s).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.said().fmt(f)
+    }
+}
+
+impl std::error::Error for Refusal {}
 
 #[cfg(test)]
 mod tests {

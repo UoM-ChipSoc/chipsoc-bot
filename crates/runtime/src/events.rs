@@ -29,7 +29,7 @@ pub fn ready(ctx: &Ctx, i: &Interaction) -> Result<(), String> {
     if !ctx.is_admin(i.member.as_ref()) && !cfg.bot.event_suggestions() {
         return Err(crate::manage::admins_only(&cfg));
     }
-    ev::tz(&cfg).map(drop)
+    ev::tz(&cfg).map(drop).map_err(|why| why.markdown())
 }
 
 pub fn form(ctx: &Ctx, i: &Interaction) -> (String, Vec<Component>) {
@@ -53,7 +53,7 @@ pub fn form(ctx: &Ctx, i: &Interaction) -> (String, Vec<Component>) {
 /// The event form, sent: an admin's is made now; a member's goes for review.
 pub async fn vet(ctx: &Ctx, i: &Interaction, user: &User, v: &Values) -> Result<Vetted, Refusal> {
     let cfg = ctx.cfg();
-    let tz = ev::tz(&cfg).map_err(Refusal::last)?;
+    let tz = ev::tz(&cfg).map_err(|why| Refusal::last(why.markdown()))?;
     let today = chrono::Utc::now().with_timezone(&tz).date_naive();
     let e = ev::check(
         tz,
@@ -64,7 +64,7 @@ pub async fn vet(ctx: &Ctx, i: &Interaction, user: &User, v: &Values) -> Result<
         &v.text("location"),
         &v.text("description"),
     )
-    .map_err(Refusal::fix)?;
+    .map_err(|why| Refusal::fix(why.markdown()))?;
     if ctx.is_admin(i.member.as_ref()) {
         return made(ctx, user, &e).await;
     }
