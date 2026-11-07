@@ -44,7 +44,9 @@ impl Downsampler {
             })
             .collect();
         let sum: f32 = coeffs.iter().sum();
-        coeffs.iter_mut().for_each(|c| *c /= sum);
+        for c in &mut coeffs {
+            *c /= sum;
+        }
         Self { coeffs, history: vec![0.0; TAPS], at: 0, phase: 0 }
     }
 

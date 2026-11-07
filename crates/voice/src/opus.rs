@@ -65,7 +65,7 @@ impl<W: Write> Writer<W> {
     pub fn new(w: W, serial: u32) -> io::Result<Self> {
         let mut enc = Encoder::new(RATE, Channels::Mono, Application::Voip).map_err(other)?;
         enc.set_bitrate(Bitrate::Bits(BITRATE)).map_err(other)?;
-        let pre_skip = enc.get_lookahead().map_err(other)?.max(0) as u16;
+        let pre_skip = u16::try_from(enc.get_lookahead().map_err(other)?).unwrap_or(0);
         let mut ogg = PacketWriter::new(Counted { inner: w, bytes: 0 });
         let mut head = b"OpusHead".to_vec();
         head.push(1); // version

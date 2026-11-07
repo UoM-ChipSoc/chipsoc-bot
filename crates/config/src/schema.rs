@@ -904,14 +904,14 @@ impl Accept {
     /// Where a kind (`resources`, `events`…) lands (none for events), and
     /// whether it waits for review; `None` if it isn't taken.
     pub fn landing(&self, kind: &str) -> Option<(Option<&str>, bool)> {
-        fn to(l: &Option<Landing>) -> Option<(Option<&str>, bool)> {
-            l.as_ref().map(|l| (Some(l.to()), l.review()))
+        fn to(l: Option<&Landing>) -> Option<(Option<&str>, bool)> {
+            l.map(|l| (Some(l.to()), l.review()))
         }
         match kind {
-            "resources" => to(&self.resources),
-            "questions" => to(&self.questions),
-            "feeds" => to(&self.feeds),
-            "announcements" => to(&self.announcements),
+            "resources" => to(self.resources.as_ref()),
+            "questions" => to(self.questions.as_ref()),
+            "feeds" => to(self.feeds.as_ref()),
+            "announcements" => to(self.announcements.as_ref()),
             "events" => match &self.events {
                 Some(EventLanding::On(true)) => Some((None, true)),
                 Some(EventLanding::Table(t)) => Some((None, t.review)),
