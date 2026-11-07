@@ -6,11 +6,11 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result, anyhow};
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use serde::{Deserialize, Serialize};
 
-use crate::{Actor, AuditAction, Host, audit};
+use crate::{Actor, AuditAction, Host, Refusal, Said, audit, fmt};
 
 const MAX_BYTES: usize = 2 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 3;
@@ -68,7 +68,7 @@ pub async fn remove_feed<H: Host>(h: &H, id: i64, by: &Actor) -> Result<bool> {
 }
 
 /// Follow a feed an admin gives (no suggestion needed). Returns its title.
-pub async fn add_feed<H: Host>(h: &H, url: &str, by: &Actor) -> Result<String, String> {
+pub async fn add_feed<H: Host>(h: &H, url: &str, by: &Actor) -> Result<String, Refusal> {
     let url = url.trim();
     let title = accept_feed(h, url, by).await?;
     audit(h, by, AuditAction::AddFeed, Some(url), Some(&title)).await;
@@ -88,10 +88,11 @@ pub async fn pause_feed<H: Host>(h: &H, id: i64, paused: bool, by: &Actor) -> Re
 
 /// Start following an approved feed (or the one a website's address leads
 /// to). Existing items are marked seen. Returns its title.
-pub async fn accept_feed<H: Host>(h: &H, url: &str, by: &Actor) -> Result<String, String> {
+pub async fn accept_feed<H: Host>(h: &H, url: &str, by: &Actor) -> Result<String, Refusal> {
     let channel = h.cfg().bot.feeds.as_ref().map(|f| f.channel.clone()).ok_or("feeds aren't set up in bot.toml")?;
-    let (url, feed) = find(url).await?;
-    let id = h.db().add_feed(&url, &channel, &by.key(), crate::now()).await.map_err(|e| e.to_string())?;
+    let (url, feed) = find(url).await.map_err(|e| Refusal::from(Said::new().text(e.to_string())))?;
+    let id =
+        h.db().add_feed(&url, &channel, &by.key(), crate::now()).await.map_err(|e| Refusal::from(fmt::error(&e)))?;
     for entry in &feed.entries {
         if let Err(e) = h.db().mark_item(id, &entry.id).await {
             tracing::warn!("marking feed item failed: {e:#}");
@@ -107,9 +108,9 @@ pub fn title(feed: &feed_rs::model::Feed, url: &str) -> String {
 
 /// Fetch and parse a feed: http(s) only, public addresses only (checked on
 /// every connection, redirects included), bounded size.
-pub async fn fetch(url: &str) -> Result<feed_rs::model::Feed, String> {
+pub async fn fetch(url: &str) -> Result<feed_rs::model::Feed> {
     let page = get(&client()?, url).await?;
-    feed_rs::parser::parse(&page.body[..]).map_err(|_| NOT_A_FEED.into())
+    feed_rs::parser::parse(&page.body[..]).map_err(|_| anyhow!(NOT_A_FEED))
 }
 
 /// The feed an address leads to, and where it was found: the address itself
@@ -117,14 +118,14 @@ pub async fn fetch(url: &str) -> Result<feed_rs::model::Feed, String> {
 /// (`<link rel="alternate" type="application/rss+xml">`, or Atom); else one
 /// at a common path on the same site. Every fetch is as careful as [`fetch`],
 /// and finding one takes at most `FIND_TIME`.
-pub async fn find(url: &str) -> Result<(String, feed_rs::model::Feed), String> {
+pub async fn find(url: &str) -> Result<(String, feed_rs::model::Feed)> {
     match tokio::time::timeout(FIND_TIME, find_in_time(url.trim())).await {
         Ok(found) => found,
-        Err(_) => Err("looking for its feed took too long".into()),
+        Err(_) => Err(anyhow!("looking for its feed took too long")),
     }
 }
 
-async fn find_in_time(url: &str) -> Result<(String, feed_rs::model::Feed), String> {
+async fn find_in_time(url: &str) -> Result<(String, feed_rs::model::Feed)> {
     let client = client()?;
     let page = get(&client, url).await?;
     if let Ok(feed) = feed_rs::parser::parse(&page.body[..]) {
@@ -132,7 +133,7 @@ async fn find_in_time(url: &str) -> Result<(String, feed_rs::model::Feed), Strin
     }
     let html = String::from_utf8_lossy(&page.body);
     if !looks_like_html(&html) {
-        return Err(NOT_A_FEED.into());
+        return Err(anyhow!(NOT_A_FEED));
     }
     let named = feed_links(&html, &page.url);
     let common = COMMON_PATHS.iter().filter_map(|p| page.url.join(p).ok());
@@ -147,7 +148,7 @@ async fn find_in_time(url: &str) -> Result<(String, feed_rs::model::Feed), Strin
             return Ok((candidate.to_string(), feed));
         }
     }
-    Err(format!("{NOT_A_FEED}, and no feed could be found from it"))
+    Err(anyhow!("{NOT_A_FEED}, and no feed could be found from it"))
 }
 
 /// A page as fetched: where it ended up (after redirects) and its body.
@@ -158,7 +159,7 @@ struct Page {
 
 /// The careful client: public addresses only, few redirects, each checked.
 /// Made once, so its connections and TLS setup are shared.
-fn client() -> Result<reqwest::Client, String> {
+fn client() -> Result<reqwest::Client> {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     if let Some(c) = CLIENT.get() {
         return Ok(c.clone());
@@ -177,21 +178,21 @@ fn client() -> Result<reqwest::Client, String> {
                 Err(e) => a.error(e),
             }
         }))
-        .build()
-        .map_err(|e| e.to_string())?;
+        .build()?;
     Ok(CLIENT.get_or_init(|| c).clone())
 }
 
-async fn get(client: &reqwest::Client, url: &str) -> Result<Page, String> {
-    let parsed = reqwest::Url::parse(url.trim()).map_err(|_| "that isn't a web address".to_owned())?;
+async fn get(client: &reqwest::Client, url: &str) -> Result<Page> {
+    let parsed = reqwest::Url::parse(url.trim()).map_err(|_| anyhow!("that isn't a web address"))?;
     check_url(&parsed)?;
-    let mut resp = client.get(parsed).send().await.and_then(|r| r.error_for_status()).map_err(|e| cause(&e))?;
+    let mut resp =
+        client.get(parsed).send().await.and_then(|r| r.error_for_status()).map_err(|e| anyhow!(cause(&e)))?;
     let url = resp.url().clone();
     let mut body = Vec::new();
-    while let Some(chunk) = resp.chunk().await.map_err(|e| cause(&e))? {
+    while let Some(chunk) = resp.chunk().await.map_err(|e| anyhow!(cause(&e)))? {
         body.extend_from_slice(&chunk);
         if body.len() > MAX_BYTES {
-            return Err("the feed is too large".into());
+            return Err(anyhow!("the feed is too large"));
         }
     }
     Ok(Page { url, body })
@@ -287,20 +288,20 @@ fn cause(e: &reqwest::Error) -> String {
 /// Whether `url` may be fetched at all, before fetching it: a web address
 /// whose host isn't written as a private one ([`find`] checks every address
 /// a name resolves to as well).
-pub fn check_address(url: &str) -> Result<(), String> {
-    let parsed = reqwest::Url::parse(url.trim()).map_err(|_| "that isn't a web address".to_owned())?;
+pub fn check_address(url: &str) -> Result<()> {
+    let parsed = reqwest::Url::parse(url.trim()).map_err(|_| anyhow!("that isn't a web address"))?;
     check_url(&parsed)
 }
 
 /// http(s), with a host that isn't a private address. Names are checked when
 /// they resolve (see [`PublicOnly`]); addresses written out are checked here.
-pub(crate) fn check_url(url: &reqwest::Url) -> Result<(), String> {
+pub(crate) fn check_url(url: &reqwest::Url) -> Result<()> {
     if !matches!(url.scheme(), "http" | "https") {
-        return Err("it should start with https://".into());
+        return Err(anyhow!("it should start with https://"));
     }
-    let host = url.host_str().ok_or("no host in the address")?;
+    let host = url.host_str().context("no host in the address")?;
     match host.trim_start_matches('[').trim_end_matches(']').parse::<IpAddr>() {
-        Ok(ip) if !is_public(ip) => Err(PRIVATE.into()),
+        Ok(ip) if !is_public(ip) => Err(anyhow!(PRIVATE)),
         _ => Ok(()),
     }
 }

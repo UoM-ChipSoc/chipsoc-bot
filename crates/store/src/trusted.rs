@@ -15,7 +15,7 @@ CREATE TABLE trusted (
 
 /// How many times each value changed, so a reader can tell it's out of date
 /// without reading them all (see [`Store::trusted_rev`]).
-pub(crate) const SCHEMA_V19: &str = r#"
+pub(crate) const SCHEMA_V20: &str = r#"
 ALTER TABLE trusted ADD COLUMN rev INTEGER NOT NULL DEFAULT 0;
 "#;
 

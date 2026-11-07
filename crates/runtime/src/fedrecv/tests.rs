@@ -321,7 +321,7 @@ impl Env for TestEnv {
         self.logs.lock().unwrap().push(text.to_owned());
     }
 
-    async fn audit(&self, _: &str, _: &str, _: &str) {}
+    async fn audit(&self, _: AuditAction, _: &str, _: &str) {}
 
     async fn ask(&self, text: &str, button: &str) {
         self.asked.lock().unwrap().push((text.to_owned(), button.to_owned()));

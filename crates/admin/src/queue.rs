@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::fmt::plain;
-use crate::{Actor, AuditAction, Host, Said, accept_feed, audit, dm, give, log_people, role_name};
+use crate::{Actor, AuditAction, Host, Refusal, Said, accept_feed, audit, dm, give, log_people, role_name};
 
 /// One question on a form and what they wrote.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,16 +20,30 @@ pub struct Answer {
     /// The config's name for the question, when it has one (`[ideas] questions`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    /// The answer as a list, when it's one (a resource's tags); `answer` is
+    /// then the list as people read it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<String>,
 }
 
 impl Answer {
     pub fn new(question: &str, answer: Option<&String>) -> Self {
-        Self { question: question.to_owned(), answer: answer.cloned().unwrap_or_default(), key: None }
+        Self {
+            question: question.to_owned(),
+            answer: answer.cloned().unwrap_or_default(),
+            key: None,
+            items: Vec::new(),
+        }
     }
 
     /// An answer to the question the config calls `key`.
     pub fn keyed(key: &str, question: &str, answer: impl Into<String>) -> Self {
-        Self { question: question.to_owned(), answer: answer.into(), key: Some(key.to_owned()) }
+        Self { key: Some(key.to_owned()), ..Self::new(question, Some(&answer.into())) }
+    }
+
+    /// A list for an answer, kept as it is (a comma in an item is just a comma).
+    pub fn list(question: &str, items: Vec<String>) -> Self {
+        Self { items: items.clone(), ..Self::new(question, Some(&items.join(", "))) }
     }
 
     /// How answers are stored.
@@ -44,7 +58,7 @@ impl Answer {
         }
         let fields: serde_json::Map<String, Value> = serde_json::from_str(json).unwrap_or_default();
         let text = |v: Value| v.as_str().map_or_else(|| v.to_string(), str::to_owned);
-        fields.into_iter().map(|(question, v)| Self { question, answer: text(v), key: None }).collect()
+        fields.into_iter().map(|(question, v)| Self::new(&question, Some(&text(v)))).collect()
     }
 }
 
@@ -206,7 +220,7 @@ pub async fn history<H: Host>(h: &H, limit: i64) -> Result<Vec<Past>> {
 }
 
 /// Record a decision on a pending application. `Err` is what to tell the reviewer.
-pub async fn claim<H: Host>(h: &H, id: i64, accept: bool, by: &Actor) -> Result<Application, Said> {
+pub async fn claim<H: Host>(h: &H, id: i64, accept: bool, by: &Actor) -> Result<Application, Refusal> {
     claim_seen(h, id, accept, None, by).await
 }
 
@@ -218,7 +232,7 @@ pub async fn claim_seen<H: Host>(
     accept: bool,
     seen: Option<&str>,
     by: &Actor,
-) -> Result<Application, Said> {
+) -> Result<Application, Refusal> {
     let mut app = match h.db().application(id).await {
         Ok(Some(a)) => a,
         Ok(None) => return Err("That application no longer exists.".into()),
@@ -228,10 +242,12 @@ pub async fn claim_seen<H: Host>(
         }
     };
     if accept && seen.is_some_and(|v| !v.is_empty() && v != crate::shares::version(&app)) {
-        return Err(Said::new().text(format!(
-            "{} changed this since — review again: the card and the queue show the new version now.",
-            submitter_plain(&h.cfg(), &app)
-        )));
+        return Err(Said::new()
+            .text(format!(
+                "{} changed this since — review again: the card and the queue show the new version now.",
+                submitter_plain(&h.cfg(), &app)
+            ))
+            .into());
     }
     if accept
         && app.kind == AppKind::Position
@@ -249,17 +265,20 @@ pub async fn claim_seen<H: Host>(
         match cfg.projects.iter().find(|p| p.slug == app.target) {
             None => return Err("That project is no longer in the config; reject this instead.".into()),
             Some(p) if p.status != chipsoc_config::ProjectStatus::Active => {
-                return Err(Said::new().strong(&p.name).text(format!(
-                    " is {} now, so it takes no members: reject this, or make the project active first.",
-                    p.status
-                )));
+                return Err(Said::new()
+                    .strong(&p.name)
+                    .text(format!(
+                        " is {} now, so it takes no members: reject this, or make the project active first.",
+                        p.status
+                    ))
+                    .into());
             }
             Some(_) => {}
         }
     }
     match h.db().decide(id, accept, &by.key(), crate::now()).await {
         Ok(true) => {}
-        Ok(false) => return Err(Said::new().text(format!("Someone already {} this.", app.status))),
+        Ok(false) => return Err(Said::new().text(format!("Someone already {} this.", app.status)).into()),
         Err(e) => {
             tracing::warn!("saving decision failed: {e:#}");
             return Err("Couldn't save the decision; try again.".into());
@@ -456,7 +475,7 @@ pub fn says_of(kind: &str) -> (&'static str, &'static str, &'static str) {
 }
 
 /// Claim and settle, then mark the review card (for front ends other than its buttons).
-pub async fn decide<H: Host>(h: &H, id: i64, accept: bool, by: &Actor) -> Result<Decided, Said> {
+pub async fn decide<H: Host>(h: &H, id: i64, accept: bool, by: &Actor) -> Result<Decided, Refusal> {
     decide_with(h, id, accept, None, by).await
 }
 
@@ -467,7 +486,7 @@ pub async fn decide_with<H: Host>(
     accept: bool,
     why: Option<&str>,
     by: &Actor,
-) -> Result<Decided, Said> {
+) -> Result<Decided, Refusal> {
     decide_seen(h, id, accept, why, None, by).await
 }
 
@@ -479,7 +498,7 @@ pub async fn decide_seen<H: Host>(
     why: Option<&str>,
     seen: Option<&str>,
     by: &Actor,
-) -> Result<Decided, Said> {
+) -> Result<Decided, Refusal> {
     let app = claim_seen(h, id, accept, seen, by).await?;
     let d = settle_with(h, &app, accept, why, by).await;
     // A failed accept keeps its buttons, to try again.
@@ -608,13 +627,17 @@ async fn grant_role<H: Host>(h: &H, app: &Application, user: Snowflake, by: &Act
                     }
                     (out, true)
                 }
-                Err(why) => (why, false),
+                Err(why) => (why.said(), false),
             }
         }
         AppKind::Feed => match accept_feed(h, &app.target, by).await {
             Ok(title) => (Said::new().text("Now following ").strong(title).text("."), true),
             Err(e) => {
-                let why = format!("{} Couldn't add the feed: {}", crate::fmt::ATTENTION, crate::fmt::error_str(&e));
+                let why = format!(
+                    "{} Couldn't add the feed: {}",
+                    crate::fmt::ATTENTION,
+                    crate::fmt::error_str(&e.markdown())
+                );
                 (Said::new().text(why), false)
             }
         },
@@ -639,7 +662,7 @@ async fn make_event<H: Host>(h: &H, app: &Application, user: Snowflake) -> (Said
     }
     let tz = match crate::events::tz(&cfg) {
         Ok(tz) => tz,
-        Err(why) => return no(Said::new().text(why)),
+        Err(why) => return no(why.said()),
     };
     let Some(e) = crate::events::NewEvent::from_answers(&Answer::parse(&app.answers), tz) else {
         return no(Said::new().text("Its start time can't be read; reject it instead."));
@@ -701,17 +724,17 @@ pub async fn claim_lead<H: Host>(h: &H, id: i64) -> Result<(Application, String)
 
 /// Make a claimed applicant a lead; says what happened. `Err`: they weren't
 /// (the Lead role is too powerful to give, say), so nobody is told.
-pub async fn lead<H: Host>(h: &H, app: &Application, key: &str, by: &Actor) -> Result<Said, Said> {
+pub async fn lead<H: Host>(h: &H, app: &Application, key: &str, by: &Actor) -> Result<Said, Refusal> {
     let Ok(user) = app.user.parse::<Snowflake>() else { return Err("That application has no member.".into()) };
     if let Some(why) = crate::too_powerful_to_give(h, key).await {
-        return Err(why);
+        return Err(why.into());
     }
     let said = match crate::add_lead_unless(h, &app.target, key, user).await {
         Ok(said) => said,
-        Err((why, true)) => return Err(why),
+        Err((why, true)) => return Err(why.into()),
         Err((why, false)) => match crate::give_unrecorded(h, user, &[key.to_owned()], &why).await {
             (said, true) => said,
-            (said, false) => return Err(said),
+            (said, false) => return Err(said.into()),
         },
     };
     audit(h, by, AuditAction::MadeLead, Some(&app.target), Some(&app.user)).await;
@@ -775,7 +798,7 @@ pub fn made_lead(by: &Actor, said: &Said) -> String {
 }
 
 /// Claim and make a lead, then mark the review card. Says what happened.
-pub async fn make_lead<H: Host>(h: &H, id: i64, by: &Actor) -> Result<Said, Said> {
+pub async fn make_lead<H: Host>(h: &H, id: i64, by: &Actor) -> Result<Said, Refusal> {
     let (app, key) = claim_lead(h, id).await?;
     let said = lead(h, &app, &key, by).await?;
     if let Err(e) = mark_card(h, &app, &made_lead(by, &said)).await {

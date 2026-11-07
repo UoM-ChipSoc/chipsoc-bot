@@ -88,6 +88,26 @@ CREATE TABLE plan_posts (
 );
 "#;
 
+/// A shared resource's tags as a list (`items`), not only as "a, b": older
+/// rows are split on commas, as they were read.
+pub(crate) const SCHEMA_V19: &str = r#"
+UPDATE applications SET answers = (
+    SELECT json_group_array(CASE
+        WHEN json_extract(a.value, '$.question') = 'Tags' AND json_extract(a.value, '$.items') IS NULL
+            AND json_valid(a.split) THEN json_set(a.value, '$.items', (
+                SELECT json_group_array(trim(t.value)) FROM json_each(a.split) AS t WHERE trim(t.value) != ''
+            ))
+        ELSE json(a.value)
+    END)
+    FROM (
+        SELECT value, '["' || replace(replace(replace(
+            coalesce(json_extract(value, '$.answer'), ''), '\', '\\'), '"', '\"'), ',', '","') || '"]' AS split
+        FROM json_each(applications.answers)
+    ) AS a
+)
+WHERE kind = 'resource' AND json_valid(answers) AND json_type(answers) = 'array';
+"#;
+
 /// Positions people held when they left, offered back if they return.
 pub(crate) const SCHEMA_V4: &str = r#"
 CREATE TABLE former_roles (

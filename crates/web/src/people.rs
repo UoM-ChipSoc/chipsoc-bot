@@ -75,6 +75,12 @@ impl Spoken for chipsoc_admin::Said {
     }
 }
 
+impl Spoken for chipsoc_admin::Refusal {
+    async fn spoken<H: Host>(self, h: &H) -> String {
+        self.said().spoken(h).await
+    }
+}
+
 /// The user ids mentioned in `text` as `<@id>` or `<@!id>`.
 fn mentions(text: &str, open: &str) -> Vec<Snowflake> {
     text.split(open).skip(1).filter_map(|rest| rest.trim_start_matches('!').split('>').next()?.parse().ok()).collect()

@@ -3,19 +3,19 @@
 //! channel, with reminders a day and an hour before. Admins make them from
 //! `/event` at once; a member's suggestion is made when an admin accepts it.
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use chipsoc_config::{Config, Snowflake};
 use chipsoc_discord::{Method, Rest};
 use chrono::{Days, NaiveDate, NaiveDateTime, NaiveTime, TimeZone};
 use chrono_tz::Tz;
 use serde_json::{Value, json};
 
-use crate::{Answer, Host, now};
+use crate::{Answer, Host, Refusal, now};
 
 /// The configured time zone, or a message for the admin saying what's wrong.
-pub fn tz(cfg: &Config) -> Result<Tz, String> {
+pub fn tz(cfg: &Config) -> Result<Tz, Refusal> {
     let name = &cfg.bot.timezone;
-    name.parse().map_err(|_| format!("bot.toml `timezone = \"{name}\"` isn't a time zone the bot knows (use a name like Europe/Paris), so it can't place events. Fix it and try again."))
+    name.parse().map_err(|_| Refusal::from(format!("bot.toml `timezone = \"{name}\"` isn't a time zone the bot knows (use a name like Europe/Paris), so it can't place events. Fix it and try again.")))
 }
 
 /// Why a start time can't be used.
@@ -75,7 +75,7 @@ pub const MINUTES: std::ops::RangeInclusive<i64> = 5..=24 * 60;
 
 /// "Length in minutes" as given: blank is an hour; anything else must be a
 /// whole number of minutes in [`MINUTES`]. `Err` says what to give instead.
-pub fn minutes(s: &str) -> Result<i64, String> {
+pub fn minutes(s: &str) -> Result<i64, Refusal> {
     let s = s.trim().trim_end_matches("min").trim_end_matches("mins").trim();
     if s.is_empty() {
         return Ok(60);
@@ -86,7 +86,8 @@ pub fn minutes(s: &str) -> Result<i64, String> {
             "Give the length as a number of minutes from {} to {} (24 hours), or leave it blank for an hour.",
             MINUTES.start(),
             MINUTES.end()
-        )),
+        )
+        .into()),
     }
 }
 
@@ -197,14 +198,17 @@ pub fn check(
     length: &str,
     location: &str,
     description: &str,
-) -> Result<NewEvent, String> {
+) -> Result<NewEvent, Refusal> {
     let at = match parse_time(start, tz, today) {
         Ok(at) => at,
         Err(BadTime::Unreadable) => {
-            return Err(format!("Couldn't read the start time `{start}`. Try `2026-11-12 18:00` or `tomorrow 18:00`."));
+            let why = format!("Couldn't read the start time `{start}`. Try `2026-11-12 18:00` or `tomorrow 18:00`.");
+            return Err(why.into());
         }
         Err(BadTime::Skipped) => {
-            return Err(format!("`{start}` doesn't happen in {tz}: the clocks go forward then. Pick another time."));
+            return Err(
+                format!("`{start}` doesn't happen in {tz}: the clocks go forward then. Pick another time.").into()
+            );
         }
     };
     if at <= now() {
@@ -252,7 +256,7 @@ fn iso(t: i64) -> String {
 /// `suggested_by`: the member whose suggestion it was, credited in the post.
 pub async fn create<H: Host>(h: &H, e: &NewEvent, suggested_by: Option<Snowflake>) -> Result<Made> {
     let cfg = h.cfg();
-    let tz = tz(&cfg).map_err(|why| anyhow!(why))?;
+    let tz = tz(&cfg)?;
     let place = place(&e.location, &rooms(h).await);
     let end = e.start + e.minutes * 60;
     let mut body = json!({

@@ -143,7 +143,8 @@ const MIGRATIONS: &[&str] = &[
     signins::SCHEMA_V16,
     fed::SCHEMA_V17,
     fed::SCHEMA_V18,
-    trusted::SCHEMA_V19,
+    guild::SCHEMA_V19,
+    trusted::SCHEMA_V20,
 ];
 
 const SCHEMA_V1: &str = r#"
@@ -261,5 +262,53 @@ mod tests {
         let apps = g.pending_applications().await.unwrap();
         assert_eq!((apps.len(), apps[0].target.as_str(), apps[0].user.as_str()), (1, "chair", "7"));
         assert_eq!(g.recent_audit(5).await.unwrap()[0].action, "appoint");
+    }
+
+    /// Shared resources' tags, kept as "a, b" before version 19, are a list
+    /// after it; nothing else changes.
+    #[tokio::test]
+    async fn resource_tags_become_a_list() {
+        let d = tempfile::tempdir().unwrap();
+        let url = format!("sqlite:{}?mode=rwc", d.path().join("bot.db").display());
+        let tags = |answer: &str| serde_json::json!([{ "question": "Title", "answer": "A" }, { "question": "Tags", "answer": answer }]);
+        let rows = [
+            ("resource", tags("cpu, rust ,")),
+            ("resource", tags(r#"say "hi", back\slash"#)),
+            ("resource", tags("")),
+            ("resource", tags("bad\u{1}")),
+            ("position", tags("a, b")),
+        ];
+        {
+            let pool = SqlitePoolOptions::new().max_connections(1).connect(&url).await.unwrap();
+            for sql in &MIGRATIONS[..18] {
+                sqlx::raw_sql(*sql).execute(&pool).await.unwrap();
+            }
+            sqlx::raw_sql("PRAGMA user_version = 18").execute(&pool).await.unwrap();
+            for (kind, answers) in &rows {
+                sqlx::query(
+                    "INSERT INTO applications (guild_id, kind, target, user_id, answers, created_at) \
+                     VALUES ('1', ?, 'x', '7', ?, 5)",
+                )
+                .bind(kind)
+                .bind(answers.to_string())
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            pool.close().await;
+        }
+        let s = Store::open(&url).await.unwrap();
+        let after: Vec<String> =
+            sqlx::query_scalar("SELECT answers FROM applications ORDER BY id").fetch_all(&s.pool).await.unwrap();
+        let items = |i: usize| {
+            let v: serde_json::Value = serde_json::from_str(&after[i]).unwrap();
+            assert_eq!(v[0], serde_json::json!({ "question": "Title", "answer": "A" }), "{v}");
+            v[1].get("items").cloned()
+        };
+        assert_eq!(items(0), Some(serde_json::json!(["cpu", "rust"])));
+        assert_eq!(items(1), Some(serde_json::json!([r#"say "hi""#, r"back\slash"])));
+        assert_eq!(items(2), Some(serde_json::json!([])));
+        assert_eq!(items(3), None, "not readable as a list: left alone");
+        assert_eq!(items(4), None, "not a resource");
     }
 }

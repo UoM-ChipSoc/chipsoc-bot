@@ -10,7 +10,7 @@ use chipsoc_discord::Rest;
 use chipsoc_discord::wire::id;
 use serde::{Deserialize, Serialize};
 
-use crate::{Actor, AuditAction, Host, Said, add_holder, audit, give_unrecorded, role_name, with_admin};
+use crate::{Actor, AuditAction, Host, Refusal, Said, add_holder, audit, give_unrecorded, role_name, with_admin};
 
 /// Someone, with the name people know them by (their id if it can't be found).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,13 +148,13 @@ async fn names<H: Host>(h: &H, ids: &BTreeSet<Snowflake>) -> HashMap<Snowflake, 
 
 /// Give someone a role members.toml lists (and the admin role, for admin
 /// positions), recorded in the config. `Err` says why not.
-pub async fn appoint<H: Host>(h: &H, role: &str, user: Snowflake, by: &Actor) -> Result<Said, Said> {
+pub async fn appoint<H: Host>(h: &H, role: &str, user: Snowflake, by: &Actor) -> Result<Said, Refusal> {
     let cfg = h.cfg();
     if by.id == Some(user) && crate::grants_admin(&cfg, role) && !crate::is_owner(h, user).await {
-        return Err(Said::new().text("Another admin has to appoint you to an admin role."));
+        return Err(Said::new().text("Another admin has to appoint you to an admin role.").into());
     }
     if cfg.desired.holders.get(role).is_some_and(|u| u.contains(&user)) {
-        return Err(Said::new().user(user).text(" already holds ").strong(role_name(&cfg, role)).text("."));
+        return Err(Said::new().user(user).text(" already holds ").strong(role_name(&cfg, role)).text(".").into());
     }
     let said = add_holder(h, role, user).await?.said;
     audit(h, by, AuditAction::Appoint, Some(role), Some(&user.to_string())).await;
@@ -165,10 +165,10 @@ pub async fn appoint<H: Host>(h: &H, role: &str, user: Snowflake, by: &Actor) ->
 /// them, and for an admin position the admin role too, unless something else
 /// in the config still gives it to them. That takes away `/server`, web
 /// sign-in and their Tailscale share as well.
-pub async fn unappoint<H: Host>(h: &H, role: &str, user: Snowflake, by: &Actor) -> Result<Said, Said> {
+pub async fn unappoint<H: Host>(h: &H, role: &str, user: Snowflake, by: &Actor) -> Result<Said, Refusal> {
     crate::only_owner(h, by, &chipsoc_engine::Ask::TakeRoles { user }).await?;
     if by.id == Some(user) && crate::grants_admin(&h.cfg(), role) && !crate::is_owner(h, user).await {
-        return Err(Said::new().text("Another admin has to take an admin role from you."));
+        return Err(Said::new().text("Another admin has to take an admin role from you.").into());
     }
     let op = Op::RemoveHolder { role: role.to_owned(), user };
     let said = record_op(h, &op, user, &with_admin(&h.cfg(), &[role.to_owned()])).await?;
@@ -177,7 +177,7 @@ pub async fn unappoint<H: Host>(h: &H, role: &str, user: Snowflake, by: &Actor) 
 }
 
 /// Take someone off a project's leads; its Lead role is taken away from them.
-pub async fn remove_lead<H: Host>(h: &H, slug: &str, user: Snowflake, by: &Actor) -> Result<Said, Said> {
+pub async fn remove_lead<H: Host>(h: &H, slug: &str, user: Snowflake, by: &Actor) -> Result<Said, Refusal> {
     crate::only_owner(h, by, &chipsoc_engine::Ask::TakeRoles { user }).await?;
     let cfg = h.cfg();
     let p = cfg
@@ -192,28 +192,28 @@ pub async fn remove_lead<H: Host>(h: &H, slug: &str, user: Snowflake, by: &Actor
 }
 
 /// Make `op` through the host (checked like any other), then apply `user`'s holding of `roles`.
-async fn record_op<H: Host>(h: &H, op: &Op, user: Snowflake, roles: &[String]) -> Result<Said, Said> {
+async fn record_op<H: Host>(h: &H, op: &Op, user: Snowflake, roles: &[String]) -> Result<Said, Refusal> {
     if let Some(why) = h.unwritable() {
-        return Err(Said::new().text(why));
+        return Err(Said::new().text(why).into());
     }
     h.record(std::slice::from_ref(op), user, roles).await.map(|r| r.said).map_err(|e| {
         tracing::warn!("recording a change failed: {e:#}");
-        Said::new().text(crate::fmt::error(&e))
+        Said::new().text(crate::fmt::error(&e)).into()
     })
 }
 
 /// Give someone who came back the roles they held when they left, and forget
 /// them. `Err` says why not.
-pub async fn restore<H: Host>(h: &H, user: Snowflake, by: &Actor) -> Result<Said, Said> {
+pub async fn restore<H: Host>(h: &H, user: Snowflake, by: &Actor) -> Result<Said, Refusal> {
     if by.id == Some(user) {
-        return Err(Said::new().text("Another admin has to restore your own roles."));
+        return Err(Said::new().text("Another admin has to restore your own roles.").into());
     }
     let roles = match h.db().former_roles(&user.to_string()).await {
-        Ok(r) if r.is_empty() => return Err(Said::new().text("Already dealt with.")),
+        Ok(r) if r.is_empty() => return Err(Said::new().text("Already dealt with.").into()),
         Ok(r) => r,
         Err(e) => {
             tracing::warn!("reading former roles failed: {e:#}");
-            return Err(Said::new().text(format!("Couldn't read their old roles: {}", crate::fmt::error(&e))));
+            return Err(Said::new().text(format!("Couldn't read their old roles: {}", crate::fmt::error(&e))).into());
         }
     };
     let text = restore_roles(h, user, &roles).await;

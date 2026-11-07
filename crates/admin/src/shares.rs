@@ -249,7 +249,7 @@ pub enum Pick {
 impl Pick {
     /// From what an admin gave: an announcement's link (or `channel-message`
     /// ids, as Discord copies them), or an event's link or id.
-    pub fn parse(what: &str, given: &str) -> Result<Self, String> {
+    pub fn parse(what: &str, given: &str) -> Result<Self, crate::Refusal> {
         let given = given.trim().trim_end_matches('/');
         let ids: Vec<Snowflake> = given
             .rsplit(['/', '-'])
@@ -288,7 +288,7 @@ pub async fn announcement<H: Host>(h: &H, channel: Snowflake, message: Snowflake
     let m = h.rest().call(Method::Get, &format!("channels/{channel}/messages/{message}"), None).await?;
     let text = s(&m["content"]);
     if text.trim().is_empty() {
-        bail!(crate::Refused("That message has no text to share.".into()));
+        bail!(crate::Refusal::from("That message has no text to share."));
     }
     let mut item = Share::new(ShareKind::Announcement, &message.to_string(), &announcement_title(&text));
     item.text = truncate(&text, MAX_TEXT);
@@ -310,14 +310,14 @@ pub fn announcement_title(text: &str) -> String {
 /// not where partners' posts land.
 fn shareable(cfg: &Config, channel: Snowflake) -> Result<()> {
     let Some(key) = cfg.desired.lock.channels.iter().find(|(_, c)| **c == channel).map(|(k, _)| k.as_str()) else {
-        bail!(crate::Refused("That message isn't in one of this server's channels.".into()));
+        bail!(crate::Refusal::from("That message isn't in one of this server's channels."));
     };
     if cfg.federation.peers.iter().any(|p| p.accept.channels().any(|(_, k)| k == key)) {
-        bail!(crate::Refused("That's where partners' posts land: it's theirs to share, not ours.".into()));
+        bail!(crate::Refusal::from("That's where partners' posts land: it's theirs to share, not ours."));
     }
     if !members_see(cfg, key) {
-        bail!(crate::Refused(
-            "That channel isn't open to all members, so what's said there isn't shared with partners.".into()
+        bail!(crate::Refusal::from(
+            "That channel isn't open to all members, so what's said there isn't shared with partners."
         ));
     }
     Ok(())
@@ -388,7 +388,7 @@ pub async fn can_view<H: Host>(h: &H, user: Snowflake, channel: Snowflake) -> Re
 /// One of our scheduled events, to share.
 pub async fn event<H: Host>(h: &H, event: Snowflake) -> Result<Share> {
     let e = h.rest().call(Method::Get, &format!("guilds/{}/scheduled-events/{event}", h.guild()), None).await?;
-    event_from(h.guild(), &e).ok_or_else(|| anyhow!(crate::Refused("That event has no start time.".into())))
+    event_from(h.guild(), &e).ok_or_else(|| anyhow!(crate::Refusal::from("That event has no start time.")))
 }
 
 /// A scheduled event as Discord sends it, to share.
@@ -411,7 +411,7 @@ pub async fn share_now<H: Host>(h: &H, pick: Pick, to: &[String], by: &Actor) ->
     let kind = pick.kind();
     let open = partners_for(&cfg, kind);
     if open.is_empty() {
-        bail!(crate::Refused(format!(
+        bail!(crate::Refusal::from(format!(
             "No partner takes {} from us: list `{}` in a peer's `send` in federation.toml.",
             kind.plural(),
             kind.plural()
@@ -419,8 +419,8 @@ pub async fn share_now<H: Host>(h: &H, pick: Pick, to: &[String], by: &Actor) ->
     }
     for n in to {
         match peer_named(&cfg, n) {
-            None => bail!(crate::Refused(format!("No partner is called `{}`.", escape(n)))),
-            Some(p) if !open.iter().any(|o| o.id == p.id) => bail!(crate::Refused(format!(
+            None => bail!(crate::Refusal::from(format!("No partner is called `{}`.", escape(n)))),
+            Some(p) if !open.iter().any(|o| o.id == p.id) => bail!(crate::Refusal::from(format!(
                 "We don't send {} to {} (`send` in federation.toml).",
                 kind.plural(),
                 p.name
@@ -434,7 +434,7 @@ pub async fn share_now<H: Host>(h: &H, pick: Pick, to: &[String], by: &Actor) ->
     if let (Pick::Announcement { channel, .. }, Some(u)) = (pick, by.id)
         && !can_view(h, u, channel).await?
     {
-        bail!(crate::Refused("You can't see that channel, so you can't share what's in it.".into()));
+        bail!(crate::Refusal::from("You can't see that channel, so you can't share what's in it."));
     }
     let mut item = match pick {
         Pick::Announcement { channel, message } => announcement(h, channel, message).await?,
@@ -893,9 +893,7 @@ async fn card_body<H: Host>(h: &H, app: &Application) -> Result<Value> {
         { "type": 2, "style": 3, "label": "Accept", "custom_id": crate::rounds::review_seen(app.id, &version(app)) },
         { "type": 2, "style": 4, "label": "Reject", "custom_id": crate::rounds::review_button(false, app.id) },
     ]}]);
-    Ok(
-        json!({ "content": truncate(&text, MAX_CONTENT - 1), "components": buttons, "allowed_mentions": { "parse": [] } }),
-    )
+    Ok(json!({ "content": truncate(&text, MAX_CONTENT), "components": buttons, "allowed_mentions": { "parse": [] } }))
 }
 
 /// Post the card for a partner's entry in the review channel, with Accept and Reject.
@@ -1094,7 +1092,7 @@ fn content(peer: &Peer, item: &Share, forum: bool) -> String {
         parts.push(text);
     }
     parts.push(format!("{credit}{note}"));
-    truncate(&parts.join("\n\n"), MAX_CONTENT - 1)
+    truncate(&parts.join("\n\n"), MAX_CONTENT)
 }
 
 /// The scheduled event we make for a partner's.
@@ -1213,7 +1211,7 @@ mod tests {
         let peer = Peer { name: "x".repeat(3000), id: "them".into(), ..Default::default() };
         let mut item = Share::new(ShareKind::Announcement, "1", "News");
         item.text = "Words.".into();
-        assert!(content(&peer, &item, false).chars().count() < MAX_CONTENT);
+        assert!(content(&peer, &item, false).chars().count() <= MAX_CONTENT);
     }
 
     #[test]

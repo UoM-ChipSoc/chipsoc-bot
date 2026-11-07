@@ -389,9 +389,17 @@ fn shared(url: &str) -> NewResource {
     }
 }
 
+#[test]
+fn a_resource_keeps_its_tags_in_the_queue_commas_and_all() {
+    let r = NewResource { tags: vec!["papers".into(), "rock, paper".into(), " ".into()], ..shared("https://a.org") };
+    let kept = Answer::parse(&Answer::to_json(&r.answers()));
+    assert_eq!(kept[3].answer, "papers, rock, paper", "as people read it");
+    assert_eq!(NewResource::from_answers(&kept).tags, ["papers", "rock, paper"]);
+}
+
 /// What a refusal says (refusals, not Discord failures).
 fn refused(e: anyhow::Error) -> String {
-    e.downcast_ref::<Refused>().map(ToString::to_string).unwrap_or_else(|| panic!("not a refusal: {e:#}"))
+    e.downcast_ref::<Refusal>().map(Refusal::markdown).unwrap_or_else(|| panic!("not a refusal: {e:#}"))
 }
 
 #[tokio::test]
@@ -949,13 +957,14 @@ async fn nobody_but_the_owner_takes_the_owners_roles() {
     let ada = Actor { id: Some(Snowflake(ADA)), name: "ada".into() };
     appoint(&h, "treasurer", Snowflake(ADA), &reviewer()).await.unwrap();
     let err = unappoint(&h, "treasurer", Snowflake(ADA), &reviewer()).await.unwrap_err();
+    assert_eq!(err, Refusal::OwnerOnly(chipsoc_engine::OwnerOnly::TakeFromOwner));
     assert_eq!(err, "Only the server owner can take a role from the server owner.");
     assert!(h.holds(ADA, "treasurer"));
     unappoint(&h, "treasurer", Snowflake(ADA), &ada).await.unwrap();
     assert!(!h.holds(ADA, "treasurer"));
     // Nor can anyone but the owner revert config changes.
     let err = undo(&h, "abc1234", chipsoc_engine::git::Undo::Revert, &reviewer()).await.unwrap_err();
-    assert!(err.starts_with("Only the server owner can revert"), "{err}");
+    assert!(err.owner_only() && err.starts_with("Only the server owner can revert"), "{err}");
 }
 
 #[tokio::test]
@@ -1201,7 +1210,7 @@ async fn a_big_round_is_split_over_cards_that_fit_discord() {
     assert_eq!(rounds::post_closed(&h).await.unwrap(), 2);
     for card in h.messages_in("review") {
         let text = card["content"].as_str().unwrap();
-        assert!(text.chars().count() < fmt::MAX_CONTENT, "{}", text.chars().count());
+        assert!(text.chars().count() <= fmt::MAX_CONTENT, "{}", text.chars().count());
         assert!(card["components"].as_array().unwrap().len() <= 5);
         assert!(text.contains("(part "), "{text}");
     }
@@ -1332,6 +1341,23 @@ async fn an_idea_is_closed_with_a_tag_and_a_reason_never_deleted() {
         let said: Vec<&str> = mine.filter_map(|m| m["content"].as_str()).collect();
         assert_eq!(said, ["!", "🔒 **Closed:** Merged into Golem.\nIt stays here to read."]);
     }
+
+    // An archived idea is opened to take the reply; if the reply fails, it's
+    // left archived and untouched.
+    let body = json!({ "name": "quiet", "applied_tags": [needs], "message": { "content": "." } });
+    let quiet = h.rest().call(Method::Post, &format!("channels/{ideas}/threads"), Some(body)).await.unwrap();
+    let quiet: Snowflake = quiet["id"].as_str().unwrap().parse().unwrap();
+    h.discord.auto_archive(quiet);
+    h.discord.fail(&format!("POST channels/{quiet}/messages"), 500, false);
+    assert!(close_idea(&h, quiet, None, &reviewer()).await.is_err());
+    let thread = |st: &chipsoc_discord::fake::State| st.channels.iter().find(|c| c["id"] == quiet.to_string()).cloned();
+    let t = thread(&h.discord.state.lock().unwrap()).unwrap();
+    assert_eq!(t["thread_metadata"]["archived"], json!(true), "archived again");
+    assert_eq!(t["applied_tags"], json!([needs]), "not tagged");
+    close_idea(&h, quiet, None, &reviewer()).await.unwrap().unwrap();
+    let t = thread(&h.discord.state.lock().unwrap()).unwrap();
+    assert_eq!(t["applied_tags"], json!(["777"]));
+    assert_eq!((&t["thread_metadata"]["archived"], &t["thread_metadata"]["locked"]), (&json!(true), &json!(true)));
 
     // No closed_tag and no reason: the reply says so, and the post still gets a line.
     let mut c = (*h.cfg()).clone();

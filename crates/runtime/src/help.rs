@@ -9,7 +9,7 @@ use crate::apps::invoker;
 use crate::{Ctx, ui};
 
 pub async fn solved(ctx: &Ctx, i: &Interaction) {
-    let Some(user) = invoker(i) else { return };
+    let Some(user) = invoker(i) else { return crate::apps::nobody(ctx, i).await };
     let Some(help) = ctx.cfg().bot.help.clone() else { return };
     let Some(forum) = ctx.channel(&help.forum) else {
         return ctx.respond(i, &ui::ephemeral("The help forum isn't set up yet.")).await;
@@ -54,7 +54,7 @@ pub async fn solved(ctx: &Ctx, i: &Interaction) {
     }
     let closed = ctx.call(Method::Patch, &path, Some(serde_json::json!({ "archived": true }))).await;
     ctx.log_err(closed, "closing solved post");
-    ctx.audit(Some(&user.id.to_string()), "solved", Some(&thread.id.to_string()), None).await;
+    ctx.audit(Some(&user.id.to_string()), chipsoc_admin::AuditAction::Solved, Some(&thread.id.to_string()), None).await;
 }
 
 /// What `/solved` says, in the post: whether it could tag it too.
