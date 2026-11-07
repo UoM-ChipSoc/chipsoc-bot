@@ -509,7 +509,7 @@ impl App {
             let fields = vec![
                 Input::choice(Key::Role, roles, ""),
                 Input::text(Key::Label, "").hint("Shown in /volunteer; blank uses the role's name"),
-                Input::toggle(Key::AdminPosition, false).hint(ADMIN_HINT),
+                Input::toggle(Key::AdminPosition, false).labelled(self.admin_label()).hint(ADMIN_HINT),
             ];
             return self.form("New position", fields, Then::NewPosition);
         }
@@ -520,7 +520,7 @@ impl App {
                 let fields = vec![
                     Input::text(Key::Label, p.label.clone().unwrap_or_default())
                         .hint("Shown in /volunteer; blank uses the role's name"),
-                    Input::toggle(Key::AdminPosition, p.admin).hint(ADMIN_HINT),
+                    Input::toggle(Key::AdminPosition, p.admin).labelled(self.admin_label()).hint(ADMIN_HINT),
                     Input::toggle(Key::TakingApplications, p.open),
                 ];
                 let name = self.position_name(&p);
@@ -640,7 +640,8 @@ impl App {
         match act {
             Act::TogglePause => Some(self.start(Job::Admin(Admin::PauseFeed(f.id, !f.paused)))),
             Act::Remove => {
-                let lines = vec![format!("Stop following {}?", f.url), "Its past posts stay.".into()];
+                let lines =
+                    vec![format!("Stop following {}?", chipsoc_admin::feeds::shown(&f)), "Its past posts stay.".into()];
                 self.confirm("Remove feed?", lines, Job::Admin(Admin::RemoveFeed(f.id)));
                 None
             }
@@ -719,6 +720,15 @@ impl App {
         let project = project.map_or(slug.clone(), |p| p.name.clone());
         let lines = vec![format!("Take {name} off {project}'s leads? They lose the Lead role straight away.")];
         self.confirm("Remove lead?", lines, Job::Admin(Admin::RemoveLead(slug, user)));
+    }
+
+    /// The admin-position toggle, by the admin role's name: "Also gives Committee".
+    fn admin_label(&self) -> String {
+        let s = self.schema.as_ref();
+        match s.and_then(|s| Some((s, s.bot.admin_role.as_deref()?))) {
+            Some((s, k)) => format!("Also gives {}", lists::role_name(s, k)),
+            None => Key::AdminPosition.label().to_owned(),
+        }
     }
 
     fn position_name(&self, p: &Position) -> String {

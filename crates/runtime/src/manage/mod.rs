@@ -197,7 +197,7 @@ impl Sure {
         })
     }
 
-    /// The question to confirm; `feed` is the feed's address, if known.
+    /// The question to confirm; `feed` is the feed's title (else its address), if known.
     fn question(&self, cfg: &Config, feed: Option<&str>) -> String {
         if let Self::Undo { commit, how } = self {
             return chipsoc_admin::undo_question_for(&cfg.dir, commit, *how).markdown();
@@ -218,7 +218,7 @@ impl Sure {
                 }
             }
             Self::RemoveFeed(id) => match feed {
-                Some(url) => format!("Stop following **{url}** (#{id})?"),
+                Some(name) => format!("Stop following **{name}** (#{id})?"),
                 None => format!("Stop following feed #{id}?"),
             },
             Self::ArchiveResource(id) => format!("Close and lock resource post <#{id}>? It isn't deleted."),
@@ -568,7 +568,9 @@ pub async fn server(ctx: &Ctx, i: &Interaction, options: &[CommandDataOption]) {
         let yes = ui::button(&CustomId::Sure(s.encode()).to_string(), "Confirm", ButtonStyle::Danger);
         let no = ui::button(&CustomId::Sure(CANCEL.into()).to_string(), "Cancel", ButtonStyle::Secondary);
         let feed = match &s {
-            Sure::RemoveFeed(id) => ctx.db().feed(*id).await.ok().flatten().map(|f| f.url),
+            Sure::RemoveFeed(id) => {
+                ctx.db().feed(*id).await.ok().flatten().map(|f| fmt::escape(&f.title.unwrap_or(f.url)))
+            }
             _ => None,
         };
         let q = s.question(&ctx.cfg(), feed.as_deref());
@@ -916,7 +918,10 @@ async fn feeds(ctx: &Ctx) -> String {
             f.iter()
                 .map(|f| {
                     let paused = if f.paused { " (paused)" } else { "" };
-                    format!("`#{}` <{}> → #{}{paused}", f.id, f.url, f.channel)
+                    match f.title.as_deref().filter(|t| !t.is_empty()) {
+                        Some(t) => format!("`#{}` **{}** <{}> → #{}{paused}", f.id, fmt::escape(t), f.url, f.channel),
+                        None => format!("`#{}` <{}> → #{}{paused}", f.id, f.url, f.channel),
+                    }
                 })
                 .collect(),
             "No feeds yet: `/server feed add <url>`.",
@@ -1191,8 +1196,8 @@ mod tests {
             ..Default::default()
         });
         let q = sure(&proposed).unwrap().question(&cfg, None);
-        let feed = Sure::RemoveFeed(3).question(&cfg, Some("https://example.org/feed"));
-        assert_eq!(feed, "Stop following **https://example.org/feed** (#3)?");
+        let feed = Sure::RemoveFeed(3).question(&cfg, Some("Chip news"));
+        assert_eq!(feed, "Stop following **Chip news** (#3)?");
         assert!(q.starts_with("Make **Golem** proposed? Its channels move to the archive"), "{q}");
         assert!(q.contains("Its applications close."), "{q}");
         for s in [

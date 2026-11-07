@@ -98,7 +98,14 @@ fn render(s: &Session, feeds: &[FeedInfo], on: Option<&str>, sh: &Shown) -> Html
                 {view::table(&["Feed", "Posts in", "Added", "", ""], rsx! {
                     for f in feeds {
                         tr { class: if f.paused { "muted" },
-                            td { class: "wrap", "{f.url}" if f.paused { span { class: "tag", "paused" } } }
+                            td { class: "wrap",
+                                if let Some(t) = f.title.as_deref().filter(|t| !t.is_empty()) {
+                                    strong { "{t}" }
+                                    br {}
+                                }
+                                "{f.url}"
+                                if f.paused { span { class: "tag", "paused" } }
+                            }
                             td { "#{f.channel}" }
                             td { "{when(f.added_at)}" }
                             td {
@@ -109,7 +116,7 @@ fn render(s: &Session, feeds: &[FeedInfo], on: Option<&str>, sh: &Shown) -> Html
                                 }
                             }
                             td {
-                                {confirm(s, "/feeds/remove", &[("id", &f.id.to_string())], "Remove", "Yes, stop following", "Nothing already posted is removed.")}
+                                {confirm(s, "/feeds/remove", &[("id", &f.id.to_string())], "Remove", "Yes, stop following", &format!("Stop following {}? Nothing already posted is removed.", chipsoc_admin::feeds::shown(f)))}
                             }
                         }
                     }

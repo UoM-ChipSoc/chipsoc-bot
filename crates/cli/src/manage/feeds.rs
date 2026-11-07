@@ -40,7 +40,8 @@ pub async fn feed<R: Rest + Clone>(c: &Ctx<'_, R>, cmd: FeedCmd) -> Result<()> {
             }
             for x in &f {
                 let paused = if x.paused { " · paused" } else { "" };
-                println!("#{:<4} {} → #{} · since {}{paused}", x.id, x.url, x.channel, when(x.added_at));
+                let title = x.title.as_deref().map(|t| format!("{t} · ")).unwrap_or_default();
+                println!("#{:<4} {title}{} → #{} · since {}{paused}", x.id, x.url, x.channel, when(x.added_at));
             }
             Ok(())
         }
@@ -54,7 +55,12 @@ pub async fn feed<R: Rest + Clone>(c: &Ctx<'_, R>, cmd: FeedCmd) -> Result<()> {
             c.done(&format!("Resumed feed #{id}."))
         }
         FeedCmd::Remove { id } => {
-            if !confirm(&format!("Stop following feed #{id}?"), c.yes)? {
+            let feeds = c.b.feeds().await?;
+            let name = feeds
+                .iter()
+                .find(|f| f.id == id)
+                .map_or_else(|| format!("feed #{id}"), |f| format!("{} (#{id})", chipsoc_admin::feeds::shown(f)));
+            if !confirm(&format!("Stop following {name}?"), c.yes)? {
                 return Ok(());
             }
             c.b.remove_feed(id).await?;

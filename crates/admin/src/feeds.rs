@@ -29,6 +29,9 @@ const NOT_A_FEED: &str = "that page isn't an RSS or Atom feed";
 pub struct FeedInfo {
     pub id: i64,
     pub url: String,
+    /// Its title, as it last read (none before it was first read).
+    #[serde(default)]
+    pub title: Option<String>,
     /// Channel key its items are posted in.
     pub channel: String,
     pub added_by: Option<String>,
@@ -49,6 +52,7 @@ pub async fn feeds<H: Host>(h: &H) -> Result<Vec<FeedInfo>> {
         added_by_name: f.added_by.as_deref().map(|b| crate::people::named(&cfg, &names, b)),
         id: f.id,
         url: f.url,
+        title: f.title,
         channel: f.channel_key,
         added_by: f.added_by,
         added_at: f.ts,
@@ -97,7 +101,16 @@ pub async fn accept_feed<H: Host>(h: &H, url: &str, by: &Actor) -> Result<String
             tracing::warn!("marking feed item failed: {e:#}");
         }
     }
-    Ok(title(&feed, &url))
+    let title = title(&feed, &url);
+    if let Err(e) = h.db().set_feed_title(id, &title).await {
+        tracing::warn!("keeping a feed's title failed: {e:#}");
+    }
+    Ok(title)
+}
+
+/// What people know a feed as: its title, else its address.
+pub fn shown(f: &FeedInfo) -> &str {
+    f.title.as_deref().filter(|t| !t.is_empty()).unwrap_or(&f.url)
 }
 
 /// A feed's title, else its address.
