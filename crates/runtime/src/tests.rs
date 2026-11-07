@@ -38,6 +38,18 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }
 
+/// Wait until `ok`, for work spawned on other tasks: a slow machine only
+/// makes it take longer. Panics after 10 seconds, saying what didn't happen.
+pub(crate) async fn eventually(what: &str, mut ok: impl FnMut() -> bool) {
+    for _ in 0..500 {
+        if ok() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("timed out waiting for {what}");
+}
+
 fn write(dir: &Path, file: &str, body: &str) {
     let p = dir.join(file);
     std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -529,7 +541,12 @@ async fn an_apply_from_the_web_closes_the_bot_logs_plans() {
     let (_, later) = plan_posts(&fake, &log)[0].clone();
     let fresh = ctx.plans.take(&later).unwrap();
     let me = chipsoc_engine::By::person(chipsoc_model::Snowflake(REVIEWER), "rev");
-    crate::control::apply_as(&ctx, &fresh, &me).await.unwrap();
+    let report = crate::control::apply_as(&ctx, &fresh, &me).await.unwrap();
+    // Known as the bot's by the entry it wrote, not by asking for this person's newest apply.
+    let own = report.audit_id.expect("the apply was noted");
+    assert_eq!(ctx.own_applies.lock().unwrap().iter().copied().collect::<Vec<_>>(), [own]);
+    let newest = ctx.db().applies_after(seen).await.unwrap();
+    assert_eq!(newest.last().map(|a| a.id), Some(own));
     crate::control::close_applied(&ctx, &mut seen).await;
     assert_eq!(ctx.db().plan_posts().await.unwrap().len(), 1, "left for the bot's own apply to close");
     assert!(ctx.own_applies.lock().unwrap().is_empty(), "handled once");
@@ -575,3 +592,27 @@ async fn a_card_that_cant_be_posted_is_said_in_the_bot_log() {
 
 mod handlers;
 mod security;
+
+/// Review 5 M3: the sweep for old rename notices runs once per config, not
+/// at every start (a request per kept forum post each time).
+#[tokio::test]
+async fn old_rename_notices_are_swept_once() {
+    let (_root, fake, ctx) = server().await;
+    let dir = ctx.cfg().dir.clone();
+    let before = fake.requests();
+    crate::clear_rename_notices(&ctx, &dir).await;
+    assert!(fake.requests() > before, "swept the first time");
+    let after = fake.requests();
+    crate::clear_rename_notices(&ctx, &dir).await;
+    assert_eq!(fake.requests(), after, "and not again");
+}
+
+/// Review 5 H4: a server's late start that panics is reported, not lost
+/// (it stayed "starting" for good, and was never tried again).
+#[tokio::test]
+async fn a_start_that_panics_is_said_to_have_failed() {
+    let ok = crate::unless_it_panics("a test", async { 7 }).await;
+    assert_eq!(ok, Some(7));
+    let crashed = crate::unless_it_panics("a test", async { panic!("boom") }).await;
+    assert_eq!(crashed, None::<()>);
+}

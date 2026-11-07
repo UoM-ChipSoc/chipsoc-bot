@@ -314,9 +314,11 @@ trait Pinned: Clone + PartialEq {
     fn same(&self, repo: &Self) -> bool {
         self == repo
     }
-    /// Whether `repo` (a new key's entry) names an object this one is or holds.
-    fn claims(&self, repo: &Self) -> bool {
-        self == repo
+    /// Every Discord id this entry is or holds (a post's parts too).
+    fn ids(&self) -> Vec<Snowflake>;
+    /// The ids a new key's entry from the repo names (never its parts).
+    fn named(&self) -> Vec<Snowflake> {
+        self.ids()
     }
     /// What's taken from the repo's copy for a key the bot hasn't: never a
     /// post's later parts (the bot edits and deletes those; it finds its own
@@ -326,15 +328,27 @@ trait Pinned: Clone + PartialEq {
     }
 }
 
-impl Pinned for Snowflake {}
-impl Pinned for crate::AssetRef {}
+impl Pinned for Snowflake {
+    fn ids(&self) -> Vec<Snowflake> {
+        vec![*self]
+    }
+}
+
+impl Pinned for crate::AssetRef {
+    fn ids(&self) -> Vec<Snowflake> {
+        Vec::new()
+    }
+}
 
 impl Pinned for crate::PostRef {
     fn same(&self, repo: &Self) -> bool {
         self.message == repo.message
     }
-    fn claims(&self, repo: &Self) -> bool {
-        self.message == repo.message || self.parts.contains(&repo.message)
+    fn ids(&self) -> Vec<Snowflake> {
+        std::iter::once(self.message).chain(self.parts.iter().copied()).collect()
+    }
+    fn named(&self) -> Vec<Snowflake> {
+        vec![self.message]
     }
     fn as_taken(&self) -> Self {
         Self { message: self.message, parts: Vec::new() }
@@ -345,15 +359,36 @@ impl Pinned for crate::ThreadRef {
     fn same(&self, repo: &Self) -> bool {
         (self.thread, self.message) == (repo.thread, repo.message)
     }
-    fn claims(&self, repo: &Self) -> bool {
-        let ours = [self.thread, self.message];
-        [repo.thread, repo.message].iter().any(|id| ours.contains(id) || self.parts.contains(id))
+    fn ids(&self) -> Vec<Snowflake> {
+        [self.thread, self.message].into_iter().chain(self.parts.iter().copied()).collect()
+    }
+    fn named(&self) -> Vec<Snowflake> {
+        vec![self.thread, self.message]
     }
     fn as_taken(&self) -> Self {
         Self { thread: self.thread, message: self.message, parts: Vec::new() }
     }
 }
 
+/// Every Discord id `lock` holds, in any section.
+fn claimed(lock: &Lock) -> BTreeSet<Snowflake> {
+    fn all<V: Pinned>(m: &BTreeMap<String, V>) -> impl Iterator<Item = Snowflake> + '_ {
+        m.values().flat_map(Pinned::ids)
+    }
+    all(&lock.roles)
+        .chain(all(&lock.categories))
+        .chain(all(&lock.channels))
+        .chain(all(&lock.posts))
+        .chain(all(&lock.project_posts))
+        .chain(all(&lock.automod))
+        .chain(all(&lock.archived))
+        .collect()
+}
+
+/// Weigh one section of the repo's lock: a new key is taken only if no
+/// entry in any section (the bot's, or one taken already) has its id, so a
+/// pushed key can't point the bot at what another key is, a forum post at a
+/// project's thread, say.
 fn section<V: Pinned>(
     r: &mut LockReview,
     name: &str,
@@ -361,13 +396,16 @@ fn section<V: Pinned>(
     of: impl Fn(&mut Lock) -> &mut BTreeMap<String, V>,
 ) {
     let ours = of(&mut r.lock).clone();
+    let mut claimed = claimed(&r.lock);
     for (k, v) in repo {
         match ours.get(k) {
             Some(o) if !o.same(v) => r.refused.push(format!("{name}.{k}")),
             Some(_) => {}
-            None if ours.values().any(|o| o.claims(v)) => r.refused.push(format!("{name}.{k}")),
+            None if v.named().iter().any(|i| claimed.contains(i)) => r.refused.push(format!("{name}.{k}")),
             None => {
-                of(&mut r.lock).insert(k.clone(), v.as_taken());
+                let taken = v.as_taken();
+                claimed.extend(taken.ids());
+                of(&mut r.lock).insert(k.clone(), taken);
             }
         }
     }
@@ -527,6 +565,44 @@ mod tests {
         assert_eq!(r.refused, ["posts.rules", "project_posts.cpu"]);
         assert_eq!(r.lock.project_posts["cpu"], trusted.project_posts["cpu"]);
         assert_eq!(r.lock.posts["rules"], trusted.posts["rules"]);
+    }
+
+    /// Red team R5-1: a new key naming what another section holds (a forum
+    /// post key for a project's thread, say) was taken, as only its own
+    /// section was looked in.
+    #[test]
+    fn a_new_key_cant_name_what_any_section_holds() {
+        use crate::{PostRef, ThreadRef};
+        let mut trusted = lock(&[("member", 10)]);
+        let golem = ThreadRef { thread: Snowflake(20), message: Snowflake(20), parts: vec![Snowflake(21)] };
+        trusted.project_posts.insert("golem".into(), golem);
+        trusted.posts.insert("rules".into(), PostRef { message: Snowflake(30), parts: vec![Snowflake(31)] });
+        trusted.channels.insert("general".into(), Snowflake(40));
+        trusted.archived.insert("old-41".into(), Snowflake(41));
+        let post = |m| PostRef { message: Snowflake(m), parts: Vec::new() };
+
+        let mut repo = trusted.clone();
+        repo.posts.insert("projects/stale-draft".into(), post(20));
+        repo.posts.insert("projects/part".into(), post(21));
+        repo.posts.insert("projects/a-role".into(), post(10));
+        repo.channels.insert("again".into(), Snowflake(41));
+        repo.automod.insert("rule".into(), Snowflake(40));
+        repo.posts.insert("projects/fresh".into(), post(50));
+        repo.channels.insert("fresh-too".into(), Snowflake(50));
+        let r = review(&repo, &trusted);
+        assert_eq!(
+            r.refused,
+            [
+                "channels.again",
+                "posts.projects/a-role",
+                "posts.projects/fresh",
+                "posts.projects/part",
+                "posts.projects/stale-draft",
+                "automod.rule"
+            ]
+        );
+        assert_eq!(r.lock.channels["fresh-too"], Snowflake(50), "an id nobody has is taken, once");
+        assert!(!r.lock.posts.contains_key("projects/fresh"));
     }
 
     fn cfg() -> Config {

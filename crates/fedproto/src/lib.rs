@@ -369,13 +369,27 @@ fn signed_v1(v: &Value) -> String {
 
 /// Sign an envelope into message content.
 pub fn seal(sk: &SigningKey, e: &Envelope) -> String {
+    seal_fields(sk, fields(e))
+}
+
+/// An envelope's fields, as [`seal`] signs them.
+fn fields(e: &Envelope) -> Value {
     let mut v = serde_json::to_value(&e.body).unwrap_or_default();
     v["from"] = e.from.clone().into();
     v["to"] = e.to.clone().into();
     v["seq"] = e.seq.into();
     v["ts"] = e.ts.into();
     v["nonce"] = e.nonce.clone().into();
-    seal_fields(sk, v)
+    v
+}
+
+/// How many characters [`seal`] makes of `e`, without signing it (a
+/// signature is always as long).
+pub fn sealed_len(sk: &SigningKey, e: &Envelope) -> usize {
+    let mut v = fields(e);
+    v["kid"] = kid(&sk.verifying_key()).into();
+    v["sig"] = Value::String(B64.encode([0u8; 64]));
+    format!("{MAGIC}\n{}", canonical(&v)).chars().count()
 }
 
 /// Sign raw envelope fields (`from`, `to`, `seq`, `ts`, `nonce`, `kind`,
@@ -551,6 +565,15 @@ mod tests {
         let sig = sk.sign(canonical(&v).as_bytes());
         v["sig"] = json!(B64.encode(sig.to_bytes()));
         format!("{MAGIC_V1}\n{}", canonical(&v))
+    }
+
+    #[test]
+    fn a_sealed_length_is_known_without_signing() {
+        let (sk, _) = setup();
+        for to in ["b", "a partner with a long name", "ünïcode"] {
+            let e = env(to, 1000);
+            assert_eq!(sealed_len(&sk, &e), seal(&sk, &e).chars().count());
+        }
     }
 
     #[test]

@@ -669,6 +669,7 @@ impl Guild<'_> {
             .await?)
     }
 
+    /// Note what `actor` did; the entry's id.
     pub async fn audit(
         &self,
         now: i64,
@@ -676,17 +677,19 @@ impl Guild<'_> {
         action: &str,
         target: Option<&str>,
         detail: Option<&str>,
-    ) -> Result<()> {
-        sqlx::query("INSERT INTO audit_log (guild_id, ts, actor, action, target, detail) VALUES (?, ?, ?, ?, ?, ?)")
-            .bind(self.guild)
-            .bind(now)
-            .bind(actor)
-            .bind(action)
-            .bind(target)
-            .bind(detail)
-            .execute(self.pool)
-            .await?;
-        Ok(())
+    ) -> Result<i64> {
+        let r = sqlx::query(
+            "INSERT INTO audit_log (guild_id, ts, actor, action, target, detail) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(self.guild)
+        .bind(now)
+        .bind(actor)
+        .bind(action)
+        .bind(target)
+        .bind(detail)
+        .execute(self.pool)
+        .await?;
+        Ok(r.last_insert_rowid())
     }
 
     /// What `actor` (as the audit log has them: an id, or a name) did since
@@ -1144,17 +1147,9 @@ impl Guild<'_> {
     }
 
     /// The newest audit-log entry's id (0 if there's none), to read [`Guild::applies_after`] from.
+    /// Any server's: ids are one sequence for all, so it's a fine start for each.
     pub async fn last_audit_id(&self) -> Result<i64> {
         Ok(sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM audit_log").fetch_one(self.pool).await?)
-    }
-
-    /// The newest apply `actor` made, if any.
-    pub async fn last_apply_by(&self, actor: &str) -> Result<Option<i64>> {
-        Ok(sqlx::query_scalar("SELECT MAX(id) FROM audit_log WHERE guild_id = ? AND action = 'apply' AND actor = ?")
-            .bind(self.guild)
-            .bind(actor)
-            .fetch_one(self.pool)
-            .await?)
     }
 
     /// Its buttons are gone (used, dismissed or replaced).
@@ -1241,7 +1236,7 @@ mod tests {
         let s = Store::open("sqlite::memory:").await.unwrap();
         let g = s.guild("g1");
         let start = g.last_audit_id().await.unwrap();
-        g.audit(5, Some("7"), "apply", None, Some("1 change(s)")).await.unwrap();
+        let first = g.audit(5, Some("7"), "apply", None, Some("1 change(s)")).await.unwrap();
         g.audit(6, Some("7"), "appoint", None, None).await.unwrap();
         s.guild("g2").audit(7, Some("8"), "apply", None, None).await.unwrap();
         g.audit(8, Some("ada"), "apply", None, None).await.unwrap();
@@ -1249,8 +1244,7 @@ mod tests {
         let who: Vec<_> = all.iter().map(|a| (a.ts, a.actor.as_deref().unwrap())).collect();
         assert_eq!(who, [(5, "7"), (8, "ada")], "applies only, this guild's, oldest first");
         assert!(g.applies_after(all[1].id).await.unwrap().is_empty());
-        assert_eq!(g.last_apply_by("7").await.unwrap(), Some(all[0].id));
-        assert_eq!(g.last_apply_by("nobody").await.unwrap(), None);
+        assert_eq!(all[0].id, first, "an entry's id is what noting it said");
         g.add_plan_post(&PlanPost { channel_id: "5".into(), message_id: "1".into(), plan_id: "a".into() }, 5)
             .await
             .unwrap();

@@ -70,10 +70,10 @@ impl Baseline for StoreBaseline {
         by: &'a str,
         action: &'a str,
         detail: &'a str,
-    ) -> BoxFuture<'a, Result<()>> {
+    ) -> BoxFuture<'a, Result<Option<i64>>> {
         Box::pin(async move {
             let g = guild.to_string();
-            self.store.guild(&g).audit(crate::now(), Some(by), action, None, Some(detail)).await
+            Ok(Some(self.store.guild(&g).audit(crate::now(), Some(by), action, None, Some(detail)).await?))
         })
     }
 }

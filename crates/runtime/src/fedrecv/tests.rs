@@ -1307,6 +1307,15 @@ async fn only_whoever_shared_it_or_an_admin_changes_it_at_partners() {
     assert_eq!(a.send_to(&b).await, 1);
     let posted = b.messages_in("partner-news").pop().unwrap();
     assert!(posted["content"].as_str().unwrap().contains("Room 2"), "{posted}");
+    // Review 4 #17: the same text again (Discord adding a link's preview) isn't sent again.
+    crate::fedshare::edited(&a, message.0, a.admin().id.unwrap(), "Hackathon! Room 2").await;
+    assert_eq!(a.send_to(&b).await, 0, "nothing changed");
+    // Review 4 #22: a new first line is its new title.
+    crate::fedshare::edited(&a, message.0, a.admin().id.unwrap(), "**Hackathon moved!**\nRoom 3").await;
+    assert_eq!(a.send_to(&b).await, 1);
+    let origin = message.to_string();
+    let shared = chipsoc_admin::shares::shared(&a, chipsoc_admin::shares::ShareKind::Announcement, &origin).await;
+    assert_eq!(shared.unwrap().unwrap().title, "Hackathon moved!");
 
     // A question: its asker's own edit is followed (the partner reviews it).
     let q = chipsoc_admin::shares::question(Snowflake(1000), Snowflake(77), "Which iron?", "Help", "Bo");
@@ -1317,6 +1326,46 @@ async fn only_whoever_shared_it_or_an_admin_changes_it_at_partners() {
     assert_eq!(a.send_to(&b).await, 0, "someone else's");
     crate::fedshare::edited(&a, 77, Snowflake(102), "Help me pick one").await;
     assert_eq!(a.send_to(&b).await, 1, "the asker's");
+}
+
+/// Review 4 #15: a partner's post deleted here isn't updated (or tried
+/// again and again) when they edit it; it counts as gone.
+#[tokio::test]
+async fn a_partners_post_deleted_here_takes_no_more_updates() {
+    let (a, b) =
+        pair("\"announcements\"", "accept = { announcements = { to = \"partner-news\", review = false } }").await;
+    let news = a.channel_id("news");
+    let path = format!("channels/{news}/messages");
+    let msg = a.rest.call(Method::Post, &path, Some(serde_json::json!({ "content": "Hackathon!" }))).await.unwrap();
+    let message = chipsoc_discord::wire::id(&msg["id"]).unwrap();
+    let pick = chipsoc_admin::shares::Pick::Announcement { channel: news.parse().unwrap(), message };
+    chipsoc_admin::shares::share_now(&a, pick, &["Us".into()], &a.admin()).await.unwrap();
+    assert_eq!(a.send_to(&b).await, 1);
+    let posted = b.messages_in("partner-news").pop().unwrap();
+    let path = format!("channels/{}/messages/{}", b.channel_id("partner-news"), posted["id"].as_str().unwrap());
+    b.rest.call(Method::Delete, &path, None).await.unwrap();
+
+    crate::fedshare::edited(&a, message.0, a.admin().id.unwrap(), "Hackathon! Room 2").await;
+    assert_eq!(a.send_to(&b).await, 1);
+    let m = b.store().fed(b.gkey()).mirror("them", "announcement", &message.to_string()).await.unwrap().unwrap();
+    assert_eq!(m.state, chipsoc_store::MirrorState::Removed);
+    assert!(b.messages_in("partner-news").is_empty(), "not posted again");
+}
+
+/// Review 5 M4: a share too big to send even cut down is given up on at once
+/// (and said), not counted against the partner, so what's queued after it goes.
+#[tokio::test]
+async fn a_share_too_big_to_send_doesnt_hold_up_the_rest() {
+    let (a, b) = pair("\"questions\"", "accept = { questions = \"partner-questions\" }").await;
+    let huge =
+        chipsoc_admin::shares::question(Snowflake(1000), Snowflake(77), "Which iron?", "Help", &"x".repeat(2500));
+    chipsoc_admin::shares::send(&a, &huge, None, Some(Snowflake(102))).await.unwrap();
+    let fine = chipsoc_admin::shares::question(Snowflake(1000), Snowflake(78), "Which solder?", "Help", "Bo");
+    chipsoc_admin::shares::send(&a, &fine, None, Some(Snowflake(102))).await.unwrap();
+    assert_eq!(a.send_to(&b).await, 1, "the one that fits went");
+    assert!(a.logs().iter().any(|l| l.contains("too big to send even cut down")), "{:?}", a.logs());
+    assert!(a.store().fed(a.gkey()).out_pending().await.unwrap().is_empty(), "neither is left waiting");
+    assert!(!crate::fedshare::backing_off(&a, "us"), "not the partner's fault");
 }
 
 #[tokio::test]

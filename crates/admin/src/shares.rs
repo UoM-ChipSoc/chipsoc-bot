@@ -290,9 +290,7 @@ pub async fn announcement<H: Host>(h: &H, channel: Snowflake, message: Snowflake
     if text.trim().is_empty() {
         bail!(crate::Refused("That message has no text to share.".into()));
     }
-    let first = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default();
-    let title = truncate(first.trim_start_matches(['#', ' ', '*']).trim_end_matches('*'), MAX_TITLE);
-    let mut item = Share::new(ShareKind::Announcement, &message.to_string(), &title);
+    let mut item = Share::new(ShareKind::Announcement, &message.to_string(), &announcement_title(&text));
     item.text = truncate(&text, MAX_TEXT);
     item.link = Some(message_link(h.guild(), channel, Some(message)));
     item.by = match id(&m["author"]["id"]) {
@@ -300,6 +298,12 @@ pub async fn announcement<H: Host>(h: &H, channel: Snowflake, message: Snowflake
         None => String::new(),
     };
     Ok(item)
+}
+
+/// An announcement's title: its first line, without heading or bold marks.
+pub fn announcement_title(text: &str) -> String {
+    let first = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default();
+    truncate(first.trim_start_matches(['#', ' ', '*']).trim_end_matches('*'), MAX_TITLE)
 }
 
 /// Refused unless `channel` is one of ours that every member can see, and
@@ -483,6 +487,11 @@ fn landing(peer: &Peer, what: ShareKind) -> Option<(Option<String>, bool)> {
     peer.accept.landing(what.plural()).map(|(to, review)| (to.map(str::to_owned), review))
 }
 
+/// Whether Discord said what we posted is gone (deleted here).
+fn gone(e: &anyhow::Error) -> bool {
+    chipsoc_discord::ApiError::status_of(e) == Some(404)
+}
+
 /// Whether two versions of an item say the same (however they were sent).
 fn same(a: &Share, b: &Share) -> bool {
     let bare = |s: &Share| Share { batch: String::new(), part: 0, parts: 1, ..s.clone() };
@@ -516,7 +525,20 @@ pub async fn take<H: Host>(h: &H, peer: &Peer, item: Share, seq: u64) -> Result<
             }
             MirrorState::Posted => {
                 if !had.as_ref().is_some_and(|b| same(b, &item)) {
-                    edit(h, peer, &m, &item).await?;
+                    match edit(h, peer, &m, &item).await {
+                        Ok(()) => {}
+                        // Deleted here: nothing to update, now or later (not tried again).
+                        Err(e) if gone(&e) => {
+                            m.state = MirrorState::Removed;
+                            if let Some(app) = m.edit_app.take() {
+                                m.edit_body = None;
+                                withdraw(h, peer, app, "changed it, but it was deleted here").await?;
+                            }
+                            fed.set_mirror(&m, now()).await?;
+                            return Ok(Taken::Ignored(Ignored::Stale));
+                        }
+                        Err(e) => return Err(e),
+                    }
                 }
                 m.body = body_of(&item);
                 if let Some(app) = m.edit_app.take() {
@@ -652,7 +674,10 @@ pub async fn take_down<H: Host>(h: &H, peer: &Peer, what: ShareKind, origin: &st
         return Ok(false);
     }
     if m.state == MirrorState::Posted {
-        archive(h, &m, &format!("🗃️ {} took this down.", peer.name)).await?;
+        match archive(h, &m, &format!("🗃️ {} took this down.", peer.name)).await {
+            Err(e) if !gone(&e) => return Err(e),
+            _ => {} // deleted here already: nothing to archive
+        }
     }
     for app in [m.app_id.filter(|_| m.state == MirrorState::Review), m.edit_app.take()].into_iter().flatten() {
         withdraw(h, peer, app, "took this down").await?;
@@ -1061,7 +1086,9 @@ fn content(peer: &Peer, item: &Share, forum: bool) -> String {
     }
     let credit = credit(peer, item);
     let note = if item.what == ShareKind::Question { "\n-# Replies here don't reach them." } else { "" };
-    let room = MAX_CONTENT - 50 - credit.chars().count() - parts.iter().map(|p| p.chars().count() + 2).sum::<usize>();
+    let room = MAX_CONTENT
+        .saturating_sub(50 + credit.chars().count())
+        .saturating_sub(parts.iter().map(|p| p.chars().count() + 2).sum::<usize>());
     let text = partner_text(&item.text, room.min(MAX_TEXT));
     if !text.is_empty() && !(item.what == ShareKind::Announcement && text == plain(&item.title, MAX_TITLE)) {
         parts.push(text);
@@ -1178,6 +1205,15 @@ mod tests {
 
     fn peer() -> Peer {
         Peer { name: "Them".into(), id: "them".into(), ..Default::default() }
+    }
+
+    /// Review 4 #23: a partner's name longer than a message leaves no room, not a panic.
+    #[test]
+    fn a_huge_partner_name_cant_underflow_the_room_left() {
+        let peer = Peer { name: "x".repeat(3000), id: "them".into(), ..Default::default() };
+        let mut item = Share::new(ShareKind::Announcement, "1", "News");
+        item.text = "Words.".into();
+        assert!(content(&peer, &item, false).chars().count() < MAX_CONTENT);
     }
 
     #[test]

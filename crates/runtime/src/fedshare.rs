@@ -103,8 +103,23 @@ pub(crate) async fn flush<E: Env>(e: &E) {
                 done(&row).await;
                 continue;
             };
-            let batch = chipsoc_model::stable_hash(format!("{}{}{}", row.origin, row.changed, peer.id));
-            parts(&sk, &from, &peer.id, item, &batch)
+            // Two edits within a second are still two batches.
+            let batch = chipsoc_model::stable_hash(format!("{}{}{}{}", row.origin, row.changed, peer.id, row.body));
+            match parts(&sk, &from, &peer.id, item, &batch) {
+                Some(bodies) => bodies,
+                None => {
+                    // Not the partner's fault: given up on at once, the rest go on.
+                    let text = format!(
+                        "{} Couldn't share {} with {}: it's too big to send even cut down.",
+                        fmt::ATTENTION,
+                        shares::a_noun(what),
+                        peer.name
+                    );
+                    e.log_bot(&text).await;
+                    done(&row).await;
+                    continue;
+                }
+            }
         };
         if deliver_all(e, &from, peer, bodies).await {
             done(&row).await;
@@ -121,7 +136,7 @@ pub(crate) async fn flush<E: Env>(e: &E) {
     }
 }
 
-fn backing_off<E: Env>(e: &E, peer: &str) -> bool {
+pub(crate) fn backing_off<E: Env>(e: &E, peer: &str) -> bool {
     let b = e.state().shares.backoff.lock().unwrap_or_else(|p| p.into_inner());
     b.get(peer).is_some_and(|(_, until)| *until > Instant::now())
 }
@@ -139,12 +154,13 @@ async fn deliver_all<E: Env>(e: &E, from: &str, peer: &Peer, bodies: Vec<Body>) 
 
 /// `item` as envelopes that each fit a message: whole if it fits, else its
 /// text split over the fewest parts that do (each carrying the rest of
-/// it), else its text cut.
-fn parts(sk: &proto::SecretKey, from: &str, to: &str, item: Share, batch: &str) -> Vec<Body> {
+/// it), else its text cut, and its link (to a resource or feed item)
+/// dropped if it still doesn't fit. None if nothing does.
+fn parts(sk: &proto::SecretKey, from: &str, to: &str, item: Share, batch: &str) -> Option<Vec<Body>> {
     let fits = |b: &Body| fedsync::fits(sk, from, to, b.clone());
     let whole = Body::Share(item.clone());
     if fits(&whole) {
-        return vec![whole];
+        return Some(vec![whole]);
     }
     let chars: Vec<char> = item.text.chars().collect();
     for n in 2..=proto::MAX_SHARE_PARTS as usize {
@@ -158,7 +174,7 @@ fn parts(sk: &proto::SecretKey, from: &str, to: &str, item: Share, batch: &str) 
             })
             .collect();
         if bodies.iter().all(fits) {
-            return bodies;
+            return Some(bodies);
         }
     }
     let mut cut = item;
@@ -166,7 +182,11 @@ fn parts(sk: &proto::SecretKey, from: &str, to: &str, item: Share, batch: &str) 
         let keep = cut.text.chars().count() * 3 / 4;
         cut.text = cut.text.chars().take(keep).collect();
     }
-    vec![Body::Share(cut)]
+    if !fits(&Body::Share(cut.clone())) {
+        cut.url = None;
+    }
+    let cut = Body::Share(cut);
+    fits(&cut).then(|| vec![cut])
 }
 
 // --- Noticing what changes here.
@@ -231,7 +251,15 @@ pub(crate) async fn edited<E: chipsoc_admin::Host>(e: &E, id: u64, by: Snowflake
                 continue;
             }
         }
+        let was = item.clone();
         item.text = ui::truncate(text.trim(), shares::MAX_TEXT);
+        if what == ShareKind::Announcement {
+            item.title = shares::announcement_title(&item.text);
+        }
+        // An edit that changes nothing shared (Discord adding a link's preview, say) isn't sent.
+        if item == was {
+            continue;
+        }
         if let Err(err) = shares::update(e, &item).await {
             tracing::warn!("sending partners an edit failed: {err:#}");
         }
@@ -380,7 +408,7 @@ mod tests {
         let sk = proto::signing_key(&proto::generate().unwrap().0).unwrap();
         let mut item = Share::new(ShareKind::Announcement, "1", "News");
         item.text = "Quite a lot to say, with \"quotes\" and\nnew lines. ".repeat(80);
-        let bodies = parts(&sk, "us", "them", item.clone(), "b");
+        let bodies = parts(&sk, "us", "them", item.clone(), "b").unwrap();
         assert!(bodies.len() > 1 && bodies.len() as u64 <= proto::MAX_SHARE_PARTS, "{}", bodies.len());
         let mut text = String::new();
         for (n, b) in bodies.iter().enumerate() {
@@ -391,7 +419,22 @@ mod tests {
         }
         assert_eq!(text, item.text, "nothing lost");
         item.text = "short".into();
-        assert_eq!(parts(&sk, "us", "them", item.clone(), "b"), vec![Body::Share(item)]);
+        assert_eq!(parts(&sk, "us", "them", item.clone(), "b"), Some(vec![Body::Share(item)]));
+    }
+
+    /// Review 5 M4: a link too long to send is dropped, and what can't be
+    /// made to fit at all is said to be so (not sent as is, again and again).
+    #[test]
+    fn what_cant_fit_loses_its_link_or_isnt_sent() {
+        let sk = proto::signing_key(&proto::generate().unwrap().0).unwrap();
+        let mut item = Share::new(ShareKind::Feed, "1", "A long link");
+        item.url = Some(format!("https://example.com/{}", "a".repeat(2500)));
+        item.text = "Some words.".into();
+        let sent = parts(&sk, "us", "them", item.clone(), "b").unwrap();
+        let [Body::Share(sent)] = sent.as_slice() else { panic!("one part: {sent:?}") };
+        assert_eq!((sent.url.as_deref(), sent.title.as_str()), (None, "A long link"));
+        item.by = "x".repeat(2500);
+        assert_eq!(parts(&sk, "us", "them", item, "b"), None);
     }
 
     #[test]

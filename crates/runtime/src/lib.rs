@@ -399,12 +399,22 @@ where
 /// Run `work` on its own task; if it panics, that's logged like any other
 /// error (not only printed to stderr).
 fn spawn_logged(what: &'static str, work: impl Future<Output = ()> + Send + 'static) {
-    let task = tokio::spawn(work);
-    tokio::spawn(async move {
-        if let Err(e) = task.await {
+    tokio::spawn(unless_it_panics(what, work));
+}
+
+/// Run `work` on its own task: what it returns, or `None` if it panicked
+/// (logged like any other error).
+async fn unless_it_panics<T: Send + 'static>(
+    what: &'static str,
+    work: impl Future<Output = T> + Send + 'static,
+) -> Option<T> {
+    match tokio::spawn(work).await {
+        Ok(v) => Some(v),
+        Err(e) => {
             tracing::error!(what, ?e, "crashed");
+            None
         }
-    });
+    }
 }
 
 /// A server's config as the files have it, and its guild id from the lockfile.
@@ -542,7 +552,9 @@ pub async fn run(dirs: &[PathBuf]) -> Result<()> {
     }
     // Servers whose config loads later start on their own task, so the
     // gateway is read meanwhile (a slow start would miss its heartbeats).
-    let (started_tx, mut started) = tokio::sync::mpsc::unbounded_channel::<(PathBuf, Arc<Ctx>)>();
+    // Each says how its start went: the server, or `None` if starting it crashed.
+    let (started_tx, mut started) =
+        tokio::sync::mpsc::unbounded_channel::<(PathBuf, Id<GuildMarker>, Option<Arc<Ctx>>)>();
     let mut starting: std::collections::HashSet<Id<GuildMarker>> = Default::default();
     if guilds.is_empty() {
         tracing::error!("no server's config loads yet; waiting for a fixed config");
@@ -558,17 +570,31 @@ pub async fn run(dirs: &[PathBuf]) -> Result<()> {
                     tracing::error!(dir = %dir.display(), %guild, "another config already runs this server; skipped");
                 } else {
                     let (shared, tx) = (shared.clone(), started_tx.clone());
-                    spawn_logged("starting a server", async move {
-                        let ctx = shared.start(&dir, cfg, guild).await;
-                        let _ = tx.send((dir, ctx));
+                    tokio::spawn(async move {
+                        let (s, d) = (shared.clone(), dir.clone());
+                        let ctx = unless_it_panics("starting a server", async move { s.start(&d, cfg, guild).await });
+                        let _ = tx.send((dir, guild, ctx.await));
                     });
                 }
                 continue;
             }
-            Some((dir, ctx)) = started.recv() => {
-                tracing::info!(dir = %dir.display(), guild = %ctx.guild, "the config loads now; server started");
-                starting.remove(&ctx.guild);
-                guilds.insert(ctx.guild, ctx);
+            Some((dir, guild, ctx)) = started.recv() => {
+                starting.remove(&guild);
+                match ctx {
+                    Some(ctx) => {
+                        tracing::info!(dir = %dir.display(), %guild, "the config loads now; server started");
+                        guilds.insert(guild, ctx);
+                    }
+                    None => {
+                        // Waits as a config that doesn't load does, and tries again.
+                        tracing::error!(dir = %dir.display(), %guild, "starting the server crashed; trying again soon");
+                        let (shared, tx) = (shared.clone(), loaded_tx.clone());
+                        tokio::spawn(async move {
+                            tokio::time::sleep(gitsync::EVERY).await;
+                            wait_for_config(shared, dir, tx).await;
+                        });
+                    }
+                }
                 continue;
             }
             _ = &mut stop => break,
@@ -667,8 +693,8 @@ async fn close(shard: &mut Shard) {
 fn start_jobs(ctx: &Arc<Ctx>, dir: &Path) {
     let c = ctx.clone();
     tokio::spawn(async move { control::close_stale_posts(&c).await });
-    let c = ctx.clone();
-    tokio::spawn(async move { clear_rename_notices(&c).await });
+    let (c, d) = (ctx.clone(), dir.to_path_buf());
+    tokio::spawn(async move { clear_rename_notices(&c, &d).await });
     let c = ctx.clone();
     supervise("server events", move || ordered_worker(c.clone()));
     let c = ctx.clone();
@@ -703,13 +729,26 @@ fn start_jobs(ctx: &Arc<Ctx>, dir: &Path) {
     supervise("transcripts", move || record::transcripts(c.clone()));
 }
 
+/// Kept (per config) once [`clear_rename_notices`] has run.
+const NOTICES_SWEPT: &str = "rename-notices-swept";
+
 /// Discord's "changed the post title" notices the bot's renames left in the
-/// forum posts it keeps, from before it deleted them as it renamed.
-async fn clear_rename_notices(ctx: &Ctx) {
+/// forum posts it keeps, from before it deleted them as it renamed. Once per
+/// config (tried again at the next start if it fails): renames now delete
+/// their own.
+async fn clear_rename_notices(ctx: &Ctx, dir: &Path) {
+    let scope = chipsoc_admin::trust::scope(dir);
+    if !matches!(ctx.store.trusted(&scope, NOTICES_SWEPT).await, Ok(None)) {
+        return;
+    }
     let lock = ctx.cfg().desired.lock.clone();
     match chipsoc_discord::exec::clear_all_rename_notices(&ctx.rest, &lock).await {
-        Ok(0) => {}
-        Ok(n) => tracing::info!(guild = %ctx.guild, "deleted {n} old thread rename notice(s)"),
+        Ok(n) => {
+            if n > 0 {
+                tracing::info!(guild = %ctx.guild, "deleted {n} old thread rename notice(s)");
+            }
+            ctx.log_err(ctx.store.set_trusted(&scope, NOTICES_SWEPT, "1").await, "remembering the rename notices went");
+        }
         Err(e) => tracing::warn!("deleting old thread rename notices failed: {e:#}"),
     }
 }

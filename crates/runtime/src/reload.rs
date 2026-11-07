@@ -26,7 +26,7 @@ pub async fn watch(ctx: Arc<Ctx>, dir: PathBuf) {
         tick.tick().await;
         // Applied by the web UI or the CLI: the bot log's plans are moot.
         control::close_applied(&ctx, &mut applied).await;
-        // Mid-apply lock.toml is half written; read it once the apply is done.
+        // Mid-apply, lock.toml changes step by step; read it once the apply is done.
         if applying(&ctx, &dir) {
             continue;
         }

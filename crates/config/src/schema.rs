@@ -308,6 +308,11 @@ pub fn thread_key(forum: &str, key: &str) -> String {
     format!("{forum}/{key}")
 }
 
+/// Whether a `[posts]` key is a forum thread's ([`thread_key`]), not a channel's.
+pub fn is_thread_key(key: &str) -> bool {
+    key.contains('/')
+}
+
 impl Overwrite {
     /// Who it applies to, for matching category and channel entries.
     pub fn target(&self) -> (Option<&str>, Option<Snowflake>) {

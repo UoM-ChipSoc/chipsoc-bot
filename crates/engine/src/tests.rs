@@ -1661,3 +1661,121 @@ async fn the_bots_thread_rename_notices_are_deleted() {
     assert_eq!(gone, 1);
     assert_eq!(notices(&e), ["7"]);
 }
+
+/// Review 5 H1: Discord archives a forum post after a week without
+/// activity, and an archived post takes no edits until it's opened again.
+/// Every kept forum post (the forum's own, a project's, a `[[channel.thread]]`)
+/// is opened first, then edited; one taken out of the config is still
+/// archived and locked.
+#[tokio::test]
+async fn kept_forum_posts_are_opened_again_to_edit_once_archived() {
+    let d = fixture();
+    let p = d.path();
+    forum_with(p, &format!("post = \"content/how.md\"\n\n{TOOLCHAIN}"));
+    write(p, "content/how.md", "Projects only.\n");
+    write(p, "content/toolchain.md", "Verilator.\n<!-- part -->\nYosys.\n");
+    let mut e = engine(p);
+    apply_all(&mut e).await;
+    let lock = e.cfg.desired.lock.clone();
+    let (own, toolchain, golem) =
+        (lock.posts["projects"].message, lock.posts["projects/toolchain"].clone(), lock.project_posts["golem"].clone());
+    for t in [own, toolchain.message, golem.thread] {
+        e.rest.auto_archive(t);
+    }
+    // The fake now refuses what Discord does.
+    let path = format!("channels/{}/messages", golem.thread);
+    let refused = e.rest.call(chipsoc_discord::Method::Post, &path, Some(json!({ "content": "x" }))).await.unwrap_err();
+    assert_eq!(chipsoc_discord::ApiError::code_of(&refused), Some(chipsoc_discord::ARCHIVED_THREAD));
+
+    write(p, "content/how.md", "Projects only, please.\n");
+    write(p, "content/toolchain.md", "Verilator.\n<!-- part -->\nYosys and OpenROAD.\n<!-- part -->\nKLayout.\n");
+    let projects = fs::read_to_string(p.join("projects.toml")).unwrap();
+    write(p, "projects.toml", &projects.replace("name = \"Golem\"", "name = \"Golem II\""));
+    e.reload().unwrap();
+    let plan = e.plan(Options::default()).await.unwrap();
+    let report = e.apply(&plan, &mut |_: &Action, _: &Result<(), String>| {}).await.unwrap();
+    assert_eq!(report.failed().count(), 0, "{report:?}");
+    for t in [own, toolchain.message, golem.thread] {
+        assert_eq!(thread_of(&e, t)["thread_metadata"]["archived"], json!(false), "opened again, and left open");
+    }
+    assert!(thread_of(&e, golem.thread)["name"].as_str().unwrap().starts_with("Golem II"));
+    assert_eq!(messages_in(&e, toolchain.message).len(), 3, "a part added in the opened thread");
+    assert_converged(&e).await;
+
+    // Archived again by Discord, then taken out of the config: still archived and locked.
+    e.rest.auto_archive(toolchain.message);
+    forum_with(p, "post = \"content/how.md\"\n");
+    e.reload().unwrap();
+    let plan = e.plan(Options::default()).await.unwrap();
+    assert!(lines(&plan).contains("archive forum post projects/toolchain"), "{}", lines(&plan));
+    let report = e.apply(&plan, &mut |_: &Action, _: &Result<(), String>| {}).await.unwrap();
+    assert_eq!(report.failed().count(), 0, "{report:?}");
+    let th = thread_of(&e, toolchain.message);
+    assert_eq!((&th["thread_metadata"]["archived"], &th["locked"]), (&json!(true), &json!(true)), "{th}");
+    assert_converged(&e).await;
+}
+
+/// Red team R5-1 (their proof of concept, turned round): a pushed lock.toml
+/// adds `[posts."<forum>/<anything>"]` keys for forum posts the bot doesn't
+/// keep: a member's, a project's (another section's), and one the bot
+/// started but never from the config. None of them is archived, renamed or
+/// otherwise touched by any admin's Apply, and the plan says why.
+#[tokio::test]
+async fn a_pushed_lock_key_cant_make_apply_archive_a_forum_post() {
+    let d = fixture();
+    let p = d.path();
+    let kept = Arc::new(Kept::default());
+    let mut e = Engine::load(FakeDiscord::new(), p).unwrap().trusting(kept.clone()).await.unwrap();
+    e.rest.state.lock().unwrap().guild.insert("owner_id".into(), json!("1"));
+    apply_all(&mut e).await;
+    let forum = e.cfg.desired.lock.channel("projects").unwrap();
+    async fn post(e: &Engine<FakeDiscord>, forum: Snowflake, name: &str) -> Snowflake {
+        let body = json!({ "name": name, "message": { "content": "help pls" } });
+        let made = e.rest.call(chipsoc_discord::Method::Post, &format!("channels/{forum}/threads"), Some(body)).await;
+        Snowflake(made.unwrap()["id"].as_str().unwrap().parse().unwrap())
+    }
+    // A member's forum post.
+    let member = post(&e, forum, "My question").await;
+    for m in e.rest.state.lock().unwrap().messages.iter_mut().filter(|m| m["channel_id"] == member.to_string()) {
+        m["author"] = json!({ "id": "7" });
+    }
+    // One the bot started, but not from the config (as an idea's post is).
+    let bots = post(&e, forum, "An idea").await;
+    // Golem's project post: claimed in [project_posts], not in [posts].
+    let golem = e.cfg.desired.lock.project_posts["golem"].thread;
+
+    edit_lock(p, |l| {
+        l.posts.insert("projects/old-notes".into(), chipsoc_config::PostRef { message: member, parts: vec![] });
+        l.posts.insert("projects/stale-draft".into(), chipsoc_config::PostRef { message: golem, parts: vec![] });
+        l.posts.insert("projects/an-idea".into(), chipsoc_config::PostRef { message: bots, parts: vec![] });
+    });
+    e.refresh().await.unwrap();
+    assert_eq!(e.vetted.lock.refused, ["posts.projects/stale-draft"], "another section's id");
+    let plan = e.plan(Options::default()).await.unwrap();
+    assert!(!lines(&plan).contains("archive"), "{}", lines(&plan));
+    let notes = format!("{:?}", plan.warnings);
+    assert!(notes.contains(&format!("<#{bots}>")) && notes.contains("never posted it"), "{notes}");
+    // Any admin (not the owner) applies.
+    let ada = By::person(Snowflake(2), "ada");
+    e.rest.take_calls();
+    e.apply_by(&plan, &ada, &mut |_: &Action, _: &Result<(), String>| {}).await.unwrap();
+    let calls = e.rest.take_calls();
+    for t in [member, golem, bots] {
+        let th = thread_of(&e, t);
+        assert_ne!(th["thread_metadata"]["archived"], json!(true), "{th}");
+        assert!(!calls.iter().any(|c| c.contains(&t.to_string())), "{t} untouched: {calls:?}");
+    }
+}
+
+/// Looking whether an apply is running says so, and never stands in the way of one.
+#[test]
+fn the_lease_is_looked_at_without_being_taken() {
+    let d = tempfile::tempdir().unwrap();
+    assert!(!Lease::busy(d.path()));
+    let held = Lease::take(d.path()).unwrap();
+    assert!(Lease::busy(d.path()));
+    assert!(Lease::take(d.path()).is_err());
+    drop(held);
+    assert!(!Lease::busy(d.path()));
+    let _held = Lease::take(d.path()).expect("free once let go");
+}

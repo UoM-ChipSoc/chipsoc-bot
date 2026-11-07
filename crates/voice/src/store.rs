@@ -266,9 +266,13 @@ pub fn file(root: &Path, guild: u64, id: &str, name: &str) -> Option<PathBuf> {
     meta.files().contains(&name).then(|| dir.join(name)).filter(|p| p.is_file())
 }
 
-/// Delete a recording and all its files. False if there's no such recording.
+/// Delete a recording and all its files. False if there's no such
+/// recording; refused while its transcript is being made (from its files).
 pub fn delete(root: &Path, guild: u64, id: &str) -> io::Result<bool> {
-    let Some((dir, _)) = find(root, guild, id) else { return Ok(false) };
+    let Some((dir, meta)) = find(root, guild, id) else { return Ok(false) };
+    if meta.transcript == Transcript::Making {
+        return Err(io::Error::other("its transcript is being made"));
+    }
     std::fs::remove_dir_all(dir)?;
     Ok(true)
 }
