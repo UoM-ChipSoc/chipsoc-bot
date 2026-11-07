@@ -61,7 +61,9 @@ keys.
   ```
 
   Its text is edited part by part in place, and its title and tags follow
-  the config. lock.toml keeps it among the posts as `"<forum>/<key>"`
+  the config (the bot deletes the "changed the post title" notice Discord
+  leaves when it renames one, as it does for project posts, and at start
+  any older ones of its own). lock.toml keeps it among the posts as `"<forum>/<key>"`
   (older versions of the bot pass it by). Taken out of the config, it's
   archived and locked, never deleted; with lock.toml lost, it's found
   again by its title and text. `check` errors on a missing title or one

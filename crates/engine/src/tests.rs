@@ -1612,3 +1612,52 @@ async fn mid_apply_lock_toml_never_runs_ahead_of_the_trusted_lock() {
     assert_eq!(e.vetted.lock.refused, ["project_posts.golem"]);
     assert_eq!(e.cfg.desired.lock.project_posts["golem"].thread, golem.thread);
 }
+
+/// Renaming a project's forum post leaves Discord's "changed the post
+/// title" notice in it; the bot deletes its own, now and (for older ones)
+/// in a sweep, never anyone else's.
+#[tokio::test]
+async fn the_bots_thread_rename_notices_are_deleted() {
+    let d = fixture();
+    let p = d.path();
+    let mut e = engine(p);
+    apply_all(&mut e).await;
+    let thread = e.cfg.desired.lock.project_posts["golem"].thread;
+    let notices = |e: &Engine<FakeDiscord>| -> Vec<String> {
+        let st = e.rest.state.lock().unwrap();
+        let mine = st.messages.iter().filter(|m| m["channel_id"] == thread.to_string() && m["type"] == 4);
+        mine.map(|m| m["author"]["id"].as_str().unwrap_or_default().to_owned()).collect()
+    };
+    let projects = fs::read_to_string(p.join("projects.toml")).unwrap();
+    write(p, "projects.toml", &projects.replace("name = \"Golem\"", "name = \"Golem II\""));
+    e.reload().unwrap();
+    e.rest.take_calls();
+    apply_all(&mut e).await;
+    let calls = e.rest.take_calls();
+    assert!(calls.contains(&format!("Patch channels/{thread}")), "{calls:?}");
+    assert!(calls.iter().any(|c| c.starts_with(&format!("Delete channels/{thread}/messages/"))), "{calls:?}");
+    assert!(notices(&e).is_empty());
+    assert_converged(&e).await;
+
+    // Only its tags change: the title doesn't, so nothing to delete.
+    let past = projects.replace("name = \"Golem\"", "name = \"Golem II\"").replace("\"active\"", "\"past\"");
+    write(p, "projects.toml", &past);
+    e.reload().unwrap();
+    e.rest.take_calls();
+    apply_all(&mut e).await;
+    let calls = e.rest.take_calls();
+    assert!(calls.contains(&format!("Patch channels/{thread}")), "{calls:?}");
+    assert!(!calls.iter().any(|c| c.starts_with(&format!("Delete channels/{thread}/"))), "{calls:?}");
+
+    // Notices from before: the bot's go, someone else's stay.
+    {
+        let mut st = e.rest.state.lock().unwrap();
+        for (n, who) in [(900001, "42"), (900002, "7")] {
+            let m = json!({ "id": n.to_string(), "channel_id": thread.to_string(), "type": 4, "content": "x", "author": { "id": who } });
+            st.messages.push(m);
+        }
+    }
+    let gone = chipsoc_discord::exec::clear_all_rename_notices(&e.rest, &e.cfg.desired.lock).await.unwrap();
+    assert_eq!(gone, 1);
+    assert_eq!(notices(&e), ["7"]);
+}

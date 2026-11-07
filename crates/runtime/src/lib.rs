@@ -668,6 +668,8 @@ fn start_jobs(ctx: &Arc<Ctx>, dir: &Path) {
     let c = ctx.clone();
     tokio::spawn(async move { control::close_stale_posts(&c).await });
     let c = ctx.clone();
+    tokio::spawn(async move { clear_rename_notices(&c).await });
+    let c = ctx.clone();
     supervise("server events", move || ordered_worker(c.clone()));
     let c = ctx.clone();
     supervise("partner inbox", move || fedrecv::worker(c.clone()));
@@ -699,6 +701,17 @@ fn start_jobs(ctx: &Arc<Ctx>, dir: &Path) {
     supervise("recording limits", move || record::watch(c.clone()));
     let c = ctx.clone();
     supervise("transcripts", move || record::transcripts(c.clone()));
+}
+
+/// Discord's "changed the post title" notices the bot's renames left in the
+/// forum posts it keeps, from before it deleted them as it renamed.
+async fn clear_rename_notices(ctx: &Ctx) {
+    let lock = ctx.cfg().desired.lock.clone();
+    match chipsoc_discord::exec::clear_all_rename_notices(&ctx.rest, &lock).await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(guild = %ctx.guild, "deleted {n} old thread rename notice(s)"),
+        Err(e) => tracing::warn!("deleting old thread rename notices failed: {e:#}"),
+    }
 }
 
 /// Message and member events for one server, handled one at a time in order,

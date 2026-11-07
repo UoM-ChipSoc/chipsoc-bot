@@ -20,6 +20,50 @@ use crate::export::PINNED_THREAD;
 /// What a long post's part no longer needed says, if the bot can't delete it.
 const MOVED_UP: &str = "(moved up)";
 
+/// Discord's message type for "… changed the post title", which a thread
+/// rename leaves in the thread, authored by whoever renamed it.
+pub const NAME_CHANGE: u64 = 4;
+
+/// Delete the rename notices `me` (the bot) left among `thread`'s newest 100
+/// messages. How many went.
+pub async fn clear_rename_notices(rest: &impl Rest, thread: Snowflake, me: Snowflake) -> Result<usize> {
+    let recent = rest.call(Method::Get, &format!("channels/{thread}/messages?limit=100"), None).await?;
+    let notices: Vec<Snowflake> = recent
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|m| m["type"].as_u64() == Some(NAME_CHANGE) && id(&m["author"]["id"]) == Some(me))
+        .filter_map(|m| id(&m["id"]))
+        .collect();
+    let mut gone = 0;
+    for m in notices {
+        match rest.call(Method::Delete, &format!("channels/{thread}/messages/{m}"), None).await {
+            Ok(_) => gone += 1,
+            Err(e) if ApiError::status_of(&e) == Some(404) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(gone)
+}
+
+/// [`clear_rename_notices`] in every forum post the lockfile holds whose
+/// title the bot sets: projects' and `[[channel.thread]]`s. Once, for the
+/// notices renames left before the bot deleted them as it went.
+pub async fn clear_all_rename_notices(rest: &impl Rest, lock: &Lock) -> Result<usize> {
+    let me = id(&rest.call(Method::Get, "users/@me", None).await?["id"]).context("no id for the bot")?;
+    let threads = lock.project_posts.values().map(|t| t.thread);
+    let threads = threads.chain(lock.posts.iter().filter(|(k, _)| k.contains('/')).map(|(_, p)| p.message));
+    let mut gone = 0;
+    for t in threads.collect::<BTreeSet<_>>() {
+        match clear_rename_notices(rest, t, me).await {
+            Ok(n) => gone += n,
+            Err(e) if matches!(ApiError::status_of(&e), Some(403 | 404)) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(gone)
+}
+
 /// Which post's lockfile entry: a channel's (by key), a project's (by slug)
 /// or a forum's `[[channel.thread]]` (by `forum/key`, among the posts).
 #[derive(Clone, Copy)]
@@ -840,6 +884,11 @@ impl<R: Rest> Exec<'_, R> {
         let old = self.thread_ref(entry);
         let flags = |on: bool| json!(if on { PINNED_THREAD } else { 0 });
         if let Some(t) = existing.or(found) {
+            // A new title leaves a notice in the thread, deleted below.
+            let renamed = match self.call(Method::Get, format!("channels/{}", t.thread), None).await {
+                Ok(c) => c["name"].as_str() != Some(title.as_str()),
+                Err(_) => false,
+            };
             let mut patch = json!({ "name": title, "applied_tags": tag_ids });
             if let Some(on) = pin {
                 patch["flags"] = flags(on);
@@ -850,7 +899,12 @@ impl<R: Rest> Exec<'_, R> {
                 .await;
             match (thread, msg) {
                 (Ok(_), Ok(_)) => {
-                    return self.finish(entry, t.thread, &t.parts, later, have.get(1..).unwrap_or_default()).await;
+                    let notices = match renamed {
+                        true => clear_rename_notices(self.rest, t.thread, self.me().await?).await.map(drop),
+                        false => Ok(()),
+                    };
+                    self.finish(entry, t.thread, &t.parts, later, have.get(1..).unwrap_or_default()).await?;
+                    return notices.context("renamed, but couldn't delete Discord's rename notice in it");
                 }
                 (Err(e), _) | (_, Err(e)) if ApiError::status_of(&e) != Some(404) => return Err(e),
                 _ => {} // deleted in Discord: post again

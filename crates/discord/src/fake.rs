@@ -310,6 +310,13 @@ impl FakeDiscord {
                             st.channels[i]["thread_metadata"][k] = v.clone();
                         }
                     }
+                    // And says a rename in the thread, as by whoever made it (here the bot).
+                    if let Some(name) = patch.get("name").filter(|n| **n != st.channels[i]["name"]) {
+                        let notice = json!({
+                            "id": self.new_id(), "channel_id": cid, "type": 4, "content": name, "author": { "id": "42" },
+                        });
+                        st.messages.push(notice);
+                    }
                 }
                 for (k, v) in patch.as_object().cloned().unwrap_or_default() {
                     st.channels[i][k] = v;
