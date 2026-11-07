@@ -8,7 +8,7 @@ use anyhow::Result;
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use chipsoc_config::Config;
-use chipsoc_config::ops::{Change, Op};
+use chipsoc_config::ops::{Change, Op, text};
 use chipsoc_discord::Rest;
 use chipsoc_engine::Problems;
 use dioxus::prelude::*;
@@ -54,13 +54,8 @@ impl Fields {
 
     /// A comma- or line-separated list.
     pub fn list(&self, name: &str) -> Vec<String> {
-        split_list(self.raw(name))
+        text::list(self.raw(name))
     }
-}
-
-/// "a, b\nc" as `[a, b, c]`.
-pub(crate) fn split_list(s: &str) -> Vec<String> {
-    s.split([',', '\n']).map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned).collect()
 }
 
 /// One form shown again: what was sent, what was wrong with which field,
@@ -634,7 +629,6 @@ mod tests {
         assert_eq!(utc(951_782_400), "2000-02-29 00:00 UTC");
         assert_eq!(user_id("<@123>").map(|s| s.0), Some(123));
         assert!(user_id("ada").is_none() && user_id("").is_none());
-        assert_eq!(split_list("a, b\nc,,"), ["a", "b", "c"]);
         assert!(is_colour("#00ffAA") && !is_colour("red"));
     }
 }

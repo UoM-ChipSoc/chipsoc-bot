@@ -199,7 +199,7 @@ fn roles(cfg: &Schema) -> Vec<(String, String)> {
 
 /// The channels ticked in a list of boxes named `name` (keys).
 fn ticked(f: &Fields, name: &str) -> Vec<String> {
-    f.all(name).into_iter().flat_map(form::split_list).collect()
+    f.all(name).into_iter().flat_map(chipsoc_config::ops::text::list).collect()
 }
 
 /// A box per channel, by name, ticked for those in `chosen`.
