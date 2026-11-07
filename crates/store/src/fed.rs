@@ -377,16 +377,18 @@ impl Fed<'_> {
     /// Forget the seqs and the full sync applied from a partner, so newer
     /// state from it applies again (after one of its keys was removed).
     pub async fn forget_seqs(&self, peer: &str) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
         sqlx::query("DELETE FROM fed_seen WHERE guild_id = ? AND peer = ?")
             .bind(self.guild)
             .bind(peer)
-            .execute(self.pool)
+            .execute(&mut *tx)
             .await?;
         sqlx::query("UPDATE fed_peers SET snapshot_seq = 0 WHERE guild_id = ? AND peer = ?")
             .bind(self.guild)
             .bind(peer)
-            .execute(self.pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -394,30 +396,40 @@ impl Fed<'_> {
     /// update) or below `min` (older than any envelope still accepted).
     pub async fn prune_seqs(&self, min: u64, max: u64) -> Result<()> {
         let (min, max) = (min.min(i64::MAX as u64) as i64, max.min(i64::MAX as u64) as i64);
+        let mut tx = self.pool.begin().await?;
         sqlx::query("DELETE FROM fed_seen WHERE guild_id = ? AND (seq < ? OR seq > ?)")
             .bind(self.guild)
             .bind(min)
             .bind(max)
-            .execute(self.pool)
+            .execute(&mut *tx)
             .await?;
         sqlx::query(
             "UPDATE fed_peers SET snapshot_seq = 0 WHERE guild_id = ? AND (snapshot_seq < 0 OR snapshot_seq > ?)",
         )
         .bind(self.guild)
         .bind(max)
-        .execute(self.pool)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(())
     }
 
     /// A role's key changed (a project was renamed): partners' grants of it follow.
     pub async fn rename_role(&self, old: &str, new: &str) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
         sqlx::query("UPDATE OR IGNORE fed_grants SET role_key = ? WHERE guild_id = ? AND role_key = ?")
             .bind(new)
             .bind(self.guild)
             .bind(old)
-            .execute(self.pool)
+            .execute(&mut *tx)
             .await?;
+        // A member granted both keys by the same partner keeps the new key's grant.
+        sqlx::query("DELETE FROM fed_grants WHERE guild_id = ? AND role_key = ?")
+            .bind(self.guild)
+            .bind(old)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -714,11 +726,13 @@ impl Fed<'_> {
     /// Forget a partner's catalogue, seqs, record, retries and revocations
     /// (not its grants: those are taken back one by one).
     pub async fn forget_peer(&self, peer: &str) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
         for table in ["fed_catalog", "fed_seen", "fed_peers", "fed_retry", "fed_revokes"] {
             // The table names are our own constants, not input.
             let sql = format!("DELETE FROM {table} WHERE guild_id = ? AND peer = ?");
-            sqlx::query(sqlx::AssertSqlSafe(sql)).bind(self.guild).bind(peer).execute(self.pool).await?;
+            sqlx::query(sqlx::AssertSqlSafe(sql)).bind(self.guild).bind(peer).execute(&mut *tx).await?;
         }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -880,14 +894,18 @@ impl Fed<'_> {
     /// Forget everything shared with or by a partner: what we shared with
     /// them, and what they shared with us (returned, to archive).
     pub async fn forget_shares(&self, peer: &str) -> Result<Vec<Mirror>> {
+        // Taking the write lock up front: a transaction that reads first can't
+        // wait for another process's write, it fails.
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let sql = format!("SELECT {MIRROR_COLUMNS} FROM fed_mirrors WHERE guild_id = ? AND peer = ?");
         let rows: Vec<MirrorRow> =
-            sqlx::query_as(sqlx::AssertSqlSafe(sql)).bind(self.guild).bind(peer).fetch_all(self.pool).await?;
+            sqlx::query_as(sqlx::AssertSqlSafe(sql)).bind(self.guild).bind(peer).fetch_all(&mut *tx).await?;
         for table in ["fed_mirrors", "fed_share_out"] {
             // The table names are our own constants, not input.
             let sql = format!("DELETE FROM {table} WHERE guild_id = ? AND peer = ?");
-            sqlx::query(sqlx::AssertSqlSafe(sql)).bind(self.guild).bind(peer).execute(self.pool).await?;
+            sqlx::query(sqlx::AssertSqlSafe(sql)).bind(self.guild).bind(peer).execute(&mut *tx).await?;
         }
+        tx.commit().await?;
         Ok(rows.into_iter().map(mirror).collect())
     }
 

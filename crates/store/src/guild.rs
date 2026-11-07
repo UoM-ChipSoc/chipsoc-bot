@@ -511,13 +511,15 @@ impl Guild<'_> {
 
     /// Put taken applications back to wait (their card couldn't be posted).
     pub async fn untake_round(&self, ids: &[i64]) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
         for id in ids {
             sqlx::query("UPDATE applications SET round = 1 WHERE guild_id = ? AND id = ? AND round = 2")
                 .bind(self.guild)
                 .bind(id)
-                .execute(self.pool)
+                .execute(&mut *tx)
                 .await?;
         }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -943,6 +945,12 @@ impl Guild<'_> {
                 .bind(old)
                 .execute(&mut *tx)
                 .await?;
+            // Whoever is remembered under both keys keeps the new key's row.
+            sqlx::query("DELETE FROM former_roles WHERE guild_id = ? AND role_key = ?")
+                .bind(self.guild)
+                .bind(old)
+                .execute(&mut *tx)
+                .await?;
         }
         tx.commit().await?;
         Ok(())
@@ -950,15 +958,17 @@ impl Guild<'_> {
 
     /// Remember the roles someone held when they left.
     pub async fn remember_roles(&self, user: &str, roles: &[String], now: i64) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
         for role in roles {
             sqlx::query("INSERT OR REPLACE INTO former_roles (guild_id, user_id, role_key, since) VALUES (?, ?, ?, ?)")
                 .bind(self.guild)
                 .bind(user)
                 .bind(role)
                 .bind(now)
-                .execute(self.pool)
+                .execute(&mut *tx)
                 .await?;
         }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -1412,6 +1422,25 @@ mod tests {
         assert_eq!(listed, [("v", 1, 9), ("u", 2, 6)], "latest first, roles together");
         g.forget_roles("u").await.unwrap();
         assert!(g.former_roles("u").await.unwrap().is_empty());
+    }
+
+    /// A renamed project's role keys follow it, and nothing is left under the
+    /// old key, even for someone remembered under both.
+    #[tokio::test]
+    async fn a_rename_leaves_nothing_under_the_old_key() {
+        let s = Store::open("sqlite::memory:").await.unwrap();
+        let (g, fed) = (s.guild("g1"), s.fed("g1"));
+        g.remember_roles("u", &["proj-a-lead".into(), "proj-b-lead".into()], 5).await.unwrap();
+        g.remember_roles("v", &["proj-a-lead".into()], 6).await.unwrap();
+        fed.grant("p", "u", "proj-a", "k", 1).await.unwrap();
+        fed.grant("p", "u", "proj-b", "k", 1).await.unwrap();
+        fed.grant("p", "v", "proj-a", "k", 1).await.unwrap();
+        g.rename_project("a", "b", &[("proj-a-lead", "proj-b-lead")]).await.unwrap();
+        fed.rename_role("proj-a", "proj-b").await.unwrap();
+        assert_eq!(g.former_roles("u").await.unwrap(), ["proj-b-lead"]);
+        assert_eq!(g.former_roles("v").await.unwrap(), ["proj-b-lead"]);
+        assert_eq!(fed.grants("p", "u").await.unwrap(), ["proj-b"]);
+        assert_eq!(fed.grants("p", "v").await.unwrap(), ["proj-b"]);
     }
 
     #[tokio::test]

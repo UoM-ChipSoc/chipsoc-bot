@@ -144,6 +144,7 @@ const MIGRATIONS: &[&str] = &[
     fed::SCHEMA_V17,
     fed::SCHEMA_V18,
     guild::SCHEMA_V19,
+    SCHEMA_V20,
 ];
 
 const SCHEMA_V1: &str = r#"
@@ -226,6 +227,16 @@ CREATE TABLE IF NOT EXISTS role_assignments (
 );
 "#;
 
+/// Indexes for the queries run often on tables that grow: pruning the
+/// message archive and the nonces seen (on every inbox message), the review
+/// queue, and finding a review card's applications (on every button).
+const SCHEMA_V20: &str = r#"
+CREATE INDEX message_archive_by_ts ON message_archive (guild_id, ts);
+CREATE INDEX fed_nonces_by_ts ON fed_nonces (guild_id, ts);
+CREATE INDEX applications_by_status ON applications (guild_id, status);
+CREATE INDEX applications_by_card ON applications (guild_id, card_message);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,6 +272,30 @@ mod tests {
         let apps = g.pending_applications().await.unwrap();
         assert_eq!((apps.len(), apps[0].target.as_str(), apps[0].user.as_str()), (1, "chair", "7"));
         assert_eq!(g.recent_audit(5).await.unwrap()[0].action, "appoint");
+    }
+
+    /// The queries run often (pruning, on every inbox message; the review
+    /// queue; a card's buttons) find their rows through an index, not by
+    /// reading the whole table.
+    #[tokio::test]
+    async fn frequent_queries_use_an_index() {
+        let s = Store::open("sqlite::memory:").await.unwrap();
+        for (sql, index) in [
+            ("DELETE FROM message_archive WHERE guild_id = '1' AND ts < 5", "message_archive_by_ts"),
+            ("DELETE FROM fed_nonces WHERE guild_id = '1' AND ts < 5", "fed_nonces_by_ts"),
+            ("SELECT id FROM applications WHERE guild_id = '1' AND status = 'pending'", "applications_by_status"),
+            (
+                "SELECT id FROM applications WHERE guild_id = '1' AND card_channel = 'c' AND card_message = 'm'",
+                "applications_by_card",
+            ),
+        ] {
+            let plan: Vec<(i64, i64, i64, String)> =
+                sqlx::query_as(sqlx::AssertSqlSafe(format!("EXPLAIN QUERY PLAN {sql}")))
+                    .fetch_all(&s.pool)
+                    .await
+                    .unwrap();
+            assert!(plan.iter().any(|p| p.3.contains(index)), "{sql}: {plan:?}");
+        }
     }
 
     /// Shared resources' tags, kept as "a, b" before version 19, are a list
