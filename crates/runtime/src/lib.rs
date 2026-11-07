@@ -15,6 +15,7 @@ mod fedshare;
 mod fedsync;
 mod feeds;
 mod gitsync;
+mod heartbeat;
 mod help;
 mod ideas;
 mod join;
@@ -575,7 +576,10 @@ pub async fn run(dirs: &[PathBuf]) -> Result<()> {
         };
         let Some(item) = item else { break };
         match item {
-            Ok(event) => route(&guilds, event),
+            Ok(event) => {
+                heartbeat::beat();
+                route(&guilds, event)
+            }
             Err(e) => tracing::warn!(?e, "gateway receive error"),
         }
     }

@@ -13,9 +13,10 @@ Group=@USER@
 WorkingDirectory=@DIR@
 # Secrets are read by systemd, so the bot's user never needs access to .env.
 EnvironmentFile=@DIR@/.env
-# The web UI doesn't need the bot's partner-sync key or the Tailscale API key
+# The web UI doesn't need the bot's partner-sync key, the Tailscale API key
+# or the monitor's URLs
 # (it also drops partner webhooks named in federation.toml when it starts).
-UnsetEnvironment=FED_SIGNING_KEY TAILSCALE_API_KEY
+UnsetEnvironment=FED_SIGNING_KEY TAILSCALE_API_KEY MONITOR_WEBHOOK MONITOR_PING_URL
 Environment=RUST_LOG=info
 # This is the bot's own server: it runs with the bot's token, no sign-in.
 Environment=BOT_LOCAL=1

@@ -5,7 +5,8 @@
 #   scripts/deploy.sh setup      first time: user, folders, config checkout + deploy key, service
 #   scripts/deploy.sh secrets    upload $SECRETS as the server's .env (first time, or when secrets change)
 #                                and restart the bot and web UI so they use it
-#   scripts/deploy.sh            test, build a new release on the server, switch to it, restart;
+#   scripts/deploy.sh            test, build a new release (on the server as an unprivileged
+#                                build user, or here: DEPLOY_BUILD), switch to it, restart;
 #                                if it doesn't stay up and connected, switch back and fail;
 #                                once it's up, move the git tag $DEPLOY_TAG to it and push the tag
 #   scripts/deploy.sh rollback   switch back to the previous release (if it can load the config)
@@ -16,9 +17,14 @@
 #                                download it into backups/ (encrypted once backup-setup ran;
 #                                before that, the plain database)
 #   scripts/deploy.sh backup-check  is the newest off-site backup recent, and does it decrypt?
-#   scripts/deploy.sh restore [F] [--db-only] [--unsigned]  put backup F (default: the newest in
-#                                backups/) on the server: database and secrets, then restart and
-#                                check; F must carry the server's signature (--unsigned: older ones)
+#   scripts/deploy.sh restore [F] [--db-only] [--unsigned] [--renamed]  put backup F (default:
+#                                the newest in backups/) on the server: database and secrets, then
+#                                restart and check; F must carry the server's signature (--unsigned:
+#                                older ones) and be the bundle it's named as (--renamed: asks instead)
+#
+#   scripts/deploy.sh monitor-setup [--off]  a timer on the server that checks the bot's heartbeat
+#                                every minute and says when it's down (MONITOR_* in deploy.env and
+#                                the server's .env)
 #
 #   scripts/deploy.sh migrate NEW   move the bot to server NEW (an ssh destination, root):
 #                                about a minute offline; goes back by itself if it fails there
@@ -59,6 +65,17 @@ HEALTH_STABLE=${HEALTH_STABLE:-30}
 # CI can check out the bot at `ref: deployed`. Empty: don't tag.
 DEPLOY_TAG=${DEPLOY_TAG-deployed}
 DEPLOY_TAG_REMOTE=${DEPLOY_TAG_REMOTE:-origin}
+# Where releases are built: server (as its own unprivileged user there) or
+# local (here, then copied over). BUILD_JOBS: cargo's -j (default: every CPU).
+DEPLOY_BUILD=${DEPLOY_BUILD:-server}
+BUILD_JOBS=${BUILD_JOBS:-}
+# monitor-setup: minutes without a heartbeat before it says the bot is down,
+# hours before it says so again (0: once), and optionally a mail address and
+# a role to ping in the webhook's message.
+MONITOR_STALE_MINUTES=${MONITOR_STALE_MINUTES:-5}
+MONITOR_REPEAT_HOURS=${MONITOR_REPEAT_HOURS:-6}
+MONITOR_EMAIL=${MONITOR_EMAIL:-}
+MONITOR_ROLE=${MONITOR_ROLE:-}
 # Off-site backups (backup-setup): who can decrypt them, where they go, how many are kept.
 BACKUP_AGE_RECIPIENT=${BACKUP_AGE_RECIPIENT:-}
 BACKUP_TARGET=${BACKUP_TARGET:-}
@@ -88,6 +105,9 @@ valid HOST "$HOST" '^[A-Za-z0-9._@][A-Za-z0-9._@:-]*$' "an ssh destination such 
 valid CONFIG_BRANCH "$CONFIG_BRANCH" '^[A-Za-z0-9._/-]+$'
 valid WEB_PORT "$WEB_PORT" '^[0-9]+$' "a port number"
 valid BACKUP_CALENDAR "$BACKUP_CALENDAR" '^[A-Za-z0-9 *:,./~-]+$' "a systemd OnCalendar time"
+valid DEPLOY_BUILD "$DEPLOY_BUILD" '^(server|local)$' "server or local"
+[ -z "$BUILD_JOBS" ] || valid BUILD_JOBS "$BUILD_JOBS" '^[1-9][0-9]*$' "a number"
+[ "${#SERVICE}" -le 26 ] || die "SERVICE in deploy.env: at most 26 characters (its build user is SERVICE-build)"
 [ -z "${WEB_URL:-}" ] || valid WEB_URL "$WEB_URL" '^https?://[A-Za-z0-9.-]+(:[0-9]+)?/?$' "https://MACHINE.TAILNET.ts.net"
 [[ $DIR != */.* && $DIR != / ]] || die "DIR in deploy.env: $DIR isn't allowed here"
 
@@ -96,6 +116,11 @@ valid BACKUP_CALENDAR "$BACKUP_CALENDAR" '^[A-Za-z0-9 *:,./~-]+$' "a systemd OnC
 STATE=/var/lib/$SERVICE
 DB=$STATE/bot.db
 OFFSITE=$DIR/backup-offsite
+MONITOR=$DIR/monitor
+# Releases are built by their own user, in its own folder (sources, cargo,
+# rustup, target), never as root; only the finished binary is copied out.
+BUILDER=$SERVICE-build
+BUILD=$DIR/build
 BUNDLES=$DIR/backup/bundles
 # A bundle's name, and the files it holds (see Backups below).
 BUNDLE_RE="^$SERVICE-[0-9]{8}-[0-9]{6}\.tar\.gz\.age\$"
@@ -188,6 +213,8 @@ healthy() {
 start_units() {
   systemctl enable -q "$1"
   systemctl enable -q --now "$1-backup.timer" 2> /dev/null || true
+  # The monitor, once monitor-setup has turned it on.
+  if [ -f "$2/monitor.env" ]; then systemctl enable -q --now "$1-monitor.timer" 2> /dev/null || true; fi
   if systemctl cat "$1-web" > /dev/null 2>&1; then systemctl enable -q "$1-web"; fi
   restart_units "$1" "$2"
 }
@@ -195,12 +222,12 @@ start_units() {
 # Stop and disable service $1's units, keeping everything on disk.
 stop_units() {
   local u
-  for u in "$1" "$1-web" "$1-backup.timer"; do systemctl disable -q --now "$u" 2> /dev/null || true; done
+  for u in "$1" "$1-web" "$1-backup.timer" "$1-monitor.timer"; do systemctl disable -q --now "$u" 2> /dev/null || true; done
   ! systemctl is-active -q "$1" && ! systemctl is-active -q "$1-web"
 }
 
 # Service $1's unit files.
-unit_names() { echo "$1.service $1-web.service $1-backup.service $1-backup.timer"; }
+unit_names() { echo "$1.service $1-web.service $1-backup.service $1-backup.timer $1-monitor.service $1-monitor.timer"; }
 
 # Once the bot has moved off this server to $3: stop, disable and mask service
 # $1's units (their files kept as *.moved; masked, a unit file written later
@@ -266,7 +293,7 @@ bundle_ok() {
 env_ok() {
   local f=$1 dir=$3 allow line key val bad=0 i=0 dq='^"([^"\\]|\\.)*"$' sq="^'[^']*'\$"
   allow=" DISCORD_TOKEN APPLICATION_ID FED_SIGNING_KEY TAILSCALE_API_KEY DISCORD_CLIENT_SECRET WEB_TOKEN"
-  allow="$allow TRANSCRIBE_URL TRANSCRIBE_API_KEY TRANSCRIBE_MODEL RECORDINGS_DIR RUST_LOG $2 "
+  allow="$allow TRANSCRIBE_URL TRANSCRIBE_API_KEY TRANSCRIBE_MODEL RECORDINGS_DIR RUST_LOG MONITOR_WEBHOOK MONITOR_PING_URL $2 "
   if [ -f "$dir/.env" ]; then
     allow="$allow $(sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$dir/.env" | tr '\n' ' ')"
   fi
@@ -285,7 +312,7 @@ env_ok() {
     key=${line%%=*} val=${line#*=}
     case $key in
       PATH | HOME | SHELL | USER | LOGNAME | ENV | IFS | TMPDIR | LANG | LANGUAGE | TZ | EDITOR | VISUAL | PAGER | \
-        DATABASE_URL | BOT_LOCAL | BOT_CONFIG | CONFIG_AUTOSAVE | WEB_URL | NOTIFY_SOCKET | GNUPGHOME | \
+        DATABASE_URL | BOT_LOCAL | BOT_CONFIG | CONFIG_AUTOSAVE | WEB_URL | HEARTBEAT_FILE | NOTIFY_SOCKET | GNUPGHOME | \
         LD_* | GIT_* | SSH_* | SYSTEMD_* | DYLD_* | BASH_* | LC_* | XDG_* | SSL_* | CURL_* | \
         PYTHON* | PERL* | RUBY* | NODE_* | CARGO* | RUSTC* | RUST_BACKTRACE | RUST_MIN_STACK | *_PROXY | *_proxy)
         echo "  refused: $key (it would change how the bot, git or ssh run, or what the units set)" >&2
@@ -424,6 +451,10 @@ install_units() {
   fill deploy/backup.service | ssh "$h" "cat > $u/$SERVICE-backup.service"
   fill deploy/backup.timer | ssh "$h" "cat > $u/$SERVICE-backup.timer"
   fill deploy/backup-offsite.sh | ssh "$h" "umask 077 && cat > $OFFSITE.new && chmod 700 $OFFSITE.new && mv $OFFSITE.new $OFFSITE"
+  # The heartbeat check: installed always, on once monitor-setup has run.
+  fill deploy/monitor.service | ssh "$h" "cat > $u/$SERVICE-monitor.service"
+  fill deploy/monitor.timer | ssh "$h" "cat > $u/$SERVICE-monitor.timer"
+  fill deploy/monitor.sh | ssh "$h" "umask 077 && cat > $MONITOR.new && chmod 700 $MONITOR.new && mv $MONITOR.new $MONITOR"
   if [ -n "${WEB_URL:-}" ]; then
     # The web UI listens on loopback; tailscale serve publishes it on the tailnet over HTTPS.
     fill deploy/web.service | ssh "$h" "cat > $u/$SERVICE-web.service"
@@ -431,7 +462,8 @@ install_units() {
   on_host "$h" "systemctl daemon-reload"
   on_host "$h" "command -v sqlite3 >/dev/null" || note "install sqlite3 on $h, or the daily database backups fail"
   [ "$mode" != install ] || return 0
-  on_host "$h" "systemctl enable -q $SERVICE && systemctl enable -q --now $SERVICE-backup.timer"
+  on_host "$h" "systemctl enable -q $SERVICE && systemctl enable -q --now $SERVICE-backup.timer
+      if [ -f $DIR/monitor.env ]; then systemctl enable -q --now $SERVICE-monitor.timer; fi"
   if [ -n "${WEB_URL:-}" ]; then
     on_host "$h" "systemctl enable -q $SERVICE-web && tailscale serve --bg --https=443 http://127.0.0.1:$WEB_PORT >/dev/null"
   fi
@@ -461,17 +493,87 @@ exit 1
 REMOTE
 }
 
-# Build commit $2 of this checkout on host $1, as release $3.
+# Build commit $2 of this checkout for host $1, as release $3: on that
+# server or here (DEPLOY_BUILD).
 build_release() {
-  local h=$1 commit=$2 name=$3
-  say "code $name"
-  on_host "$h" "rm -rf $DIR/src && mkdir -p $DIR/src"
-  git archive --format=tar "$commit" | ssh "$h" "tar -x -C $DIR/src"
-  # The Opus codec (for voice recordings) is built from source with CMake.
-  ensure_pkgs "$h" cmake
+  say "code $3"
+  if [ "$DEPLOY_BUILD" = local ]; then build_here "$@"; else build_there "$@"; fi
+}
+
+# A build on host $1 as its build user (BUILDER, made the first time), in a
+# sandbox that can write only to its own folder (BUILD) and can't see the
+# bot's secrets, database or config: the crates' build scripts never run as
+# root. Root copies out the binary alone, reading it as the build user.
+build_there() {
+  local h=$1 commit=$2 name=$3 run
+  # The Opus codec (for voice recordings) is built from source with CMake;
+  # the gateway's TLS links to OpenSSL.
+  ensure_pkgs "$h" cmake gcc make curl pkg-config
+  on_host "$h" "pkg-config --exists openssl" ||
+    note "$h lacks OpenSSL's headers, so the build fails: install them (Debian, Ubuntu: libssl-dev; Fedora: openssl-devel)"
+  on_host "$h" "id $BUILDER >/dev/null 2>&1 ||
+        useradd --system --home-dir $BUILD --no-create-home --shell /usr/sbin/nologin $BUILDER
+      install -d -m 700 -o $BUILDER -g $BUILDER $BUILD
+      # Older versions of this script built as root, in these.
+      rm -rf $DIR/src $DIR/target
+      mkdir -p $DIR/releases"
+  run="systemd-run --quiet --wait --pipe --collect -p User=$BUILDER -p Group=$BUILDER \
+    -p WorkingDirectory=$BUILD -p UMask=0077 -p NoNewPrivileges=yes -p ProtectSystem=strict \
+    -p ReadWritePaths=$BUILD -p ProtectHome=yes -p PrivateTmp=yes -p PrivateDevices=yes \
+    -p ProtectKernelTunables=yes -p ProtectKernelModules=yes -p ProtectControlGroups=yes \
+    -p RestrictSUIDSGID=yes -p InaccessiblePaths=-$DIR/.env -p InaccessiblePaths=-$DIR/config \
+    -p InaccessiblePaths=-$DIR/.ssh -p InaccessiblePaths=-$DIR/backup -p InaccessiblePaths=-$STATE \
+    -E HOME=$BUILD -E CARGO_HOME=$BUILD/cargo -E RUSTUP_HOME=$BUILD/rustup -E CARGO_TARGET_DIR=$BUILD/target \
+    -E PATH=$BUILD/cargo/bin:/usr/local/bin:/usr/bin:/bin"
+  if ! on_host "$h" "[ -x $BUILD/cargo/bin/cargo ]"; then
+    confirm "$h: install Rust (rustup, stable) for the build user $BUILDER, in $BUILD?" ||
+      die "builds on $h need Rust for $BUILDER (or DEPLOY_BUILD=local)"
+    say "Rust for $BUILDER"
+    on_host "$h" "$run sh -c 'curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs |
+      sh -s -- -y -q --profile minimal --default-toolchain stable --no-modify-path'"
+  else
+    on_host "$h" "$run $BUILD/cargo/bin/rustup update -q --no-self-update stable >/dev/null 2>&1" ||
+      note "couldn't update Rust on $h; building with the one it has"
+  fi
+  git archive --format=tar "$commit" |
+    on_host "$h" "$run sh -c 'rm -rf src && mkdir src && tar -x -C src'"
   say "build"
-  on_host "$h" "cd $DIR/src && CARGO_TARGET_DIR=$DIR/target ~/.cargo/bin/cargo build --release --locked -q -p chipsoc-bot
-      mkdir -p $DIR/releases/$name && install -m 755 $DIR/target/release/chipsoc-bot $DIR/releases/$name/bot"
+  # Its output without control characters (it comes from the crates' build scripts).
+  on_host "$h" "$run $BUILD/cargo/bin/cargo build --manifest-path $BUILD/src/Cargo.toml --release --locked -q -p chipsoc-bot ${BUILD_JOBS:+-j $BUILD_JOBS} 2>&1 |
+        tr -d '\\000-\\010\\013-\\037\\177'
+      mkdir -p $DIR/releases/$name && rm -f $DIR/releases/$name/bot.new
+      runuser -u $BUILDER -- cat $BUILD/target/release/chipsoc-bot > $DIR/releases/$name/bot.new
+      chmod 755 $DIR/releases/$name/bot.new && mv -f $DIR/releases/$name/bot.new $DIR/releases/$name/bot"
+}
+
+# A build here, of commit $2 as committed (in .deploy-state; cargo's cache is
+# this checkout's target/), copied to host $1 as release $3 and checked there
+# by its hash. It must run on the server: same machine type, and a C library
+# no newer than the server's.
+build_here() {
+  local h=$1 commit=$2 name=$3 src=.deploy-state/build-$SERVICE out need have sum
+  [ "$(uname -sm)" = "$(on_host "$h" uname -sm)" ] ||
+    die "this machine ($(uname -sm)) isn't the same kind as $h: build there (DEPLOY_BUILD=server)"
+  rm -rf "$src" && mkdir -p "$src"
+  git archive --format=tar "$commit" | tar -x -C "$src"
+  say "build (here)"
+  CARGO_TARGET_DIR=$PWD/target cargo build --manifest-path "$src/Cargo.toml" --release --locked -q -p chipsoc-bot \
+    ${BUILD_JOBS:+-j "$BUILD_JOBS"}
+  rm -rf "$src"
+  out=target/release/chipsoc-bot
+  # The newest glibc version it needs, against the server's.
+  need=$({ objdump -T "$out" 2> /dev/null || readelf -W --dyn-syms "$out" 2> /dev/null || true; } |
+    grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/^GLIBC_//' | sort -uV | tail -n 1)
+  have=$(on_host "$h" "getconf GNU_LIBC_VERSION 2>/dev/null | cut -d' ' -f2" || true)
+  if [ -n "$need" ] && [ -n "$have" ] && [ "$(printf '%s\n%s\n' "$need" "$have" | sort -V | tail -n 1)" != "$have" ]; then
+    die "this build needs glibc $need, and $h has $have: build on a system no newer than the server's (docs/deploy.md, Where releases are built), or on the server (DEPLOY_BUILD=server)"
+  fi
+  sum=$(sha256sum < "$out" | cut -d' ' -f1)
+  say "copying it to $h"
+  on_host "$h" "mkdir -p $DIR/releases/$name && umask 022 && cat > $DIR/releases/$name/bot.new" < "$out"
+  on_host "$h" "f=$DIR/releases/$name/bot
+      [ \"\$(sha256sum < \$f.new | cut -d' ' -f1)\" = $sum ] || { rm -f \$f.new; echo 'the copy on $h differs from the build' >&2; exit 1; }
+      chmod 755 \$f.new && mv -f \$f.new \$f"
 }
 
 deploy() {
@@ -480,7 +582,11 @@ deploy() {
   git diff --quiet HEAD -- crates Cargo.toml Cargo.lock || echo "note: uncommitted changes aren't deployed (deploying $rev)"
   [ -n "${SKIP_TESTS:-}" ] || { say "tests"; cargo test -q --workspace --locked > /dev/null; }
   build_release "$HOST" HEAD "$rev"
-  check_config "$rev" || { echo "the new release can't load the config; still running the old one" >&2; exit 1; }
+  if ! check_config "$rev"; then
+    [ "$DEPLOY_BUILD" != local ] ||
+      echo "(built here: if it doesn't start there at all, build on a system like the server's, or DEPLOY_BUILD=server)" >&2
+    die "the new release can't load the config; still running the old one"
+  fi
   install_units "$HOST"
   switch "$rev"
   tag_deployed "$(git rev-parse HEAD)"
@@ -1038,17 +1144,18 @@ known_env_keys() {
 }
 
 restore() {
-  local f='' db_only='' unsigned='' a t what pd
+  local f='' db_only='' unsigned='' renamed='' a t what pd why
   for a in "$@"; do
     case $a in
       --db-only) db_only=1 ;;
       --unsigned) unsigned=1 ;;
+      --renamed) renamed=1 ;;
       -*) die "restore: unknown option $a" ;;
       *) f=$a ;;
     esac
   done
   [ -n "$f" ] || f=$(newest_local) ||
-    die "usage: $0 restore [backup file] [--db-only] [--unsigned] (there's none in backups/: $0 backup)"
+    die "usage: $0 restore [backup file] [--db-only] [--unsigned] [--renamed] (there's none in backups/: $0 backup)"
   [ -f "$f" ] || die "$f not found"
   case $f in *.age | *.db) ;; *) die "$f: expected a .tar.gz.age bundle or a .db file" ;; esac
   t=$(on "[ -d $DIR ] && mktemp -d $DIR/.restore.XXXXXX") || die "$HOST has no $DIR: run scripts/deploy.sh setup first"
@@ -1079,9 +1186,12 @@ restore() {
       db_only=1
       ;;
   esac
-  remote "$HOST" "$t" "$DIR" "$SERVICE" "$db_only" "$(known_env_keys)" "${f##*/}" << 'REMOTE'
-t=$1 dir=$2 service=$3 db_only=$4 keys=$5 file=$6
+  remote "$HOST" "$t" "$DIR" "$SERVICE" "$db_only" "$(known_env_keys)" "${f##*/}" "$unsigned" << 'REMOTE'
+t=$1 dir=$2 service=$3 db_only=$4 keys=$5 file=$6 unsigned=$7
 cd "$t"
+# Why this bundle may not be the one its file name says (an older one renamed
+# as the newest would roll the database back): into $t/renamed.
+renamed() { echo "  $1" >&2; echo "$1" >> renamed; }
 if [ -f bundle.db ]; then
   mkdir -p x/db && mv bundle.db x/db/bot.db
 else
@@ -1090,7 +1200,7 @@ else
   top=${top%%/*}
   [[ $top =~ ^$service-[0-9]{8}-[0-9]{6}$ ]] || { echo "that isn't a backup of $service" >&2; exit 1; }
   bundle_ok "$top" < members || exit 1
-  [ "$top.tar.gz.age" = "$file" ] || echo "  note: inside, it's $top.tar.gz.age (the file was renamed)"
+  [ "$top.tar.gz.age" = "$file" ] || renamed "inside, it's $top.tar.gz.age"
   want=()
   for m in bot.db env info.txt config-unpushed.patch recordings.txt recordings.tar; do
     if grep -qxF "$top/$m" members; then want+=("$top/$m"); fi
@@ -1131,12 +1241,30 @@ if [ "$db_only" != 1 ]; then
   fi
 fi
 [ ! -f "$b/info.txt" ] || tr -d '\000-\010\013-\037\177' < "$b/info.txt" | sed 's/^/  /'
+if [ -n "${top:-}" ]; then
+  named=$(sed -n 's/^bundle: //p' "$b/info.txt" 2>/dev/null | head -n 1 | tr -cd '[:print:]')
+  if [ -z "$named" ]; then
+    # Every signed bundle says which it is; only older, unsigned ones may not.
+    [ -n "$unsigned" ] || renamed "it doesn't say which bundle it is"
+  elif [ "$named" != "$file" ]; then
+    renamed "it says it's $named"
+  fi
+  made=$(sed -n 's/^made-at: \([0-9][0-9]*\)$/\1/p' "$b/info.txt" 2>/dev/null | head -n 1)
+  [ -z "$made" ] || echo "  made $((($(date +%s) - made) / 3600))h ago"
+fi
 if [ -f "$b/info.txt" ] && [ -d "$dir/config/.git" ]; then
   want=$(sed -n 's/^config commit: //p' "$b/info.txt" | tr -cd '[:alnum:]')
   have=$(sudo -u "$service" git -C "$dir/config" rev-parse HEAD 2>/dev/null || true)
   [ "$want" = "$have" ] || echo "  (the server's config is at ${have:-nothing}; the bot pulls the config repo's newest itself)"
 fi
 REMOTE
+  why=$(on "cat $t/renamed 2>/dev/null" | clean | tr '\n' ';' | sed 's/;$//; s/;/; /g') || why=''
+  if [ -n "$why" ]; then
+    [ -n "$renamed" ] ||
+      die "not restoring ${f##*/}: it isn't the bundle it's named as ($why). An older backup renamed as the newest would roll the database back. If you renamed it yourself, run this again with --renamed."
+    printf '%s is named as another bundle than it is (%s).\n' "${f##*/}" "$why" >&2
+    confirm "Restore it all the same (you renamed it yourself)?" || die "nothing changed"
+  fi
   what="database"
   [ -n "$db_only" ] || what="database and secrets"
   confirm "Replace the $what on $HOST with these? The bot stops for a moment (the current ones are kept)." ||
@@ -1184,6 +1312,46 @@ REMOTE
   else
     echo "Restored. There's no release on $HOST yet: run scripts/deploy.sh to start the bot."
   fi
+}
+
+# ---- Watching that it's up ----
+
+# The heartbeat check on HOST (deploy/monitor.sh, every minute): its settings
+# in DIR/monitor.env, the two URLs in the server's .env. --off turns it off.
+monitor_setup() {
+  if [ "${1:-}" = --off ]; then
+    on "systemctl disable -q --now $SERVICE-monitor.timer 2>/dev/null || true; rm -f $DIR/monitor.env"
+    echo "The monitor is off."
+    return
+  fi
+  [ -z "${1:-}" ] || die "usage: $0 monitor-setup [--off]"
+  valid MONITOR_STALE_MINUTES "$MONITOR_STALE_MINUTES" '^[1-9][0-9]*$' "a number of minutes"
+  valid MONITOR_REPEAT_HOURS "$MONITOR_REPEAT_HOURS" '^[0-9]+$' "a number of hours (0: say it once)"
+  [ -z "$MONITOR_EMAIL" ] || valid MONITOR_EMAIL "$MONITOR_EMAIL" '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]+$' "one mail address"
+  [ -z "$MONITOR_ROLE" ] || valid MONITOR_ROLE "$MONITOR_ROLE" '^[0-9]{17,20}$' "a role's id (Developer Mode: right-click the role, Copy Role ID)"
+  on "[ -f $DIR/.env ]" || die "there's no $DIR/.env on $HOST yet: scripts/deploy.sh secrets first"
+  # Only the names are looked at, on the server.
+  if ! on "grep -Eq '^(MONITOR_WEBHOOK|MONITOR_PING_URL)=.' $DIR/.env" && [ -z "$MONITOR_EMAIL" ]; then
+    die "nothing to tell: put MONITOR_WEBHOOK (a Discord webhook, in a channel the committee reads) and/or
+MONITOR_PING_URL (an outside check, such as healthchecks.io) in $SECRETS and run scripts/deploy.sh secrets,
+or set MONITOR_EMAIL in deploy.env; then monitor-setup again (docs/deploy.md, Watching that it's up)"
+  fi
+  ensure_pkgs "$HOST" curl
+  say "monitor settings on $HOST"
+  printf '%s=%q\n' MONITOR_STALE_MINUTES "$MONITOR_STALE_MINUTES" MONITOR_REPEAT_HOURS "$MONITOR_REPEAT_HOURS" \
+    MONITOR_EMAIL "$MONITOR_EMAIL" MONITOR_ROLE "$MONITOR_ROLE" |
+    ssh "$HOST" "umask 077 && cat > $DIR/monitor.env.new && mv $DIR/monitor.env.new $DIR/monitor.env"
+  install_units "$HOST"
+  on "systemctl enable -q --now $SERVICE-monitor.timer"
+  say "a test message"
+  on "$MONITOR test" || die "the test didn't reach anything (above): check the URLs in $SECRETS (then secrets, and this again)"
+  on "systemctl start $SERVICE-monitor.service" || {
+    on "journalctl -u $SERVICE-monitor -n 10 --no-pager -q" >&2 || true
+    die "the check itself failed (above)"
+  }
+  echo "The monitor checks the bot every minute: it says so after $MONITOR_STALE_MINUTES minutes down."
+  on "[ -f /var/lib/$SERVICE/heartbeat ]" ||
+    note "the bot hasn't written a heartbeat yet (a release from before them?): until the next deploy, only a stopped bot is noticed"
 }
 
 # `fed revoke` as the bot runs it: its user, .env and database (never a new
@@ -1395,7 +1563,7 @@ prepare_target() {
 # they're never written here.
 copy_private() {
   local from=$1 to=$2 files
-  files=$(on_host "$from" "cd $DIR && for f in .env .ssh backup; do [ ! -e \$f ] || echo \$f; done" | tr '\n' ' ')
+  files=$(on_host "$from" "cd $DIR && for f in .env .ssh backup monitor.env; do [ ! -e \$f ] || echo \$f; done" | tr '\n' ' ')
   [[ $files =~ ^[a-z.\ ]*$ ]] || die "odd files on $from: $(clean <<< "$files")"
   say "copying the secrets and keys from $from (${files% })"
   ssh "$from" "tar -C $DIR -czf - --exclude=backup/bundles --exclude='backup/.work.*' $files" |
@@ -1425,10 +1593,9 @@ copy_release() {
     ln -sfn $DIR/releases/$rev $DIR/current"
 }
 
-# Build release $2 on host $1 from this checkout.
+# Build release $2 for host $1 from this checkout.
 build_on() {
   git rev-parse -q --verify "$2^{commit}" > /dev/null || die "can't build $2 for $1: it isn't in this checkout (git fetch?)"
-  on_host "$1" "[ -x ~/.cargo/bin/cargo ]" || die "can't build on $1: install Rust for root there (rustup)"
   build_release "$1" "$2" "$2"
 }
 
@@ -1672,9 +1839,10 @@ case $cmd in
   backup) backup "${2:-}" ;;
   backup-check) backup_check ;;
   restore) shift; restore "$@" ;;
+  monitor-setup) monitor_setup "${2:-}" ;;
   migrate) migrate "${2:-}" ;;
   migrate-back) migrate_back ;;
   revoke) revoke "${2:-}" "${3:-}" ;;
   git) shift; config_git "$@" ;;
-  *) echo "usage: $0 [setup|secrets|deploy|rollback|backup-setup|backup [--latest]|backup-check|restore [FILE] [--db-only] [--unsigned]|migrate NEW_HOST|migrate-back|revoke PARTNER [KEY]|git ARGS] [--force]" >&2; exit 1 ;;
+  *) echo "usage: $0 [setup|secrets|deploy|rollback|backup-setup|backup [--latest]|backup-check|restore [FILE] [--db-only] [--unsigned] [--renamed]|monitor-setup [--off]|migrate NEW_HOST|migrate-back|revoke PARTNER [KEY]|git ARGS] [--force]" >&2; exit 1 ;;
 esac

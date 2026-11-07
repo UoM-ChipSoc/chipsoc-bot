@@ -1,0 +1,30 @@
+# Installed by scripts/deploy.sh, which fills in the @…@ values. Run every
+# minute by @SERVICE@-monitor.timer once `deploy.sh monitor-setup` has run:
+# @DIR@/monitor (deploy/monitor.sh) checks the bot's heartbeat and says when
+# it's down.
+[Unit]
+Description=Check the Discord server bot is up (@SERVICE@)
+# Not on a server the bot was moved off (`deploy.sh migrate` writes that file).
+ConditionPathExists=!@DIR@/MOVED-TO
+
+[Service]
+Type=oneshot
+# As root, since it reads its two URLs from the root-only .env; it changes
+# nothing but its own state folder.
+ExecStart=@DIR@/monitor check
+StateDirectory=@SERVICE@-monitor
+StateDirectoryMode=0700
+UMask=0077
+TimeoutStartSec=2min
+
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadOnlyPaths=@DIR@ -/var/lib/@SERVICE@

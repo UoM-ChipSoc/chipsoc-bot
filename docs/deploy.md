@@ -25,19 +25,25 @@ up with `deploy.sh`, the secrets file (`.env.server`) becomes the server's
 | `RECORDINGS_DIR` | bot, web | Where recordings are kept (default: `recordings` beside the database, so `/var/lib/<service>/recordings` under the units; elsewhere, add it to both units' `ReadWritePaths`, and know that backups and `migrate` don't take it along). |
 | `BOT_LOCAL` | CLI | `1`: this is the bot's own server, so commands use the bot's token and database here instead of a sign-in (same as `--local`; the units set it). |
 | `RUST_LOG` | all | Log level (the units set `info`). |
+| `HEARTBEAT_FILE` | bot | A file the bot writes the time to about once a minute while Discord's gateway talks to it (the unit sets `/var/lib/<service>/heartbeat`), for [the monitor](#watching-that-its-up). |
+| `MONITOR_WEBHOOK` | monitor | A Discord webhook the monitor posts to when the bot is down and when it's back. |
+| `MONITOR_PING_URL` | monitor | An outside check the monitor fetches every minute while the bot is up (healthchecks.io and the like). |
 
-The web UI never gets the partner-sync key, partner webhooks or
-`TAILSCALE_API_KEY`: the web unit unsets them and the web UI drops them on
-start. Git runs without the bot's secrets in its environment.
+The web UI never gets the partner-sync key, partner webhooks,
+`TAILSCALE_API_KEY` or the monitor's URLs: the web unit unsets them and the
+web UI drops them on start (the bot's unit unsets the monitor's too). Git runs without the bot's secrets in its environment.
 
 ## deploy.sh
 
 `scripts/deploy.sh` runs one bot (and its web UI) for one config repo on a
-Linux server. The server needs systemd, root over ssh, git, sudo, Rust for
-root (rustup; `~/.cargo/bin/cargo`), `sqlite3` for backups while running,
-and Tailscale (installed and logged in) for the web UI. Your machine needs
-Rust (the tests run first; `SKIP_TESTS=1` skips them), ssh and, optionally,
-the GitHub CLI.
+Linux server. The server needs systemd, root over ssh, git, sudo, `sqlite3`
+for backups while running, and Tailscale (installed and logged in) for the
+web UI. To build there (the default), also `cmake`, a C compiler, `make`,
+`curl`, `pkg-config` and OpenSSL's headers (`libssl-dev`); deploy.sh asks
+to install the ones it can name, and installs Rust for the build user
+itself. Your machine needs Rust (the tests run first; `SKIP_TESTS=1` skips
+them), ssh and, optionally, the GitHub CLI. How big a server: [Server
+size](#server-size).
 
 1. Fill in `deploy.env` (copy `deploy.env.example`).
 2. `scripts/deploy.sh setup`, once: a sandboxed service user, a deploy key
@@ -48,10 +54,11 @@ the GitHub CLI.
 3. Write `.env.server` (see *Settings*) and run `scripts/deploy.sh secrets`:
    it uploads it as the server's root-only `.env` and restarts the bot and
    web UI, then waits for the bot to connect.
-4. `scripts/deploy.sh` tests, builds on the server, checks the new release
-   loads the config (pulled first), and switches to it. It then waits
-   `HEALTH_WAIT` seconds for the bot to log that it connected and watches it
-   stay up for `HEALTH_STABLE`; if not, it switches back to the release
+4. `scripts/deploy.sh` tests, builds a release ([on the server, as its own
+   unprivileged user, or on your machine](#where-releases-are-built)),
+   checks the new release loads the config (pulled first), and switches to
+   it. It then waits `HEALTH_WAIT` seconds for the bot to log that it
+   connected and watches it stay up for `HEALTH_STABLE`; if not, it switches back to the release
    before and fails. The five newest releases are kept. Once it's up, it
    moves the git tag `deployed` (`DEPLOY_TAG`) to the commit it shipped and
    pushes it (`DEPLOY_TAG_REMOTE`); `rollback` moves it back (a failed push
@@ -64,7 +71,8 @@ the GitHub CLI.
 | `scripts/deploy.sh backup-setup` | Nightly encrypted off-site backups ([Backups](#backups)). |
 | `scripts/deploy.sh backup [--latest]` | Backs up now (`--latest`: takes the last nightly one) and downloads it into `backups/`. |
 | `scripts/deploy.sh backup-check` | Whether the newest off-site backup is the server's, recent, and decrypts. |
-| `scripts/deploy.sh restore [FILE] [--db-only] [--unsigned]` | Puts a backup (default: the newest in `backups/`) back on the server, then restarts and checks the bot. |
+| `scripts/deploy.sh restore [FILE] [--db-only] [--unsigned] [--renamed]` | Puts a backup (default: the newest in `backups/`) back on the server, then restarts and checks the bot. |
+| `scripts/deploy.sh monitor-setup [--off]` | A check every minute that the bot is up, which tells you when it isn't ([Watching that it's up](#watching-that-its-up)). |
 | `scripts/deploy.sh migrate NEW_HOST` | Moves the bot to another server, about a minute offline ([Moving to another server](#moving-to-another-server)). |
 | `scripts/deploy.sh migrate-back` | Moves it back. |
 | `scripts/deploy.sh revoke PEER [KEY]` | `fed revoke` on the server ([partners.md](partners.md)). |
@@ -86,8 +94,75 @@ every deploy; needs `sqlite3` on the server), copies the database into
 `/var/lib/<SERVICE>/backups/` and keeps the 14 newest. Those copies live on
 the same disk: set up [off-site backups](#backups) too. To run several
 servers from one machine, give each its own `DIR` and `SERVICE` in a
-separate deploy.env. `SERVICE` is lower-case letters, digits and `-`; `DIR`
-an absolute path of plain characters (they go into commands on the server).
+separate deploy.env (for another community's, read [Running another
+community's server](#running-another-communitys-server) first). `SERVICE`
+is lower-case letters, digits and `-`, at most 26; `DIR` an absolute path of
+plain characters (they go into commands on the server).
+
+## Server size
+
+Building on the server is the heaviest thing it does: `cargo build
+--release` compiles about 670 crates. Roughly:
+
+- **Memory:** 2 GB with 2 GB of swap works, with `BUILD_JOBS=2` in
+  deploy.env (fewer jobs, less memory at once); 4 GB is comfortable. With
+  less, the build is killed for want of memory (`journalctl -k` says
+  so). The running bot and web UI need far less: `systemctl status
+  discord-bot` shows how much.
+- **Disk:** about 5 GB for the build (Rust itself about 1 GB, the crates'
+  sources about 0.5 GB, the build's cache, `DIR/build/target`, about
+  3 GB), plus the five releases kept (about 70 MB each), the database and
+  its copies. Recordings come on top: up to `max_total_gb` (20 GB by
+  default; [config.md](config.md)), and twice that while a bundle is made
+  with `BACKUP_RECORDINGS=1`. So 10 GB free without recordings, and about
+  40 GB with them at the defaults.
+- **Time:** the first build takes tens of minutes on one or two CPUs; later
+  ones rebuild only what changed.
+
+To add swap on a small server (as root):
+`fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile &&
+swapon /swapfile`, and `/swapfile none swap sw 0 0` in `/etc/fstab` to keep
+it. Or don't build there at all: `DEPLOY_BUILD=local` (below). Then the
+server needs only room for the releases and data, and no compiler.
+
+## Where releases are built
+
+`DEPLOY_BUILD` in deploy.env:
+
+- **`server` (the default):** on `HOST`, as a user of its own,
+  `<SERVICE>-build` (made by the first deploy; no login, no shell), in its
+  own folder `DIR/build` (0700: the sources, its cargo and rustup, and the
+  build's cache). The first deploy asks to install Rust there with rustup
+  (stable; each deploy updates it). The build runs under `systemd-run` in a
+  sandbox: it can write only to `DIR/build` and can't see the server's
+  `.env`, the config checkout, the deploy key, the backup keys or the
+  bot's database. Root then copies the binary into `DIR/releases`, reading
+  it as the build user (so a link to a root-only file gets nothing). The
+  first such deploy deletes the root-owned `DIR/src` and `DIR/target` that
+  older versions built in; root's own Rust isn't used any more (`ssh HOST
+  rustup self uninstall` frees its space).
+- **`local`:** on your machine, from the commit being deployed as committed
+  (unpacked into `.deploy-state/`; the cache is this checkout's `target/`),
+  then copied to `HOST` and checked there by its SHA-256. It refuses a
+  build for another kind of machine, or one that needs a newer glibc than
+  the server has; the server then checks the release loads the config
+  before switching to it, so one that doesn't run there never goes live.
+  The server needs no compiler, Rust or build space. Your system must be no
+  newer than the server's: on a rolling one (Arch, say) build in a
+  container of the server's system and run deploy.sh from there, e.g.
+  `distrobox create -i debian:12 -n bot-build && distrobox enter bot-build`,
+  then install `build-essential cmake pkg-config libssl-dev git curl
+  openssh-client` and Rust (rustup) inside it, and run
+  `DEPLOY_BUILD=local scripts/deploy.sh`. `migrate` builds the same way
+  when it has to.
+
+Either way the binary runs as the bot, with its token: a malicious crate
+gets the bot's powers whatever builds it (`--locked`: only what
+`Cargo.lock` names). What the build user changes is that the crates' build
+scripts no longer run as root on the machine that also holds the backup
+signing key, the Tailscale login, the ssh host keys and whatever else runs
+there. deploy.sh doesn't download prebuilt releases (from CI, say): there
+are none yet.
 
 ## Backups
 
@@ -171,7 +246,13 @@ The server keeps the newest two in `DIR/backup/bundles` (`BACKUP_KEEP` with
 - `scripts/deploy.sh restore [FILE] [--db-only]` (FILE: the newest in
   `backups/` if not given) needs `FILE.sig` beside it and checks it first;
   `--unsigned` restores one without (only one made before backups were
-  signed, that you know is yours: it asks). It decrypts on your machine
+  signed, that you know is yours: it asks). Like backup-check, it refuses a
+  bundle that isn't the one its file name says (its folder or `info.txt`
+  names another): the signature covers the contents, not the name, so
+  whoever can write where the backups are kept could rename an old bundle
+  as the newest and roll the database back. If you renamed it yourself,
+  `--renamed` asks instead (no is the default; `ASSUME_YES` doesn't answer
+  it without `--renamed`). It also shows how old the bundle is. It decrypts on your machine
   straight into ssh (the secrets aren't written to your disk) and unpacks
   on the server: only the files a bundle has, as plain root-owned files
   (links and anything else refuse the whole restore). It checks the
@@ -190,6 +271,92 @@ The server keeps the newest two in `DIR/backup/bundles` (`BACKUP_KEEP` with
   `.db` file (an older plain backup) restores the database alone. Config
   commits the bot hadn't pushed are left in `DIR/config-unpushed-*.patch`
   for you to `git am`.
+
+## Watching that it's up
+
+The bot writes the time to `/var/lib/<SERVICE>/heartbeat` about once a
+minute while Discord's gateway talks to it (Discord checks in every 40
+seconds or so), so a bot that runs but has lost Discord counts as down too.
+`scripts/deploy.sh monitor-setup` turns on `<SERVICE>-monitor.timer`, which
+runs `DIR/monitor` ([`deploy/monitor.sh`](../deploy/monitor.sh)) every
+minute, as root in a sandbox (it reads only its two URLs from `.env`). When
+the bot has been stopped, or its heartbeat old, for `MONITOR_STALE_MINUTES`
+(5; so a restart or a deploy doesn't count), it says so, again every
+`MONITOR_REPEAT_HOURS` (6; 0: once), and once more when the bot is back:
+
+- `MONITOR_WEBHOOK`, in the secrets file: a Discord webhook (Channel
+  settings → Integrations → Webhooks) in a channel the committee reads.
+  Webhooks don't need the bot, so this works while it's down (not while
+  Discord is). `MONITOR_ROLE` in deploy.env (a role's id) pings that role.
+- `MONITOR_EMAIL`, in deploy.env: by mail, if the server has a working
+  `sendmail`. Most VPS providers block outgoing mail on port 25, so that
+  means something like msmtp set up with an SMTP account; without it, use
+  the webhook.
+- `MONITOR_PING_URL`, in the secrets file: fetched every minute while the
+  bot is up (below).
+
+1. Put `MONITOR_WEBHOOK=https://discord.com/api/webhooks/…` (and/or
+   `MONITOR_PING_URL=…`) in `.env.server` and run `scripts/deploy.sh
+   secrets`.
+2. `scripts/deploy.sh monitor-setup`: writes `DIR/monitor.env` (the
+   settings in deploy.env), turns the timer on and sends a test message.
+   Run it again after changing them; `--off` turns it off. Deploys keep it
+   on, and `migrate` moves it.
+
+Its log: `ssh HOST journalctl -u <SERVICE>-monitor`. For planned downtime,
+`ssh HOST systemctl stop <SERVICE>-monitor.timer` (the next deploy, or
+`systemctl start`, turns it back on).
+
+**What it can't see:** the server itself being down, or off the network:
+then nothing runs there to tell you. Only something outside can, and the
+options are:
+
+- **A ping from the server (a dead man's switch)**, which works although
+  the dashboard is only on the tailnet, since the server calls out:
+  [healthchecks.io](https://healthchecks.io) (free for a few checks; mail,
+  Discord, Slack and more), an Uptime Kuma "push" monitor on another
+  machine of yours, or Better Stack's or Cronitor's heartbeats. Make a
+  check with a period of 1 minute and a grace time of a few, and set
+  `MONITOR_PING_URL` to its URL (healthchecks.io:
+  `https://hc-ping.com/<uuid>`). The ping only goes while the bot is up, so
+  the service says "down" when the bot is down and when the server is. It
+  learns only that a ping came, and from which address.
+- **An outside service polling a page** (UptimeRobot and the like) needs a
+  page the internet can reach. Nothing here is: the dashboard is on the
+  tailnet on purpose, and putting it on the internet (Tailscale Funnel, an
+  open port) to be checked would put its sign-in page there too. deploy.sh
+  doesn't, and we don't suggest it.
+- Without either, someone notices: the bot shows offline in the member
+  list a little while after it's gone.
+
+## When the bot is down
+
+Discord keeps every permission as it is, so members already in see what
+they did. What the bot does stops until it's back: commands, buttons and
+forms ("This interaction failed"), the review queue, reminders, drift watch
+and config sync (pushes are picked up when it's back).
+
+With the join gate on (`gate = true` in join.toml), that includes the way
+in: newcomers see only the open channels, **Get started** fails, and nobody
+new gets further. Until it's back:
+
+- **For a few hours (the usual):** someone with Manage Roles (above that
+  role) gives newcomers the join flow's `access_role` by hand: right-click
+  them → Roles, or Server Settings → Members. A post in the welcome channel
+  saying so ("the bot is down; ask a committee member to let you in")
+  saves them waiting. The bot never takes the role back (who holds the join
+  flow's roles isn't managed) and doesn't remind them later; they can give
+  their answers with `/profile` once it's back.
+- **For days:** open the server: push `gate = false` to the config repo
+  first, then give @everyone View Channel back by hand where the gate took
+  it away (each category and channel outside `open_channels` that
+  `access_role` can see). Pushing first matters: drift watch
+  puts back changes made in Discord alone, so without the push it would
+  close the gate again when the bot returns. When it's back it posts the
+  push's plan in `log.bot`: apply it (what you did by hand is already
+  there). Set `gate = true` again later, when you want it.
+
+Then find out why it's down: [Recovering from failures](#recovering-from-failures).
 
 ## Voice recordings
 
@@ -356,6 +523,7 @@ restarts the bot and web UI).
 | The backups' age key | `age-keygen`; the new public key in `BACKUP_AGE_RECIPIENT`, then `backup-setup` | Keep the old private key as long as backups made with it are kept. A leaked one exposes the secrets in every backup made with it: rotate those too. |
 | The server's backup signing key | `ssh HOST rm DIR/backup/sign_key*`, take `BACKUP_SIGNING_KEY` out of deploy.env, then `backup-setup` | Bundles made before are signed by the old key: keep it (commented) to restore them, or `--unsigned`. |
 | The server's backup ssh key | `ssh HOST rm DIR/backup/ssh_key*`, then `backup-setup` (it replaces the destination's line) | Remove the old line at the destination if the server is gone. |
+| `MONITOR_WEBHOOK`, `MONITOR_PING_URL` | Delete the webhook in Discord and make another; a new check's URL | Then `secrets`. A leaked webhook URL lets anyone post in that channel. |
 | CI's token (if CI plans), `DISCORD_WEBHOOK` | The CI bot's Reset Token; a new webhook | The config repo's Actions secrets. |
 
 **A new maintainer** gets `deploy.env`, `.env.server` (or rotates
@@ -366,8 +534,49 @@ ownership of the tailnet (and with it the Tailscale API key), and the
 backups' age private key (or they make their own and run `backup-setup`).
 Then they rotate the secrets and remove the old maintainer's access.
 
+## Running another community's server
+
+deploy.sh can run several bots on one machine (each its own `DIR`,
+`SERVICE` and deploy.env), so hosting a friendly society's server
+alongside yours is possible. Before offering it, know what it means, and
+tell them plainly:
+
+- **You hold their keys.** Their bot's token, with Administrator on their
+  server (or yours, if they invite your application: then your token runs
+  their server), sits in a `.env` on your server, and whoever has root
+  there (you, and anyone who takes it over) can do anything in their
+  server. They can't check what runs, or rotate the token without you.
+- **You hold their members' data.** Their database (join answers with
+  names, courses and employers, profiles, 90 days of message text,
+  recordings) is on your disk, readable by root. Under UK GDPR you'd be
+  their processor: they need a written agreement with you, and their
+  privacy notice must say where the data is and who can see it.
+- **One database, one backup, if they share a process.** `run dir1 dir2`
+  (one bot for several servers) keeps every server in one SQLite file and
+  so one backup bundle, encrypted to the same age keys: restoring one
+  server's data restores all of them, and whoever can decrypt the backups
+  reads all of them. deploy.sh doesn't set that up; separate `SERVICE`s
+  give separate databases and backups, which is better, but their backups
+  are still encrypted to whichever `BACKUP_AGE_RECIPIENT` you put in their
+  deploy.env (put theirs there, not only yours).
+- **Your tailnet.** Their dashboard is a machine on your tailnet, and
+  their admins get shares of it (`[web] share_device`): their accounts show
+  in your tailnet's admin console, the ACLs you write decide what they
+  reach (see [Sharing it with new admins](#web-dashboard-over-tailscale);
+  without a grant, a shared machine is reachable on every port), and the
+  `TAILSCALE_API_KEY` in their `.env` can rename and share your machines.
+- **One machine.** When it's down, both are; recordings and builds share
+  its disk and memory; a deploy for one rebuilds on the same CPU.
+- **One maintainer.** Their outages wait for you, and the people who can
+  fix things ([A new maintainer](#rotating-secrets)) are yours.
+
+Running their own copy (their server, tailnet, Developer Portal
+application and backups; this repo is meant for that) avoids all of it.
+
 ## Recovering from failures
 
+- *The bot is down and newcomers can't get in:* [When the bot is
+  down](#when-the-bot-is-down).
 - *The bot won't start or connect:* `scripts/deploy.sh` already switched
   back if a new release didn't come up. Look at
   `ssh HOST journalctl -u discord-bot -n 50`. A refused token means
