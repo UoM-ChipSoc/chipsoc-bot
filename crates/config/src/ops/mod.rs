@@ -563,8 +563,9 @@ pub fn apply_op(dir: &Path, op: &Op) -> Result<Change> {
 pub fn apply_ops(dir: &Path, ops: &[Op]) -> Result<Change> {
     let before = check(dir)?;
     let tmp = tempfile::tempdir().context("making a scratch copy of the config")?;
-    copy_dir(dir, tmp.path())?;
-    let old = read_all(tmp.path())?;
+    // Read once: the scratch copy is made from what was read.
+    let old = read_all(dir)?;
+    write_all(tmp.path(), &old)?;
     let mut closed = Vec::new();
     for op in ops {
         if let Op::SetProject { slug, set: ProjectField::Status(s) } = op
@@ -595,10 +596,13 @@ pub fn apply_ops(dir: &Path, ops: &[Op]) -> Result<Change> {
     }
     for rel in &changed {
         match new.get(*rel) {
+            // Noted for the next commit as it's written.
             Some(bytes) => write_file(&dir.join(rel), bytes)?,
-            None => fs::remove_file(dir.join(rel)).with_context(|| format!("removing {}", rel.display()))?,
+            None => {
+                fs::remove_file(dir.join(rel)).with_context(|| format!("removing {}", rel.display()))?;
+                crate::files::wrote(&dir.join(rel));
+            }
         }
-        crate::git::wrote(&dir.join(rel));
     }
     let files = changed.iter().map(|p| p.display().to_string()).collect();
     let mut summary = match ops {
@@ -647,6 +651,17 @@ pub fn copy_dir(from: &Path, to: &Path) -> Result<()> {
             fs::create_dir_all(parent)?;
         }
         fs::copy(from.join(&rel), to.join(&rel)).with_context(|| format!("copying {}", rel.display()))?;
+    }
+    Ok(())
+}
+
+/// Write `files` (as [`read_all`] gives them) under `to`.
+fn write_all(to: &Path, files: &BTreeMap<PathBuf, Vec<u8>>) -> Result<()> {
+    for (rel, bytes) in files {
+        if let Some(parent) = to.join(rel).parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(to.join(rel), bytes).with_context(|| format!("copying {}", rel.display()))?;
     }
     Ok(())
 }

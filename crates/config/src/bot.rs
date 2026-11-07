@@ -631,11 +631,56 @@ impl BotConfig {
         .filter_map(|(what, k)| k.map(|k| (what, k)))
         .collect()
     }
+
+    /// How [`BotConfig::timezone`] is named to people: "UK time".
+    pub fn zone_label(&self) -> String {
+        zone_label(&self.timezone)
+    }
+
+    /// A Unix time as "2026-11-04 13:05 UK time", in [`BotConfig::timezone`].
+    pub fn local_minute(&self, ts: i64) -> String {
+        local_minute(&self.timezone, ts)
+    }
+}
+
+/// How a time zone is named to people: "UK time", "Paris time", "UTC" (also
+/// for a name that isn't a time zone, as [`local_minute`] then uses UTC).
+pub fn zone_label(tz: &str) -> String {
+    match tz.parse::<chrono_tz::Tz>().map(|t| t.name()) {
+        Ok("Europe/London" | "GB" | "GB-Eire") => "UK time".to_owned(),
+        Ok(name) if !name.contains('/') || name.starts_with("Etc/") => {
+            name.strip_prefix("Etc/").unwrap_or(name).to_owned()
+        }
+        Ok(name) => format!("{} time", name.rsplit('/').next().unwrap_or(name).replace('_', " ")),
+        Err(_) => "UTC".to_owned(),
+    }
+}
+
+/// A Unix time as "2026-11-04 13:05 UK time", in the time zone `tz` (UTC if
+/// that isn't one).
+pub fn local_minute(tz: &str, ts: i64) -> String {
+    let tz: chrono_tz::Tz = tz.parse().unwrap_or(chrono_tz::UTC);
+    let at = chrono::DateTime::from_timestamp(ts, 0).unwrap_or_default().with_timezone(&tz);
+    format!("{} {}", at.format("%Y-%m-%d %H:%M"), zone_label(tz.name()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn times_are_shown_in_the_servers_zone_and_named() {
+        assert_eq!(zone_label("Europe/London"), "UK time");
+        assert_eq!(zone_label("Europe/Paris"), "Paris time");
+        assert_eq!(zone_label("America/New_York"), "New York time");
+        assert_eq!(zone_label("UTC"), "UTC");
+        assert_eq!(zone_label("Etc/UTC"), "UTC");
+        assert_eq!(zone_label("Mars/Olympus"), "UTC", "not a zone: UTC, as the times are");
+        // 2026-07-01 12:00 UTC is 13:00 in London (summer time); 2026-11-04 12:05 UTC is 12:05.
+        assert_eq!(local_minute("Europe/London", 1_782_907_200), "2026-07-01 13:00 UK time");
+        assert_eq!(local_minute("Europe/London", 1_793_793_900), "2026-11-04 12:05 UK time");
+        assert_eq!(local_minute("nowhere", 0), "1970-01-01 00:00 UTC");
+    }
 
     #[test]
     fn drift_mode_defaults_to_report() {

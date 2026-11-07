@@ -44,8 +44,12 @@ pub async fn solved(ctx: &Ctx, i: &Interaction) {
     let tagged = ctx.call(Method::Patch, &path, Some(serde_json::json!({ "applied_tags": tags }))).await;
     if let Err(e) = tagged {
         tracing::warn!(?e, "tagging solved post failed");
+        ctx.respond(i, &ui::ephemeral("Couldn't mark this solved just now; please try again later.")).await;
         return ctx
-            .respond(i, &ui::ephemeral("Couldn't update this post; is the bot allowed to manage threads?"))
+            .log_bot(&format!(
+                "⚠️ **/solved couldn't tag posts in <#{forum}>:** {}. The bot needs Manage Threads there.",
+                chipsoc_admin::fmt::error(&e)
+            ))
             .await;
     }
     ctx.respond(i, &ui::reply(&solved_text(user.id.get(), solved_tag.is_some(), &help.solved_tag))).await;

@@ -108,6 +108,11 @@ UPDATE applications SET answers = (
 WHERE kind = 'resource' AND json_valid(answers) AND json_type(answers) = 'array';
 "#;
 
+/// A feed's title, as it last read, so people see it rather than its address.
+pub(crate) const SCHEMA_V20: &str = r#"
+ALTER TABLE feeds ADD COLUMN title TEXT;
+"#;
+
 /// Positions people held when they left, offered back if they return.
 pub(crate) const SCHEMA_V4: &str = r#"
 CREATE TABLE former_roles (
@@ -359,6 +364,8 @@ pub struct Feed {
     pub ts: i64,
     /// Not checked for new items while paused.
     pub paused: bool,
+    /// Its title, as it last read (none before it was first read).
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
@@ -811,7 +818,7 @@ impl Guild<'_> {
 
     pub async fn feeds(&self) -> Result<Vec<Feed>> {
         Ok(sqlx::query_as(
-            "SELECT id, url, channel_key, added_by, ts, paused FROM feeds WHERE guild_id = ? ORDER BY id",
+            "SELECT id, url, channel_key, added_by, ts, paused, title FROM feeds WHERE guild_id = ? ORDER BY id",
         )
         .bind(self.guild)
         .fetch_all(self.pool)
@@ -819,11 +826,25 @@ impl Guild<'_> {
     }
 
     pub async fn feed(&self, id: i64) -> Result<Option<Feed>> {
-        Ok(sqlx::query_as("SELECT id, url, channel_key, added_by, ts, paused FROM feeds WHERE guild_id = ? AND id = ?")
+        Ok(sqlx::query_as(
+            "SELECT id, url, channel_key, added_by, ts, paused, title FROM feeds WHERE guild_id = ? AND id = ?",
+        )
+        .bind(self.guild)
+        .bind(id)
+        .fetch_optional(self.pool)
+        .await?)
+    }
+
+    /// Keep a feed's title, as it reads now.
+    pub async fn set_feed_title(&self, id: i64, title: &str) -> Result<()> {
+        sqlx::query("UPDATE feeds SET title = ? WHERE guild_id = ? AND id = ? AND title IS NOT ?")
+            .bind(title)
             .bind(self.guild)
             .bind(id)
-            .fetch_optional(self.pool)
-            .await?)
+            .bind(title)
+            .execute(self.pool)
+            .await?;
+        Ok(())
     }
 
     /// Stop following a feed and forget its items. False if there was no such feed.
@@ -1468,6 +1489,9 @@ mod tests {
         assert!(!g.feed(f).await.unwrap().unwrap().paused);
         assert!(g.set_feed_paused(f, true).await.unwrap());
         assert!(g.feeds().await.unwrap()[0].paused);
+        assert_eq!(g.feed(f).await.unwrap().unwrap().title, None, "not read yet");
+        g.set_feed_title(f, "Chip news").await.unwrap();
+        assert_eq!(g.feeds().await.unwrap()[0].title.as_deref(), Some("Chip news"));
         assert!(!s.guild("g2").set_feed_paused(f, false).await.unwrap(), "scoped by guild");
     }
 

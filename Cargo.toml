@@ -10,6 +10,7 @@ repository = "https://github.com/UoM-ChipSoc/chipsoc-bot"
 
 [workspace.dependencies]
 chipsoc-admin = { version = "0.1.0", path = "crates/admin" }
+chipsoc-api = { version = "0.1.0", path = "crates/api" }
 chipsoc-bot = { version = "0.1.0", path = "crates/cli" }
 chipsoc-client = { version = "0.1.0", path = "crates/client" }
 chipsoc-config = { version = "0.1.0", path = "crates/config" }

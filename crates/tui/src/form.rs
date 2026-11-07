@@ -113,7 +113,7 @@ impl Key {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Input {
     pub key: Key,
-    pub label: &'static str,
+    pub label: std::borrow::Cow<'static, str>,
     pub value: Value,
     /// A line of help under the form while this field is picked.
     pub hint: &'static str,
@@ -121,25 +121,25 @@ pub struct Input {
 
 impl Input {
     pub fn text(key: Key, value: impl Into<String>) -> Self {
-        Self { key, label: key.label(), value: Value::Text(value.into()), hint: "" }
+        Self { key, label: key.label().into(), value: Value::Text(value.into()), hint: "" }
     }
 
     pub fn toggle(key: Key, on: bool) -> Self {
-        Self { key, label: key.label(), value: Value::Toggle(on), hint: "" }
+        Self { key, label: key.label().into(), value: Value::Toggle(on), hint: "" }
     }
 
     /// Pick one of `options` (value, label), starting at `current` (else the first).
     pub fn choice(key: Key, options: Vec<(String, String)>, current: &str) -> Self {
         let at = options.iter().position(|(v, _)| v == current).unwrap_or(0);
-        Self { key, label: key.label(), value: Value::Choice(options, at), hint: "" }
+        Self { key, label: key.label().into(), value: Value::Choice(options, at), hint: "" }
     }
 
     pub fn hint(self, hint: &'static str) -> Self {
         Self { hint, ..self }
     }
 
-    pub fn labelled(self, label: &'static str) -> Self {
-        Self { label, ..self }
+    pub fn labelled(self, label: impl Into<std::borrow::Cow<'static, str>>) -> Self {
+        Self { label: label.into(), ..self }
     }
 
     pub fn is_choice(&self) -> bool {

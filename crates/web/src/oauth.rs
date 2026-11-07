@@ -62,6 +62,9 @@ impl<'c> oauth2::AsyncHttpClient<'c> for Via<'_> {
 /// Asks the bot whether a Discord user may use the UI, and tells its log.
 pub(crate) trait Members: Send + Sync {
     fn may_use(&self, user: Snowflake) -> BoxFuture<'_, Result<bool>>;
+    /// Who [`Members::may_use`] lets in, for someone it doesn't: "members of
+    /// Committee, or anyone with Manage Server".
+    fn who_may_use(&self) -> BoxFuture<'_, String>;
     /// Post `text` in the bot log (`log.bot`), pinging nobody; failures are only logged.
     fn note(&self, text: String) -> BoxFuture<'_, ()>;
 }

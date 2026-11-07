@@ -271,8 +271,12 @@ pub async fn activity<R: Rest + Clone>(c: &Ctx<'_, R>, limit: usize) -> Result<(
     Ok(())
 }
 
-/// `history [--admin <id>]`.
-pub async fn history<R: Rest + Clone>(c: &Ctx<'_, R>, admin: Option<Snowflake>, limit: usize) -> Result<()> {
+/// `history [--admin <who>]`.
+pub async fn history<R: Rest + Clone>(c: &Ctx<'_, R>, admin: Option<&str>, limit: usize) -> Result<()> {
+    let admin = match admin {
+        Some(typed) => Some(c.b.user(typed).await?),
+        None => None,
+    };
     let done = c.b.changes(admin, limit).await?;
     if c.json {
         return print_json(&done);
@@ -292,7 +296,7 @@ pub async fn history<R: Rest + Clone>(c: &Ctx<'_, R>, admin: Option<Snowflake>, 
 
 /// `revert <id> [--rewind]`: a new commit; applying it is the next step.
 pub async fn revert<R: Rest + Clone>(c: &Ctx<'_, R>, change: &str, rewind: bool) -> Result<()> {
-    use chipsoc_config::git::Undo;
+    use chipsoc_engine::git::Undo;
     let (how, what) =
         if rewind { (Undo::Rewind, "Put the config back as it was right after") } else { (Undo::Revert, "Undo") };
     if !confirm(&format!("{what} change {change}? It's saved as a new change; Discord changes when you apply."), c.yes)?

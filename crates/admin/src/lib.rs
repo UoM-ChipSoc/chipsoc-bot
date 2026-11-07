@@ -112,9 +112,9 @@ pub trait Host: Sync {
     fn undo<'a>(
         &'a self,
         _commit: &'a str,
-        _how: chipsoc_config::git::Undo,
+        _how: chipsoc_engine::git::Undo,
         _by: &'a By,
-    ) -> impl Future<Output = Result<Option<chipsoc_config::git::Undid>>> + Send + 'a {
+    ) -> impl Future<Output = Result<Option<chipsoc_engine::git::Undid>>> + Send + 'a {
         async { anyhow::bail!("going back on config changes isn't possible from here") }
     }
 }

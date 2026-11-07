@@ -8,7 +8,6 @@
 use std::sync::{Arc, PoisonError};
 use std::time::Duration;
 
-use anyhow::anyhow;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -17,20 +16,20 @@ use chipsoc_admin::join::Notice;
 use chipsoc_admin::{Decided, Drift, Entry, FeedInfo, Host as _, NewResource, Past, Pending, Post, Roster};
 use chipsoc_config::ops::{Change, Schema};
 use chipsoc_config::template::{self, Rendered};
-use chipsoc_config::{Snowflake, authoring};
+use chipsoc_config::{Snowflake, authoring, blocking};
 use chipsoc_discord::Rest;
 use chipsoc_engine::{Options, Problems, Pulled, plan_lines};
 use chipsoc_model::{Action, Expiring, Plan};
 use serde::Deserialize;
 use tokio::time::Instant;
 
-use crate::App;
 use crate::auth::{Session, random_token};
 use crate::projects;
 use crate::remote::{
-    ApplyRequest, Appoint, Checked, Decision, Exported, Me, NewFeed, NewProject, Note, Pause, Planned, Preview,
-    ProjectList, PullRequest, Refusal, Saved, SetApplications, SetStatus, Status, Step,
+    ApplyRequest, Appoint, Checked, CloseIdea, Decision, Exported, Me, NewFeed, NewProject, Note, Pause, Planned,
+    Preview, ProjectList, PullRequest, Refusal, Saved, SetApplications, SetStatus, Status, Step,
 };
+use crate::{App, to_end};
 
 /// How long a plan waits to be applied.
 pub(crate) const PLAN_TTL: Duration = Duration::from_secs(10 * 60);
@@ -116,25 +115,30 @@ pub(crate) async fn export<R: Rest + 'static>(State(app): State<Arc<App<R>>>) ->
     let cfg = app.config().await.ok();
     let guild = app.guild(cfg.as_deref()).await?;
     let dir = std::env::temp_dir().join(format!("chipsoc-export-{}", random_token()));
-    let made = async {
-        chipsoc_engine::export_to(&app.rest, guild, &dir).await?;
-        let mut files = std::collections::BTreeMap::new();
-        let mut todo = vec![dir.clone()];
-        while let Some(d) = todo.pop() {
-            for e in std::fs::read_dir(&d)? {
-                let path = e?.path();
-                if path.is_dir() {
-                    todo.push(path);
-                } else if let Ok(rel) = path.strip_prefix(&dir) {
-                    files.insert(rel.to_string_lossy().replace('\\', "/"), std::fs::read_to_string(&path)?);
-                }
+    let made = chipsoc_engine::export_to(&app.rest, guild, &dir).await;
+    let read = blocking(move || {
+        let files = made.and_then(|_| read_tree(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+        files
+    });
+    Ok(Json(Exported { files: read.await? }))
+}
+
+/// Every file under `dir`, by `/`-separated path.
+fn read_tree(dir: &std::path::Path) -> anyhow::Result<std::collections::BTreeMap<String, String>> {
+    let mut files = std::collections::BTreeMap::new();
+    let mut todo = vec![dir.to_owned()];
+    while let Some(d) = todo.pop() {
+        for e in std::fs::read_dir(&d)? {
+            let path = e?.path();
+            if path.is_dir() {
+                todo.push(path);
+            } else if let Ok(rel) = path.strip_prefix(dir) {
+                files.insert(rel.to_string_lossy().replace('\\', "/"), std::fs::read_to_string(&path)?);
             }
         }
-        anyhow::Ok(files)
     }
-    .await;
-    let _ = std::fs::remove_dir_all(&dir);
-    Ok(Json(Exported { files: made? }))
+    Ok(files)
 }
 
 #[derive(Deserialize)]
@@ -145,13 +149,13 @@ pub(crate) struct PlanQuery {
     sweep: bool,
 }
 
-pub(crate) async fn plan<R: Rest + 'static>(
+pub(crate) async fn plan<R: Rest + Clone + 'static>(
     State(app): State<Arc<App<R>>>,
     Extension(s): Extension<Session>,
     Query(q): Query<PlanQuery>,
 ) -> Reply<Planned> {
     let opts = Options { delete: q.delete, sweep: q.sweep, ..Default::default() };
-    let plan = app.engine().await?.plan(opts).await?;
+    let plan = app.planner().await?.plan(opts).await?;
     let id = app.keep(plan.clone(), &s);
     Ok(Json(Planned { id, lines: plan_lines(&plan), plan }))
 }
@@ -170,12 +174,11 @@ pub(crate) async fn apply<R: Rest + 'static>(
     };
     tracing::info!(actor = s.actor().unwrap_or("-"), "API apply");
     let by = s.by();
-    // Spawned so a dropped connection can't stop an apply halfway.
     let run = async move {
         let mut e = app.engine().await?;
         e.apply_by(&plan, &by, &mut |_: &Action, _: &Result<(), String>| {}).await
     };
-    let report = tokio::spawn(run).await.map_err(|e| anyhow!(e))??;
+    let report = to_end(run).await?;
     let steps = report.outcomes.into_iter().map(|o| Step { action: o.action, error: o.result.err() });
     Ok(Json(steps.collect()))
 }
@@ -198,13 +201,13 @@ pub(crate) async fn pull<R: Rest + 'static>(
     tracing::info!(actor = s.actor().unwrap_or("-"), "API pull from Discord");
     let by = s.by();
     let run = async move { app.engine().await?.adopt_by(req.permissions, &by).await };
-    Ok(Json(tokio::spawn(run).await.map_err(|e| anyhow!(e))??))
+    Ok(Json(to_end(run).await?))
 }
 
 pub(crate) async fn check<R: Rest + 'static>(State(app): State<Arc<App<R>>>) -> Reply<Checked> {
     let dir = app.dir.clone();
     // A file that doesn't load is a problem to report, not a failure.
-    let r = chipsoc_config::git::blocking(move || authoring::check(&dir)).await?;
+    let r = blocking(move || authoring::check(&dir)).await?;
     Ok(Json(Checked { errors: r.errors, warnings: r.warnings }))
 }
 
@@ -212,14 +215,6 @@ pub(crate) async fn projects<R: Rest + 'static>(State(app): State<Arc<App<R>>>) 
     let cfg = app.config().await?;
     let areas = cfg.bot.projects.as_ref().map(|p| p.areas.clone()).unwrap_or_default();
     Ok(Json(ProjectList { projects: cfg.projects.clone(), areas }))
-}
-
-/// Run `work` to the end even if the connection drops, so a change is never
-/// left half made.
-async fn to_end<T: Send + 'static>(
-    work: impl std::future::Future<Output = anyhow::Result<T>> + Send + 'static,
-) -> anyhow::Result<T> {
-    tokio::spawn(work).await.map_err(|e| anyhow!(e))?
 }
 
 pub(crate) async fn add_project<R: Rest + 'static>(
@@ -267,7 +262,7 @@ pub(crate) async fn op<R: Rest + 'static>(
     Json(ops): Json<crate::remote::Ops>,
 ) -> Reply<Change> {
     let ops = ops.into_vec();
-    Ok(Json(to_end(async move { app.edit_ops(&s, &ops).await }).await?))
+    Ok(Json(app.edit_ops(&s, &ops).await?))
 }
 
 /// `POST /ops/preview`: a managed post's markdown as Discord would get it.
@@ -306,7 +301,6 @@ pub(crate) async fn decide<R: Rest + Clone + 'static>(
     Path(id): Path<i64>,
     Json(d): Json<Decision>,
 ) -> Reply<Decided> {
-    // Spawned so a dropped connection can't stop it halfway.
     let run = async move {
         use crate::people::Spoken as _;
         let desk = app.desk(&s).await?;
@@ -322,7 +316,7 @@ pub(crate) async fn decide<R: Rest + Clone + 'static>(
             },
         )
     };
-    let decided = tokio::spawn(run).await.map_err(|e| anyhow!(e))??;
+    let decided = to_end(run).await?;
     decided.map(Json).map_err(|why| failure(StatusCode::CONFLICT, why))
 }
 
@@ -340,7 +334,7 @@ pub(crate) async fn make_lead<R: Rest + Clone + 'static>(
             Err(why) => Err(why.spoken(&desk).await),
         })
     };
-    let done = tokio::spawn(run).await.map_err(|e| anyhow!(e))??;
+    let done = to_end(run).await?;
     done.map(Json).map_err(|why| failure(StatusCode::CONFLICT, why))
 }
 
@@ -519,8 +513,8 @@ impl<R: Rest + Clone> App<R> {
 }
 
 /// `GET /drift`: how Discord differs from the config, by who changed what.
-pub(crate) async fn drift<R: Rest + 'static>(State(app): State<Arc<App<R>>>) -> Reply<Drift> {
-    let plan = app.engine().await?.plan(Options::default()).await?;
+pub(crate) async fn drift<R: Rest + Clone + 'static>(State(app): State<Arc<App<R>>>) -> Reply<Drift> {
+    let plan = app.planner().await?.plan(Options::default()).await?;
     Ok(Json(chipsoc_admin::drift(&plan)))
 }
 
@@ -549,7 +543,7 @@ macro_rules! finish {
                 }
             })
         };
-        let done: Result<_, (StatusCode, String)> = tokio::spawn(run).await.map_err(|e| anyhow!(e))??;
+        let done: Result<_, (StatusCode, String)> = to_end(run).await?;
         done.map(Json).map_err(|(status, why)| failure(status, why))
     }};
 }
@@ -605,6 +599,24 @@ pub(crate) async fn archive_resource<R: Rest + Clone + 'static>(
     match archived.await? {
         true => Ok(StatusCode::NO_CONTENT),
         false => Err(failure(StatusCode::NOT_FOUND, "No such post in the resources forum.")),
+    }
+}
+
+/// `POST /ideas/{id}/close` (`{"reason"?}`): close an idea's post, the reason
+/// posted in it (see [`chipsoc_admin::close_idea`]).
+pub(crate) async fn close_idea<R: Rest + Clone + 'static>(
+    State(app): State<Arc<App<R>>>,
+    Extension(s): Extension<Session>,
+    Path(id): Path<Snowflake>,
+    Json(c): Json<CloseIdea>,
+) -> Reply<Note> {
+    let closed = to_end(async move {
+        let desk = app.desk(&s).await?;
+        chipsoc_admin::close_idea(&desk, id, c.reason.as_deref(), &desk.actor).await
+    });
+    match closed.await? {
+        Some(c) => Ok(Json(note(c.plain()))),
+        None => Err(failure(StatusCode::NOT_FOUND, "No such post in the ideas forum.")),
     }
 }
 

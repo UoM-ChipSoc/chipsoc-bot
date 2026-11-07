@@ -130,6 +130,9 @@ pub async fn poll_loop(ctx: Arc<Ctx>) {
                 }
             };
             let name = title(&feed, &f.url);
+            if f.title.as_deref() != Some(name.as_str()) {
+                ctx.log_err(ctx.db().set_feed_title(f.id, &name).await, "keeping a feed's title");
+            }
             let forum = ctx.cfg().desired.channel(&f.channel_key).is_some_and(|c| c.kind.has_tags());
             for entry in feed.entries.iter().take(10).rev() {
                 if !ctx.db().mark_item(f.id, &entry.id).await.unwrap_or(false) {

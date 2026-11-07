@@ -144,6 +144,8 @@ const MIGRATIONS: &[&str] = &[
     fed::SCHEMA_V17,
     fed::SCHEMA_V18,
     guild::SCHEMA_V19,
+    guild::SCHEMA_V20,
+    trusted::SCHEMA_V21,
     SCHEMA_V22,
 ];
 

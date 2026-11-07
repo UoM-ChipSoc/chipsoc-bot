@@ -9,12 +9,12 @@ repository.workspace = true
 [dependencies]
 anyhow.workspace = true
 chipsoc-admin.workspace = true
+chipsoc-api.workspace = true
 chipsoc-config.workspace = true
 chipsoc-discord.workspace = true
 chipsoc-engine.workspace = true
 chipsoc-model.workspace = true
 chipsoc-store.workspace = true
-getrandom.workspace = true
 oauth2.workspace = true
 reqwest.workspace = true
 serde.workspace = true

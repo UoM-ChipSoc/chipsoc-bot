@@ -47,9 +47,9 @@ Anyone who can push to the config repo can propose anything, but:
   too), is refused: to move an id to another key, drop the old key first
   (and approve that). A post's or forum post's entry must be the bot's own
   message, in the channel or forum its key names; otherwise the bot posts a
-  fresh one. A long post's
-  later parts (`parts = [...]`) are never taken from the repo: the bot keeps
-  its own, and a repo that differs only there is not refused. So a pushed
+  fresh one. A long post's later parts (`parts = [...]`) are never taken
+  from the repo: the bot keeps its own, and a repo that differs only there
+  is not refused. So a pushed
   change always shows as "changed in config", which needs an admin's Apply.
 - Sensitive settings wait for an admin's **Approve** in `log.bot`:
   `admin_role`, which positions are `admin`, who members.toml lists for those
@@ -65,14 +65,15 @@ Anyone who can push to the config repo can propose anything, but:
   in commits are never trusted, so a change pushed to the repo any other
   way counts as nobody's, and any admin may approve it (the card says it
   was pushed): who can push is the repo's to control. The server owner may
-  approve their own. A change to `admin_role`, admin positions, `key_env`, partners,
-  `[drift] mode` or how recordings are transcribed (`[recording]`
+  approve their own. A change to `admin_role`, admin positions, `key_env`,
+  partners, `[drift] mode` or how recordings are transcribed (`[recording]`
   `transcribe`, `model`, `whisper`), or one taking a role from the owner,
   only the server owner approves; the card names the exact program and
   model. Approved changes to who holds admin roles are applied at once.
   **Reject** keeps the approved settings until the files are changed back.
   A card is remembered only once it's posted: one that couldn't be posted,
-  or was deleted, goes up again on the next sync (every 2 minutes), and
+  or was deleted, goes up again within 2 minutes (whether or not the config
+  is a git checkout), and
   `/server approvals` posts it again on demand.
 - The first run (and a fresh database) approves what's there only if the
   config's admins are who Discord says: each admin role (`admin_role`,

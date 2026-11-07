@@ -29,7 +29,8 @@ suggestions to Accept or Reject in the second.
 Accept their `/volunteer` card, or the Members page). For an admin position
 a second admin presses **Approve** in `log.bot`, and they get the role and
 `admin_role`; nobody appoints themselves except the server owner. They get
-a welcome DM saying what they can do and where (with a dashboard link when
+a welcome DM saying what they can do and where (`/server help`, the review
+channel, `/record` when recording is on, and a dashboard link when
 Tailscale is set up). Someone who should be an admin without a position
 goes under `admin_role` in members.toml.
 
@@ -85,7 +86,7 @@ owner can …". The list is `owner_only` in `crates/engine/src/owner.rs`.
 
 **Undoing what someone did.** `/server history` (the web's Apply →
 History page, `history`, `GET /changes`) lists the config's changes with
-who made them; `/server history @admin` (`history --admin <id>`) is what
+who made them; `/server history @admin` (`history --admin <who>`) is what
 one admin did this week, from the audit log and the config's history. The
 owner undoes one with `/server revert <id>` (Revert on that page, `revert
 <id>`, `POST /undo`), or puts the whole config back as it was right after
@@ -153,7 +154,7 @@ card at once.
 | `/share-resource` | Anyone | Title, https link, what it is, the forum's tags; checked (not shared before), then a review card; once accepted, a post crediting them, and a DM. |
 | `/suggest-feed` | Anyone | A feed's address, or a website's (its feed is found from the page). A review card; once accepted, new posts are shared; a DM either way. |
 | `/profile` | Anyone | Sets their nickname (with `join.toml`: opens the join flow). |
-| `/solved` | Asker, admins | Tags a help post solved and closes it. |
+| `/solved` | Asker, admins | Tags a help post solved and closes it. If the bot can't (it needs Manage Threads in the forum), the member is asked to try later and `log.bot` says why. |
 | `/partners` | Anyone | Partners' project catalogues (with partners only). |
 | `/event` | Anyone | Admins: a scheduled event at once (in a voice or stage channel if "Where" names one), announced, with reminders a day and an hour before. Members: a suggestion for review; Accept makes it, crediting them, and they get a DM either way. A start that can't be read or has passed, or a length outside 5–1440 minutes, is refused. |
 | `/server help` | Anyone | Start here: what admins can do, by area, and where. |
@@ -168,8 +169,8 @@ card at once.
 | `/server member list\|info\|appoint\|remove` | Admins | Positions and who holds them, and who left; what someone answered when they joined; appoint or take out. |
 | `/server project status\|applications\|rename`, `/server position open\|close` | Admins | Config edits: saved, then shown as a plan with an **Apply** button. Closing a position with a window posts its applicants' card. |
 | `/server project lead` | Admins | Make someone a project lead (the Lead role, and a DM). Refused, and nobody told, if the Lead role has moderator or admin permissions in Discord the config doesn't give it. |
-| `/server feed list\|add\|pause\|resume\|remove`, `/server resource list\|add\|archive` | Admins | Feeds (a paused one isn't checked) and the resources forum. |
-| `/server idea close <post> [reason]` | Admins | Close an idea's post, after **Confirm**: it gets `[ideas] closed_tag` if set (and loses the needs-lead tag), "🔒 **Closed:** <reason>" (or just "🔒 **Closed.**") is posted in it, then it's archived and locked (never deleted). The reply says whether it was tagged. |
+| `/server feed list\|add\|pause\|resume\|remove`, `/server resource list\|add\|archive` | Admins | Feeds (by title, which the bot keeps as each one last read; a paused one isn't checked) and the resources forum. |
+| `/server idea close <post> [reason]` | Admins | Close an idea's post, after **Confirm**: it gets `[ideas] closed_tag` if set (and loses the needs-lead tag), "🔒 **Closed:** <reason>" (or just "🔒 **Closed.**") is posted in it, then it's archived and locked (never deleted). The reply says whether it was tagged. Also on the dashboard's Resources page (**Close…**, a reason, then **Yes, close this idea**), the TUI's Resources tab, `idea close` and the API. |
 | `/server join notify` | Admins | Says how many members haven't been through the join flow, then DMs them once with **Send to N**. |
 | `/server share announcement\|event` | Admins | Share an announcement (its link) or one of our events with partners you pick from a menu; only partners whose `send` lists that kind are offered ([partners.md](partners.md#sharing-content)). Making an event with `/event` offers the same menu. |
 | `/record start [channel]`, `/record stop` | Admins, `[recording] who` | Record a meeting in the call you're in (or the one named); see below. |
@@ -191,10 +192,10 @@ Whoever joins while it records gets that by DM (in the call's chat, to
 them, if their DMs are closed; failing that, in the channel `/record
 start` was run from). If none of those works, the recording stops and
 `log.bot` says why. Only whoever started a recording, or an admin, stops
-it. There's no opt-out button: someone who
-doesn't want to be recorded leaves the call. Change the wording with
-`notice` and `join_notice`, but keep it clear: who records, that it's
-transcribed, who keeps it, and how not to be in it.
+it. There's no opt-out button: someone who doesn't want to be recorded
+leaves the call. Change the wording with `notice` and `join_notice`, but
+keep it clear: who records, that it's transcribed, who keeps it, and how
+not to be in it.
 
 It stops with `/record stop`, when the call has been empty for 2 minutes,
 at `max_hours` (default 3), at `max_gb`, when all the server's recordings
@@ -213,9 +214,8 @@ closed and reported when it starts again.
 
 Recordings are never deleted by the bot. An admin deletes one on its page
 (**Delete this recording**, then **Yes, delete it for good**); it's logged
-in the audit log and `log.bot`. Do
-that when someone asks for their recording to be erased, or when your
-retention period is up.
+in the audit log and `log.bot`. Do that when someone asks for their
+recording to be erased, or when your retention period is up.
 
 **Your duties (UK GDPR).** A recording of people is their personal data.
 Before turning this on: say in the server's rules or privacy notice that
@@ -258,8 +258,8 @@ Every command takes `--config <dir>`. Commands that edit files keep comments.
 | `position list\|new\|set\|questions\|intro\|open\|close\|move\|remove` | Positions and their forms. |
 | `member list\|info\|appoint\|remove\|restore\|forget` | Positions and who holds them (`add` still works for `appoint`). |
 | `queue list\|show\|accept\|reject [--reason]\|lead\|history` | The review queue. |
-| `feed`, `resource`, `ideas`, `activity` | Feeds, the resources forum, ideas, the audit log. |
-| `history [--admin <id>]`, `revert <id> [--rewind]` | Who changed the config; undo a change (the server owner). |
+| `feed`, `resource`, `idea list\|close <post> [--reason]`, `activity` | Feeds, the resources forum, ideas (closing asks first, as in Discord), the audit log. |
+| `history [--admin <who>]`, `revert <id> [--rewind]` | Who changed the config, or what one admin (@username, name or id) did this week; undo a change (the server owner). |
 | `join status\|notify` | The join flow's progress; the one-off DM (says how many and asks first). |
 | `post list\|show\|set`, `onboarding …` | Bot posts (shown as Discord will show them) and onboarding questions. |
 | `op '<json>'`, `schema` | Any config edit as an `Op`; what can be edited. |
@@ -268,7 +268,9 @@ Every command takes `--config <dir>`. Commands that edit files keep comments.
 | `share announcement\|event <link or id> [--to a,b]` | Share with partners (default: every partner we send it to); the bot sends it within a minute. Also `POST /api/v1/share`. |
 | `login [--server <url>] [--paste]`, `logout` | Signs in to the bot's web server with Discord (default: bot.toml's `[web] url`), or out. |
 
-**Terminal UI keys:** ↑↓ or j/k move, Tab or 1–9, 0 switch tabs, `?` help,
+**Terminal UI keys:** ↑↓ or j/k move, Tab or the number keys switch tabs
+(in the dashboard's order: 1 Overview, 2 Queue, 3 Members, 4 Projects,
+5 Positions, 6 Feeds, 7 Resources, 8 Channels, 9 Roles, 0 Apply), `?` help,
 `q` quit. On the Queue: `a` accept, `x` reject, `h` history, then `l` make
 lead. On Apply: `f` plan, `a` apply, `p` pull. The footer lists the rest;
 Enter in a form names what it does ("Enter  reject", "appoint", …).
@@ -320,7 +322,7 @@ edit with problems (listed in `problems`).
 | `GET`/`POST /members`, `DELETE /members/{role}/{user}`, `POST /members/former/{user}/restore`, `DELETE /members/former/{user}` | Holders; appoint (`{"role", "user"}`) or take out; restore or forget a returner. |
 | `GET /members/find?q=`, `GET /members/about/{user}` | Members by name (`@ada`, `Ada Lovelace`), for picking someone; what someone told the bot (profile, join answers). |
 | `GET`/`POST /feeds`, `POST /feeds/{id}/pause` (`{"paused"}`), `DELETE /feeds/{id}` | Feeds. |
-| `GET`/`POST /resources`, `DELETE /resources/{id}`, `GET /ideas` | The resources forum (archiving closes and locks, never deletes); ideas. |
+| `GET`/`POST /resources`, `DELETE /resources/{id}`, `GET /ideas`, `POST /ideas/{id}/close` (`{"reason"?}`) | The resources forum (archiving closes and locks, never deletes); ideas, and closing one. |
 | `POST /share` (`{"what": "announcement"\|"event", "item", "partners"}`) | Share an announcement (its message link) or an event (its link or id) with partners (`partners` empty: every partner we send that kind to). |
 | `GET /activity`, `GET /join`, `GET`/`POST /join/notify` | The audit log; join-flow progress; the join-flow DM. |
 | `GET /changes` (`?user=`), `POST /undo` (`{"commit", "how": "revert"\|"rewind"}`) | Who changed the config (or what one admin did this week); undo a change (the server owner). |

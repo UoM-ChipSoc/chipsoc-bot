@@ -1,0 +1,17 @@
+[package]
+name = "chipsoc-api"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+chipsoc-admin.workspace = true
+chipsoc-config.workspace = true
+chipsoc-engine.workspace = true
+chipsoc-model.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true

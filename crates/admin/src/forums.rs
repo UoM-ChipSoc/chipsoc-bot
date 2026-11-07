@@ -186,6 +186,9 @@ pub struct Post {
     pub content: String,
     pub author: Option<Snowflake>,
     pub archived: bool,
+    /// Locked: only moderators can reply (a closed idea or an archived resource is).
+    #[serde(default)]
+    pub locked: bool,
     pub link: String,
 }
 
@@ -504,6 +507,14 @@ impl Closed {
             None => format!("Closed <#{post}>: locked and archived; still readable."),
         }
     }
+
+    /// The same as plain text, by the post's title (the dashboard, the CLI, the API).
+    pub fn plain(&self) -> String {
+        match &self.tag {
+            Some(t) => format!("Closed {}: tagged {t}, locked and archived; still readable.", self.title),
+            None => format!("Closed {}: locked and archived; still readable.", self.title),
+        }
+    }
 }
 
 /// Close an idea: its post gets `[ideas] closed_tag` if set (and loses the
@@ -632,6 +643,7 @@ fn post(guild: Snowflake, t: &Value, names: &[(Value, String)], content: String)
         content,
         author: id(&t["owner_id"]),
         archived: t["thread_metadata"]["archived"] == true,
+        locked: t["thread_metadata"]["locked"] == true,
         link: format!("https://discord.com/channels/{guild}/{tid}"),
     }
 }

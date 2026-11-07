@@ -166,6 +166,7 @@ pub const REMOVE_POSITION: Binding = key!("x", 'x', "remove position", Remove);
 pub const REMOVE_FEED: Binding = key!("x", 'x', "remove feed", Remove);
 pub const REMOVE_CATEGORY: Binding = key!("x", 'x', "remove category", Remove);
 pub const ARCHIVE_POST: Binding = key!("x", 'x', "archive post", Remove);
+pub const CLOSE_IDEA: Binding = key!("x", 'x', "close idea", Remove);
 pub const PERMISSIONS: Binding = key!("p", 'p', "permissions", Permissions);
 pub const POST: Binding = key!("b", 'b', "bot post", Post);
 pub const STATUS: Binding = key!("s", 's', "status", SetStatus);
@@ -196,14 +197,14 @@ pub const TABS: Binding = bind(
         (plain(KeyCode::Tab), Act::NextTab),
         (plain(KeyCode::BackTab), Act::PrevTab),
         (ch('1'), Act::Go(Tab::Overview)),
-        (ch('2'), Act::Go(Tab::Roles)),
-        (ch('3'), Act::Go(Tab::Channels)),
+        (ch('2'), Act::Go(Tab::Queue)),
+        (ch('3'), Act::Go(Tab::Members)),
         (ch('4'), Act::Go(Tab::Projects)),
         (ch('5'), Act::Go(Tab::Positions)),
-        (ch('6'), Act::Go(Tab::Queue)),
-        (ch('7'), Act::Go(Tab::Members)),
-        (ch('8'), Act::Go(Tab::Feeds)),
-        (ch('9'), Act::Go(Tab::Resources)),
+        (ch('6'), Act::Go(Tab::Feeds)),
+        (ch('7'), Act::Go(Tab::Resources)),
+        (ch('8'), Act::Go(Tab::Channels)),
+        (ch('9'), Act::Go(Tab::Roles)),
         (ch('0'), Act::Go(Tab::Changes)),
     ],
 );

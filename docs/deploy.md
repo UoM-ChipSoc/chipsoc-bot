@@ -62,8 +62,8 @@ size](#server-size).
    unprivileged user, or on your machine](#where-releases-are-built)),
    checks the new release loads the config (pulled first), and switches to
    it. It then waits `HEALTH_WAIT` seconds for the bot to log that it
-   connected and watches it stay up for `HEALTH_STABLE`; if not, it switches back to the release
-   before and fails. The five newest releases are kept. Once it's up, it
+   connected and watches it stay up for `HEALTH_STABLE`; if not, it
+   switches back to the release before and fails. The five newest releases are kept. Once it's up, it
    moves the git tag `deployed` (`DEPLOY_TAG`) to the commit it shipped and
    pushes it (`DEPLOY_TAG_REMOTE`); `rollback` moves it back (a failed push
    is a note, not a failed deploy). The config repo's CI checks the bot out
@@ -232,9 +232,8 @@ The server keeps the newest two in `DIR/backup/bundles` (`BACKUP_KEEP` with
 
 - `scripts/deploy.sh backup` backs up now and downloads the bundle and its
   `.sig` into `backups/` (still encrypted; the newest `BACKUP_KEEP` are kept
-  there).
-  `--latest` downloads the newest there is, without making one. Before
-  backup-setup it downloads the plain database, as it always did.
+  there). `--latest` downloads the newest there is, without making one.
+  Before backup-setup it downloads the plain database, as it always did.
 - `scripts/deploy.sh backup-check` says whether the last run worked and
   the timer is on. Then it fetches the newest bundle from the destination
   itself (names dated in the future are passed over), checks the server's
@@ -256,8 +255,9 @@ The server keeps the newest two in `DIR/backup/bundles` (`BACKUP_KEEP` with
   whoever can write where the backups are kept could rename an old bundle
   as the newest and roll the database back. If you renamed it yourself,
   `--renamed` asks instead (no is the default; `ASSUME_YES` doesn't answer
-  it without `--renamed`). It also shows how old the bundle is. It decrypts on your machine
-  straight into ssh (the secrets aren't written to your disk) and unpacks
+  it without `--renamed`). It also shows how old the bundle is. It decrypts
+  on your machine straight into ssh (the secrets aren't written to your
+  disk) and unpacks
   on the server: only the files a bundle has, as plain root-owned files
   (links and anything else refuse the whole restore). It checks the
   database, and that the secrets have `DISCORD_TOKEN` and only settings the
@@ -360,7 +360,8 @@ new gets further. Until it's back:
   push's plan in `log.bot`: apply it (what you did by hand is already
   there). Set `gate = true` again later, when you want it.
 
-Then find out why it's down: [Recovering from failures](#recovering-from-failures).
+Then find out why it's down:
+[Recovering from failures](#recovering-from-failures).
 
 ## Voice recordings
 
@@ -410,10 +411,9 @@ the secrets host to host without touching your disk.
 
 1. **Checks** both: reachable, `NEW_HOST` is another machine with systemd,
    the bot doesn't already run there, enough disk (the recordings
-   included), `sqlite3`, `git`,
-   `sudo`, `curl` and `jq` (and `age`, `rclone` if backups use them) there
-   or installed (it asks), and Tailscale up on `NEW_HOST` if `WEB_URL` is
-   set. If `NEW_HOST` has some of an install already, it asks first.
+   included), `sqlite3`, `git`, `sudo`, `curl` and `jq` (and `age`,
+   `rclone` if backups use them) there or installed (it asks), and
+   Tailscale up on `NEW_HOST` if `WEB_URL` is set. If `NEW_HOST` has some of an install already, it asks first.
 2. **Sets up `NEW_HOST`** while the bot still runs: user and folders; the
    `.env`, deploy key and backup settings copied over; the config cloned
    (which proves the deploy key works there); the running release copied
@@ -587,9 +587,9 @@ application and backups; this repo is meant for that) avoids all of it.
   rotating it; a config that doesn't load is said in `log.bot` (push a fix);
   `scripts/deploy.sh rollback` goes back one release.
 - *The config can't sync (`log.bot` says so every hour):* the bot's
-  unpushed commit clashes with the repo's. See it with
-  `scripts/deploy.sh git fetch` and
-  `scripts/deploy.sh git log --oneline origin/main..HEAD`, and save it with
+  unpushed commit clashes with the repo's. See it with `scripts/deploy.sh
+  git fetch` and `scripts/deploy.sh git log --oneline origin/main..HEAD`,
+  and save it with
   `scripts/deploy.sh git diff origin/main HEAD > clash.patch`. Make the same
   change in the repo by hand (if it's still wanted), then
   `scripts/deploy.sh git reset --hard origin/main`; the bot syncs again
@@ -613,6 +613,7 @@ application and backups; this repo is meant for that) avoids all of it.
   `secrets` instead of restore:
   the bot starts afresh, the queue, logs and partner state are gone, and it
   approves the repo's sensitive settings as they are, so check them first.
-  A server that still runs: `migrate` ([Moving to another server](#moving-to-another-server)).
+  A server that still runs: `migrate`
+  ([Moving to another server](#moving-to-another-server)).
 - *A lost `.env.server`:* rotate every secret above, make a new partner key
   and ask partners for new webhooks.

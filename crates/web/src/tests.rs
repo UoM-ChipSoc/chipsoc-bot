@@ -454,7 +454,7 @@ async fn discord_sign_in_refuses_people_who_do_not_run_the_server() {
         let mut b = Browser::discord();
         let page = b.sign_in_with_discord(code).await;
         assert_eq!(page.status, StatusCode::FORBIDDEN, "{code}");
-        assert!(page.body.contains("Only the committee") && page.body.contains("another account"), "{}", page.body);
+        assert!(page.body.contains("Only members of") && page.body.contains("another account"), "{}", page.body);
         assert!(!b.cookies.contains_key("session"), "{code} got no session");
         assert_eq!(b.get("/").await.location.as_deref(), Some("/login"));
     }
@@ -882,7 +882,7 @@ async fn api_runs_the_review_queue_feeds_resources_and_activity() {
 
 #[tokio::test]
 async fn the_remote_client_reaches_every_endpoint() {
-    use crate::remote::{Client, Login};
+    use chipsoc_client::remote::{Client, Login};
     use chipsoc_config::Snowflake;
     use chipsoc_config::ops::{Op, RoleField};
 
@@ -1068,7 +1068,7 @@ async fn roles_are_edited_through_ops_with_a_flash_once() {
     assert_eq!(added.location.as_deref(), Some("/roles"));
     let page = b.follow(added).await;
     assert!(
-        page.body.contains("class=\"note good flash\"") && page.body.contains("Add role Mods (mods)"),
+        page.body.contains("class=\"note good flash\"") && page.body.contains("Saved: added the role Mods."),
         "{}",
         page.body
     );
@@ -1346,6 +1346,39 @@ async fn resources_are_shared_and_taken_down_only_when_confirmed() {
     assert!(b.get("/resources").await.body.contains("The ideas forum is off"));
 }
 
+#[tokio::test]
+async fn an_idea_is_closed_from_the_web_with_a_reason() {
+    let mut b = ada().await;
+    let p = b.dir.path();
+    write(p, "bot.toml", "name = \"Test\"\nadmin_role = \"admin\"\n[ideas]\nforum = \"projects\"\n");
+    write(
+        p,
+        "lock.toml",
+        &format!("guild = \"1000\"\n[roles]\nadmin = \"{ADMIN_ROLE}\"\n[channels]\nprojects = \"1700\"\n"),
+    );
+    b.discord.state.lock().unwrap().channels.push(json!({ "id": "1700", "type": 15, "name": "projects" }));
+    let body = json!({ "name": "A tiny GPU", "message": { "content": "Let's build one." } });
+    let idea = b.discord.call(chipsoc_discord::Method::Post, "channels/1700/threads", Some(body)).await.unwrap();
+    let id = idea["id"].as_str().unwrap().to_owned();
+
+    let page = b.get("/resources").await;
+    assert!(page.body.contains("A tiny GPU") && page.body.contains("Yes, close this idea"), "{}", page.body);
+    assert!(page.body.contains("Reason (optional, posted on the idea)"), "{}", page.body);
+    let closed =
+        b.submit("/resources/close-idea", &[("id", &id), ("confirm", "yes"), ("reason", "Merged into Golem")]).await;
+    let page = b.follow(closed).await;
+    assert!(page.body.contains("Closed A tiny GPU: locked and archived; still readable."), "{}", page.body);
+    assert!(!page.body.contains("Yes, close this idea"), "a closed idea isn't offered again");
+    let st = b.discord.state.lock().unwrap();
+    let thread = st.channels.iter().find(|c| c["id"] == id).unwrap();
+    assert_eq!(thread["thread_metadata"]["locked"], true);
+    assert!(
+        st.messages
+            .iter()
+            .any(|m| m["channel_id"] == id && m["content"].as_str().unwrap().contains("Merged into Golem"))
+    );
+}
+
 /// A tiny router with just the theme parts.
 fn theme_test_router() -> axum::Router {
     use axum::routing::get;
@@ -1498,7 +1531,7 @@ async fn the_shared_code_signs_as_shared_token() {
 #[tokio::test]
 async fn an_attacker_started_cli_sign_in_lands_on_the_admins_own_machine() {
     let mut b = Browser::discord();
-    let attacker = crate::remote::Verifier::new();
+    let attacker = chipsoc_client::remote::Verifier::new();
     let start =
         format!("/auth/cli?port=4567&state={CLI_STATE}&challenge={}&device=evil%20%60box%60", attacker.challenge);
     let page = b.cli_discord(&start, "code-ada").await;
@@ -1830,7 +1863,7 @@ async fn the_history_names_who_and_only_the_owner_reverts() {
         &[
             "commit",
             "-qam",
-            &format!("Project golem: status past by ada\n\n{}: {ADMIN}", chipsoc_config::git::BY_TRAILER),
+            &format!("Project golem: status past by ada\n\n{}: {ADMIN}", chipsoc_engine::git::BY_TRAILER),
         ],
     );
     assert!(b.projects_toml().contains("status = \"past\""));
@@ -1853,7 +1886,7 @@ async fn the_history_names_who_and_only_the_owner_reverts() {
     assert!(b.projects_toml().contains("status = \"active\""), "back as it was");
     let last = git_in(&dir, &["log", "-1", "--format=%s%n%b"]);
     assert!(
-        last.contains("by olive") && last.contains(&format!("{}: {OWNER}", chipsoc_config::git::BY_TRAILER)),
+        last.contains("by olive") && last.contains(&format!("{}: {OWNER}", chipsoc_engine::git::BY_TRAILER)),
         "{last}"
     );
 

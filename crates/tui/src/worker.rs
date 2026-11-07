@@ -42,13 +42,19 @@ pub enum Data {
 /// Admin work that changes something.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Admin {
-    Decide { id: i64, accept: bool, reason: Option<String> },
+    Decide {
+        id: i64,
+        accept: bool,
+        reason: Option<String>,
+    },
     MakeLead(i64),
     AddFeed(String),
     PauseFeed(i64, bool),
     RemoveFeed(i64),
     AddResource(NewResource),
     ArchiveResource(Snowflake),
+    /// An idea's post, and why it's closed.
+    CloseIdea(Snowflake, Option<String>),
     Appoint(String, Snowflake),
     Unappoint(String, Snowflake),
     AddLead(String, Snowflake),
@@ -65,7 +71,7 @@ impl Admin {
             Self::Decide { .. } => &[Area::Queue, Area::History],
             Self::MakeLead(_) => &[Area::History, Area::Members],
             Self::AddFeed(_) | Self::PauseFeed(..) | Self::RemoveFeed(_) => &[Area::Feeds],
-            Self::AddResource(_) | Self::ArchiveResource(_) => &[Area::Resources],
+            Self::AddResource(_) | Self::ArchiveResource(_) | Self::CloseIdea(..) => &[Area::Resources],
             _ => &[Area::Members],
         }
     }
@@ -240,6 +246,7 @@ impl<R: Rest + Clone + 'static> Worker<R> {
                 b.archive_resource(id).await?;
                 "Archived: the post is closed and locked, not deleted.".into()
             }
+            Admin::CloseIdea(post, reason) => b.close_idea(post, reason.as_deref()).await?,
             Admin::Appoint(role, user) => b.appoint(&role, user).await?,
             Admin::Unappoint(role, user) => b.unappoint(&role, user).await?,
             Admin::AddLead(slug, user) => b.add_lead(&slug, user).await?,

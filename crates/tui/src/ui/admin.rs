@@ -234,7 +234,8 @@ pub fn resources(f: &mut Frame, area: Rect, app: &App) {
     if let Some(p) = post {
         details.push(Line::from(p.title.clone()).bold());
         details.extend((!p.tags.is_empty()).then(|| field("Tags", p.tags.join(", "))));
-        details.extend(p.archived.then(|| field("State", "archived")));
+        let state = if p.locked { Some("closed") } else { p.archived.then_some("archived") };
+        details.extend(state.map(|s| field("State", s)));
         details.push(field("Link", p.link.clone()).italic());
         details.push(Line::default());
         details.extend(p.content.lines().map(|l| Line::from(l.to_owned())));

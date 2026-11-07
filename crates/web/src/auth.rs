@@ -255,7 +255,7 @@ impl Auth {
         }
         let fresh = Key::generate();
         let kept = match self.store().await {
-            Some(store) => store.web_secret(COOKIE_KEY, &chipsoc_client::remote::hex(fresh.master())).await.ok(),
+            Some(store) => store.web_secret(COOKIE_KEY, &chipsoc_model::hex(fresh.master())).await.ok(),
             None => None,
         };
         let key = match kept.as_deref().and_then(unhex) {
@@ -497,7 +497,7 @@ impl Auth {
 
     /// A new sign-in with Discord: its login cookie, and Discord's page to send the browser to.
     fn begin(&self, d: &Discord, cli: Option<CliLogin>) -> Result<(Cookie<'static>, String), String> {
-        let verifier = PkceCodeVerifier::new(chipsoc_client::remote::random_hex(32));
+        let verifier = PkceCodeVerifier::new(chipsoc_model::random_hex(32));
         let t = Ticket {
             state: CsrfToken::new_random().secret().clone(),
             verifier: verifier.secret().clone(),
@@ -562,10 +562,11 @@ impl Auth {
             }
             Ok(false) => {
                 tracing::info!(user = %user.name, id = %user.id, "refused web UI sign-in: not an admin");
+                let who = self.members.who_may_use().await;
                 Err((
                     StatusCode::FORBIDDEN,
                     format!(
-                        "{NOT_COMMITTEE} {}. Only the committee can use this (the admin role, or Manage Server). \
+                        "{NOT_COMMITTEE} {}. Only {who} can use this. \
                          Wrong account? Sign out of Discord in this browser first.",
                         user.name
                     ),
@@ -1274,7 +1275,7 @@ fn loopback_host(headers: &HeaderMap) -> bool {
 }
 
 pub(crate) fn random_token() -> String {
-    chipsoc_client::remote::random_hex(32)
+    chipsoc_model::random_hex(32)
 }
 
 fn unhex(s: &str) -> Option<Vec<u8>> {

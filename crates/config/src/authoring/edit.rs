@@ -363,11 +363,11 @@ pub fn reorder_categories(dir: &Path, keys: &[String]) -> Result<()> {
         moves.iter().map(|(from, to)| (from.with_extension("moving"), to.clone())).collect();
     for ((from, _), (t, _)) in moves.iter().zip(&tmp) {
         fs::rename(from, t)?;
-        crate::git::wrote(from);
+        crate::files::wrote(from);
     }
     for (t, to) in tmp {
         fs::rename(t, &to)?;
-        crate::git::wrote(&to);
+        crate::files::wrote(&to);
     }
     Ok(())
 }
