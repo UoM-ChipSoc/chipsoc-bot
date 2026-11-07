@@ -169,7 +169,7 @@ mod tests {
             report.outcomes.push(Outcome { action: create(&format!("channel-{n}")), result });
         }
         let text = outcome(&Config::default(), "<@1>", &report);
-        assert!(text.chars().count() < fmt::MAX_CONTENT);
+        assert!(text.chars().count() <= fmt::MAX_CONTENT);
         assert!(
             text.starts_with("⚠️ **Applied by <@1>:** 299 done, 1 failed.\n❌ Create `channel-299`: no permission."),
             "{text}"

@@ -37,12 +37,12 @@ pub const RESOURCE_TAGS: &str = "Tags";
 impl NewResource {
     /// As kept in the review queue.
     pub fn answers(&self) -> Vec<Answer> {
-        let tags = self.tags.iter().map(|t| t.trim()).filter(|t| !t.is_empty()).collect::<Vec<_>>().join(", ");
+        let tags = self.tags.iter().map(|t| t.trim().to_owned()).filter(|t| !t.is_empty()).collect();
         vec![
             Answer::new(RESOURCE_TITLE, Some(&self.title)),
             Answer::new(RESOURCE_LINK, Some(&self.url)),
             Answer::new(RESOURCE_ABOUT, Some(&self.description)),
-            Answer::new(RESOURCE_TAGS, Some(&tags)),
+            Answer::list(RESOURCE_TAGS, tags),
         ]
     }
 
@@ -53,14 +53,9 @@ impl NewResource {
             title: get(RESOURCE_TITLE),
             url: get(RESOURCE_LINK),
             description: get(RESOURCE_ABOUT),
-            tags: tag_list(&get(RESOURCE_TAGS)),
+            tags: answers.iter().find(|a| a.question == RESOURCE_TAGS).map(|a| a.items.clone()).unwrap_or_default(),
         }
     }
-}
-
-/// "a, b" as tag names.
-pub fn tag_list(s: &str) -> Vec<String> {
-    s.split(',').map(|t| t.trim().to_owned()).filter(|t| !t.is_empty()).collect()
 }
 
 /// Who'd lead a proposed project.
@@ -224,19 +219,8 @@ impl SeenPosts {
 }
 
 /// Why a post wasn't made, in words for whoever asked (not a Discord failure).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Refused(pub String);
-
-impl std::fmt::Display for Refused {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for Refused {}
-
 fn refuse<T>(why: impl Into<String>) -> Result<T> {
-    Err(Refused(why.into()).into())
+    Err(crate::Refusal::from(why.into()).into())
 }
 
 /// The checks on a resource a member shares that ask nothing of Discord: a
@@ -331,7 +315,7 @@ pub async fn post_resource<H: Host>(h: &H, r: &NewResource, by: &Actor) -> Resul
     let body = json!({
         "name": truncate(r.title.trim(), MAX_TITLE),
         "applied_tags": tags,
-        "message": { "content": truncate(&text, crate::MAX_CONTENT - 1), "allowed_mentions": { "parse": [] } },
+        "message": { "content": truncate(&text, crate::MAX_CONTENT), "allowed_mentions": { "parse": [] } },
     });
     let thread = h.rest().call(Method::Post, &format!("channels/{forum}/threads"), Some(body)).await?;
     if let Some(s) = h.seen_posts() {
@@ -424,7 +408,7 @@ pub async fn post_idea<H: Host>(h: &H, idea: &NewIdea, by: Snowflake) -> Result<
     let body = json!({
         "name": title,
         "applied_tags": tags,
-        "message": { "content": truncate(&text, crate::MAX_CONTENT - 1), "allowed_mentions": { "parse": [] } },
+        "message": { "content": truncate(&text, crate::MAX_CONTENT), "allowed_mentions": { "parse": [] } },
     });
     let thread = h.rest().call(Method::Post, &format!("channels/{forum}/threads"), Some(body)).await?;
     Ok(post(h.guild(), &thread, &tag_names(&info), text))
@@ -496,7 +480,7 @@ pub async fn archive_resource<H: Host>(h: &H, post: Snowflake, by: &Actor) -> Re
 /// so members never just find a locked post.
 pub fn closing_line(reason: Option<&str>) -> String {
     match reason.map(str::trim).filter(|r| !r.is_empty()) {
-        Some(why) => truncate(&format!("🔒 **Closed:** {why}\nIt stays here to read."), crate::MAX_CONTENT - 1),
+        Some(why) => truncate(&format!("🔒 **Closed:** {why}\nIt stays here to read."), crate::MAX_CONTENT),
         None => "🔒 **Closed.** It stays here to read.".to_owned(),
     }
 }
@@ -563,12 +547,23 @@ pub async fn close_idea<H: Host>(h: &H, post: Snowflake, reason: Option<&str>, b
         tags.truncate(MAX_POST_TAGS - 1);
         tags.push(c);
     }
-    // An archived post takes no new tags or replies until it's opened again.
+    // An archived post takes no replies until it's opened again. The reply
+    // goes first and the rest in one change, so a failure leaves the post as
+    // it was: archived again if it was.
     let path = format!("channels/{post}");
-    rest.call(Method::Patch, &path, Some(json!({ "archived": false, "applied_tags": tags }))).await?;
+    let was_archived = thread["thread_metadata"]["archived"] == true;
+    if was_archived {
+        rest.call(Method::Patch, &path, Some(json!({ "archived": false }))).await?;
+    }
     let body = json!({ "content": closing_line(reason), "allowed_mentions": { "parse": [] } });
-    rest.call(Method::Post, &format!("channels/{post}/messages"), Some(body)).await?;
-    rest.call(Method::Patch, &path, Some(json!({ "archived": true, "locked": true }))).await?;
+    if let Err(e) = rest.call(Method::Post, &format!("channels/{post}/messages"), Some(body)).await {
+        if was_archived && let Err(e) = rest.call(Method::Patch, &path, Some(json!({ "archived": true }))).await {
+            tracing::warn!("archiving idea {post} again failed: {e:#}");
+        }
+        return Err(e.context("posting why the idea is closed"));
+    }
+    let close = json!({ "applied_tags": tags, "archived": true, "locked": true });
+    rest.call(Method::Patch, &path, Some(close)).await.context("closing the idea")?;
     let title = s(&thread["name"]);
     audit(h, by, AuditAction::CloseIdea, Some(&title), Some(&post.to_string())).await;
     Ok(Some(Closed { title, tag: tagged }))

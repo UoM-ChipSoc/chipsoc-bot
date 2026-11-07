@@ -2,7 +2,7 @@
 //! saved after every step that changes something, and a failed step doesn't
 //! stop the rest; the report says what happened to each.
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use base64::Engine;
 use chipsoc_config::schema::*;
 use std::collections::BTreeSet;
@@ -318,7 +318,7 @@ impl<R: Rest> Exec<'_, R> {
         match kind {
             ObjectKind::Role => {
                 let r = want_role(self.cfg, key)?;
-                let body = wire::role_json(r).map_err(|e| anyhow!(e))?;
+                let body = wire::role_json(r)?;
                 let made = match self.unclaimed(format!("guilds/{g}/roles"), &r.name, None, None).await? {
                     // Probably ours from a run that crashed before saving: take it over.
                     Some(existing) => {
@@ -330,7 +330,7 @@ impl<R: Rest> Exec<'_, R> {
             }
             ObjectKind::Category => {
                 let c = &want.category(key).context("category not in config")?.category;
-                let ows = wire::overwrites_json(&c.overwrites, self.lock).map_err(|e| anyhow!(e))?;
+                let ows = wire::overwrites_json(&c.overwrites, self.lock)?;
                 let body = json!({ "name": c.name, "type": 4, "permission_overwrites": ows });
                 let made = match self.unclaimed(format!("guilds/{g}/channels"), &c.name, Some(4), None).await? {
                     Some(existing) => self.call(Method::Patch, format!("channels/{existing}"), Some(body)).await?,
@@ -348,7 +348,7 @@ impl<R: Rest> Exec<'_, R> {
                     ),
                     None => None,
                 };
-                let body = wire::channel_json(c, parent, self.lock, &Value::Null).map_err(|e| anyhow!(e))?;
+                let body = wire::channel_json(c, parent, self.lock, &Value::Null)?;
                 let kind = Some(c.kind.discord());
                 let made = match self.unclaimed(format!("guilds/{g}/channels"), &c.name, kind, Some(parent)).await? {
                     Some(existing) => self.call(Method::Patch, format!("channels/{existing}"), Some(body)).await?,
@@ -364,7 +364,7 @@ impl<R: Rest> Exec<'_, R> {
             }
             ObjectKind::AutoMod => {
                 let r = want.settings.automod.iter().find(|r| r.key == key).context("rule not in config")?;
-                let body = wire::automod_json(r, self.lock).map_err(|e| anyhow!(e))?;
+                let body = wire::automod_json(r, self.lock)?;
                 let made = self.call(Method::Post, format!("guilds/{g}/auto-moderation/rules"), Some(body)).await?;
                 self.lock.automod.insert(key.to_owned(), id(&made["id"]).context("no id in reply")?);
             }
@@ -384,7 +384,7 @@ impl<R: Rest> Exec<'_, R> {
         match kind {
             ObjectKind::Role => {
                 let r = want_role(self.cfg, key)?;
-                let full = wire::role_json(r).map_err(|e| anyhow!(e))?;
+                let full = wire::role_json(r)?;
                 let mut patch = Map::new();
                 for (f, k) in [
                     (Field::Name, "name"),
@@ -406,10 +406,7 @@ impl<R: Rest> Exec<'_, R> {
                     patch.insert("name".into(), json!(c.name));
                 }
                 if has(changes, Field::Overwrites) {
-                    patch.insert(
-                        "permission_overwrites".into(),
-                        wire::overwrites_json(&c.overwrites, self.lock).map_err(|e| anyhow!(e))?,
-                    );
+                    patch.insert("permission_overwrites".into(), wire::overwrites_json(&c.overwrites, self.lock)?);
                 }
                 self.call(Method::Patch, format!("channels/{oid}"), Some(Value::Object(patch))).await?;
             }
@@ -428,7 +425,7 @@ impl<R: Rest> Exec<'_, R> {
                 } else {
                     Value::Null
                 };
-                let full = wire::channel_json(c, parent, self.lock, &live_tags).map_err(|e| anyhow!(e))?;
+                let full = wire::channel_json(c, parent, self.lock, &live_tags)?;
                 let mut patch = Map::new();
                 for (f, k) in [
                     (Field::Name, "name"),
@@ -471,7 +468,7 @@ impl<R: Rest> Exec<'_, R> {
             ObjectKind::Holders => self.holders(g, key, oid).await?,
             ObjectKind::AutoMod => {
                 let r = want.settings.automod.iter().find(|r| r.key == key).context("rule not in config")?;
-                let body = wire::automod_json(r, self.lock).map_err(|e| anyhow!(e))?;
+                let body = wire::automod_json(r, self.lock)?;
                 match self.call(Method::Patch, format!("guilds/{g}/auto-moderation/rules/{oid}"), Some(body)).await {
                     Err(e) if ApiError::status_of(&e) == Some(404) => {
                         bail!(

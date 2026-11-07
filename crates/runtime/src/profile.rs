@@ -101,7 +101,7 @@ pub async fn open(ctx: &Ctx, i: &Interaction) {
     if ctx.cfg().join.is_some() {
         return crate::join::start(ctx, i, None).await;
     }
-    let Some(user) = invoker(i) else { return };
+    let Some(user) = invoker(i) else { return crate::apps::nobody(ctx, i).await };
     let saved = match ctx.db().profile(&user.id.to_string()).await {
         Ok(p) => p.unwrap_or_default(),
         Err(e) => {
@@ -255,7 +255,7 @@ pub(crate) async fn choose(ctx: &Ctx, me: Id<UserMarker>, p: &Profile) -> Result
 }
 
 pub async fn submit(ctx: &Ctx, i: &Interaction, v: &HashMap<String, String>) {
-    let Some(user) = invoker(i) else { return };
+    let Some(user) = invoker(i) else { return crate::apps::nobody(ctx, i).await };
     if ctx.cfg().bot.profile.is_none() {
         // An old button or form: say so rather than leave Discord saying it failed.
         let text = if ctx.cfg().join.is_some() {

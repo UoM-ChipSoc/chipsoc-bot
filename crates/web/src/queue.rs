@@ -72,10 +72,10 @@ pub(crate) async fn act<R: Rest + Clone + 'static>(
 
 /// What a decision did, for the flash. A failed Accept is no decision: it's
 /// still waiting, so it's said as a problem.
-fn said(d: chipsoc_admin::Decided) -> Result<chipsoc_admin::Said, chipsoc_admin::Said> {
+fn said(d: chipsoc_admin::Decided) -> Result<chipsoc_admin::Said, chipsoc_admin::Refusal> {
     use chipsoc_admin::Said;
     if d.pending {
-        return Err(Said::new().text("Accept didn't go through, so it's still waiting.").then(d.outcome));
+        return Err(Said::new().text("Accept didn't go through, so it's still waiting.").then(d.outcome).into());
     }
     let head = match (d.accepted, d.told) {
         (true, true) => "Accepted; they've been told by DM.",

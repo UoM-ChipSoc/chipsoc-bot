@@ -115,7 +115,7 @@ pub async fn on_message(ctx: &Ctx, m: &Message) {
     if body.trim().is_empty() {
         return;
     }
-    let body = ui::truncate(&body, ui::MAX_CONTENT - 1);
+    let body = ui::truncate(&body, ui::MAX_CONTENT);
     let name = ui::truncate(&format!("{} · #{channel}", routes.sender), 80);
     for &i in targets {
         let relay = &routes.relays[i];

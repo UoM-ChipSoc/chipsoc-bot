@@ -538,7 +538,7 @@ mod tests {
 
     #[test]
     fn tracks_line_up_and_the_mix_is_everyone() {
-        let (_t, mem, mut rec) = recorder(u64::MAX);
+        let (dir, mem, mut rec) = recorder(u64::MAX);
         rec.joined(7, "Ada");
         rec.input(Input::Speaker { ssrc: 100, user: 7 }).unwrap();
         // Ada talks for 1 s; Ben comes in at 3 s and they overlap from 4 s for 1 s.
@@ -579,7 +579,7 @@ mod tests {
         assert_eq!(ben.spans, vec![Span { from_ms: 3000, to_ms: Some(6000) }]);
         let ada = meta.participants.iter().find(|p| p.id == 7).unwrap();
         assert_eq!(ada.spans, vec![Span { from_ms: 0, to_ms: Some(6000) }], "still there at the end");
-        let saved = store::list(_t.path(), 1);
+        let saved = store::list(dir.path(), 1);
         assert_eq!(saved[0], meta, "saved as finished");
     }
 

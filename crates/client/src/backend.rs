@@ -177,16 +177,11 @@ impl<R: Rest + Clone> Host for Desk<'_, R> {
     }
 }
 
-/// `Err(why)` from the shared admin code, as an error.
-fn said<T>(r: Result<T, String>) -> Result<T> {
-    r.map_err(anyhow::Error::msg)
-}
-
 /// What the shared admin code said, as plain text with people's names (an error if it refused).
-async fn spoken<H: Host>(h: &H, r: Result<chipsoc_admin::Said, chipsoc_admin::Said>) -> Result<String> {
+async fn spoken<H: Host>(h: &H, r: Result<chipsoc_admin::Said, chipsoc_admin::Refusal>) -> Result<String> {
     match r {
         Ok(s) => Ok(s.plain_named(h).await),
-        Err(s) => Err(anyhow::Error::msg(s.plain_named(h).await)),
+        Err(why) => Err(anyhow::Error::msg(why.said().plain_named(h).await)),
     }
 }
 
@@ -254,7 +249,7 @@ impl<R: Rest + Clone> Backend<R> {
     /// nothing was changed because it was refused. Apply to send it to Discord.
     pub async fn undo(&self, commit: &str, how: Undo) -> Result<String> {
         let made = match self {
-            Self::Remote(c) => c.undo(commit, how).await.map_err(|e| format!("{e:#}")),
+            Self::Remote(c) => c.undo(commit, how).await.map_err(|e| format!("{e:#}").into()),
             Self::Local(l) => chipsoc_admin::undo(&l.desk().await?, commit, how, &l.actor).await,
         };
         let text = chipsoc_admin::undo_said(&made).plain(None);
@@ -352,7 +347,7 @@ impl<R: Rest + Clone> Backend<R> {
                         decided.outcome = decided.outcome.named(&d).await;
                         Ok(decided)
                     }
-                    Err(why) => Err(anyhow::Error::msg(why.plain_named(&d).await)),
+                    Err(why) => Err(anyhow::Error::msg(why.said().plain_named(&d).await)),
                 }
             }
         }
@@ -379,7 +374,7 @@ impl<R: Rest + Clone> Backend<R> {
         match self {
             Self::Remote(c) => c.add_feed(url).await,
             Self::Local(l) => {
-                let title = said(chipsoc_admin::add_feed(&l.desk().await?, url, &l.actor).await)?;
+                let title = chipsoc_admin::add_feed(&l.desk().await?, url, &l.actor).await?;
                 Ok(format!("Now following {title}."))
             }
         }
@@ -428,7 +423,7 @@ impl<R: Rest + Clone> Backend<R> {
         match self {
             Self::Remote(c) => c.share(r).await.map(|s| s.partners),
             Self::Local(l) => {
-                let pick = chipsoc_admin::shares::Pick::parse(&r.what, &r.item).map_err(anyhow::Error::msg)?;
+                let pick = chipsoc_admin::shares::Pick::parse(&r.what, &r.item)?;
                 chipsoc_admin::shares::share_now(&l.desk().await?, pick, &r.partners, &l.actor).await
             }
         }

@@ -1,5 +1,6 @@
 //! Config types ⇄ Discord JSON, in one place.
 
+use anyhow::{Context, Result, bail};
 use chipsoc_config::schema::*;
 use chipsoc_config::template::{Button, Rendered};
 use chipsoc_model::perms;
@@ -50,13 +51,13 @@ pub fn color(hex: &Option<String>) -> u32 {
 
 /// Overwrites to Discord, resolving role keys through the lock. Unresolvable
 /// entries are errors: dropping one could leave a channel more open than configured.
-pub fn overwrites_json(ows: &[Overwrite], lock: &Lock) -> Result<Value, String> {
+pub fn overwrites_json(ows: &[Overwrite], lock: &Lock) -> Result<Value> {
     let mut out = Vec::new();
     for o in ows {
         let (id, kind) = match (&o.role, o.member) {
-            (Some(k), _) => (lock.role(k).ok_or(format!("role `{k}` doesn't exist yet"))?, 0),
+            (Some(k), _) => (lock.role(k).with_context(|| format!("role `{k}` doesn't exist yet"))?, 0),
             (None, Some(m)) => (m, 1),
-            _ => return Err("overwrite without a role or member".into()),
+            _ => bail!("overwrite without a role or member"),
         };
         let allow = perms::bits(&o.allow)?;
         let deny = perms::bits(&o.deny)?;
@@ -86,7 +87,7 @@ pub fn overwrites_from(v: &Value, key_of_role: &impl Fn(Snowflake) -> String) ->
     out
 }
 
-pub fn role_json(r: &Role) -> Result<Value, String> {
+pub fn role_json(r: &Role) -> Result<Value> {
     Ok(json!({
         "name": r.name,
         "color": color(&r.color),
@@ -97,7 +98,7 @@ pub fn role_json(r: &Role) -> Result<Value, String> {
 }
 
 /// A channel to create (everything) or edit (only `fields`).
-pub fn channel_json(c: &Channel, parent: Option<Snowflake>, lock: &Lock, live_tags: &Value) -> Result<Value, String> {
+pub fn channel_json(c: &Channel, parent: Option<Snowflake>, lock: &Lock, live_tags: &Value) -> Result<Value> {
     let mut v = json!({
         "name": c.name,
         "type": c.kind.discord(),
@@ -258,7 +259,7 @@ pub fn screening_from(v: &Value, enabled: bool) -> Option<Screening> {
     })
 }
 
-pub fn automod_json(r: &AutoModRule, lock: &Lock) -> Result<Value, String> {
+pub fn automod_json(r: &AutoModRule, lock: &Lock) -> Result<Value> {
     let metadata = match r.trigger {
         Trigger::Keyword => json!({ "keyword_filter": r.keywords, "regex_patterns": r.regex, "allow_list": r.allow }),
         Trigger::KeywordPreset => {
@@ -278,8 +279,8 @@ pub fn automod_json(r: &AutoModRule, lock: &Lock) -> Result<Value, String> {
                 None => json!({ "type": 1 }),
             },
             ModAction::Alert => {
-                let k = r.alert_channel.as_deref().ok_or("alert needs alert_channel")?;
-                let ch = lock.channel(k).ok_or(format!("channel `{k}` doesn't exist yet"))?;
+                let k = r.alert_channel.as_deref().context("alert needs alert_channel")?;
+                let ch = lock.channel(k).with_context(|| format!("channel `{k}` doesn't exist yet"))?;
                 json!({ "type": 2, "metadata": { "channel_id": ch.to_string() } })
             }
             ModAction::Timeout => {

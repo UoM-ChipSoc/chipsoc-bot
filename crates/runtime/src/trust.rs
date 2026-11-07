@@ -142,7 +142,7 @@ fn text(cfg: &Config, p: &Pending, authors: &Authors, owner: Option<chipsoc_mode
             fmt::collapse(&keys, 5),
         ));
     }
-    ui::truncate(&out.join("\n"), ui::MAX_CONTENT - 1)
+    ui::truncate(&out.join("\n"), ui::MAX_CONTENT)
 }
 
 /// Where the last approval card went: `channel/message`.
@@ -248,7 +248,7 @@ pub async fn button(ctx: &Ctx, i: &Interaction, approve: bool, hash: &str) {
     if !ctx.is_admin(i.member.as_ref()) {
         return ctx.respond(i, &ui::ephemeral("Only admins can approve or reject config changes.")).await;
     }
-    let Some(user) = invoker(i) else { return };
+    let Some(user) = invoker(i) else { return crate::apps::nobody(ctx, i).await };
     let dir = ctx.cfg().dir.clone();
     let one = ctx.changing.lock().await;
     let p = match pending(ctx, &dir).await {
@@ -269,7 +269,7 @@ pub async fn button(ctx: &Ctx, i: &Interaction, approve: bool, hash: &str) {
     let original = i.message.as_ref().map(|m| m.content.clone()).unwrap_or_default();
     let me = format!("<@{}>", user.id);
     if !approve {
-        ctx.audit(Some(&user.id.to_string()), "reject_config_change", None, Some(hash)).await;
+        ctx.audit(Some(&user.id.to_string()), chipsoc_admin::AuditAction::RejectConfigChange, None, Some(hash)).await;
         let note = format!(
             "\n\n{} **Rejected by {me}.** The bot keeps the approved settings; undo the commit in the config repo, or the owner can `/server revert` it.",
             fmt::FAILED
@@ -310,7 +310,7 @@ pub async fn button(ctx: &Ctx, i: &Interaction, approve: bool, hash: &str) {
         let text = format!("{} **Couldn't save the approval:** {}", fmt::ATTENTION, fmt::error(&e));
         return ctx.respond(i, &ui::ephemeral(&text)).await;
     }
-    ctx.audit(Some(&user.id.to_string()), "approve_config_change", None, Some(hash)).await;
+    ctx.audit(Some(&user.id.to_string()), chipsoc_admin::AuditAction::ApproveConfigChange, None, Some(hash)).await;
     ctx.respond(i, &ui::defer_update()).await;
     drop(one);
     reload::reload(ctx, &dir).await;

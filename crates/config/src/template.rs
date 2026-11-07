@@ -107,10 +107,9 @@ pub fn render(src: &str, lock: &Lock) -> Rendered {
 }
 
 /// A line holding only this starts the next part of a long post: each part is
-/// its own message, as Discord takes at most [`MAX_MESSAGE`] characters in one.
+/// its own message, as Discord takes at most [`MAX_CONTENT`] characters in one.
 pub const PART_BREAK: &str = "<!-- part -->";
-/// Discord's limit on one message's text.
-pub const MAX_MESSAGE: usize = 2000;
+pub use chipsoc_model::MAX_CONTENT;
 /// Most messages one post may take.
 pub const MAX_PARTS: usize = 10;
 /// Between parts' signatures in one post's signature. No part holds it: a
@@ -155,7 +154,7 @@ pub fn render_parts(src: &str, lock: &Lock) -> Vec<Rendered> {
 
 /// Which parts (from 1) of [`split`]'s are longer than a message can be.
 pub fn too_long(parts: &[String]) -> Vec<usize> {
-    parts.iter().enumerate().filter(|(_, p)| longest(p) > MAX_MESSAGE).map(|(i, _)| i + 1).collect()
+    parts.iter().enumerate().filter(|(_, p)| longest(p) > MAX_CONTENT).map(|(i, _)| i + 1).collect()
 }
 
 /// Button actions written in a part other than the last (they go under the last).
@@ -287,7 +286,7 @@ fn fit(lines: &[&str]) -> Vec<String> {
                 cut = Some(i);
             }
             piece.add(l);
-            if piece.longest() > MAX_MESSAGE {
+            if piece.longest() > MAX_CONTENT {
                 fits = false;
                 break;
             }
@@ -525,7 +524,7 @@ mod tests {
         assert!(too_long(&parts).is_empty());
         // Mentions count at their longest.
         let mentions = "{#a} ".repeat(400); // 2000 written, 9600 at worst
-        assert!(longest(&mentions) > MAX_MESSAGE && mentions.trim().chars().count() <= MAX_MESSAGE);
+        assert!(longest(&mentions) > MAX_CONTENT && mentions.trim().chars().count() <= MAX_CONTENT);
         assert_eq!(too_long(&split(&mentions)), [1], "nowhere to split");
         // Never inside a code block.
         let code = format!("Intro\n\n```\n{para}\n\n{para}\n\n{para}\n```\n");

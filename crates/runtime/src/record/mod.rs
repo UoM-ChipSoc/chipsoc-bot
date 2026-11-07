@@ -578,7 +578,13 @@ async fn begin(
             return Err(e);
         }
     };
-    ctx.audit(Some(&by.id.to_string()), "recording_started", Some(&channel.to_string()), Some(&id)).await;
+    ctx.audit(
+        Some(&by.id.to_string()),
+        chipsoc_admin::AuditAction::RecordingStarted,
+        Some(&channel.to_string()),
+        Some(&id),
+    )
+    .await;
     Ok(Session {
         id,
         dir,
@@ -630,7 +636,7 @@ pub(crate) async fn stop(ctx: &Ctx, why: &str) -> Result<Option<Meta>> {
     let meta = tokio::task::spawn_blocking(move || running.finish(now(), &why_owned)).await??;
     ctx.say(s.channel, "⏹️ Recording stopped.").await;
     let detail = format!("{}: {why}", s.id);
-    ctx.audit(None, "recording_stopped", Some(&s.channel.to_string()), Some(&detail)).await;
+    ctx.audit(None, chipsoc_admin::AuditAction::RecordingStopped, Some(&s.channel.to_string()), Some(&detail)).await;
     tracing::info!(id = s.id, dir = %s.dir.display(), "recording stopped: {why}");
     summary(ctx, &meta).await;
     ctx.rec.stopped.notify_one();
@@ -941,7 +947,7 @@ async fn tell_joiner(ctx: &Ctx, user: u64, channel: u64, channel_name: &str, ask
     }
     for at in std::iter::once(channel).chain(asked_in) {
         let body = serde_json::json!({
-            "content": ui::truncate(&format!("<@{user}> {text}"), ui::MAX_CONTENT - 1),
+            "content": ui::truncate(&format!("<@{user}> {text}"), ui::MAX_CONTENT),
             "allowed_mentions": { "parse": [], "users": [user.to_string()] },
         });
         match ctx.rest.call(Method::Post, &format!("channels/{at}/messages"), Some(body)).await {

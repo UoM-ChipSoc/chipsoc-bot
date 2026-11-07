@@ -22,6 +22,11 @@ pub fn invoker(i: &Interaction) -> Option<&User> {
     i.member.as_ref().and_then(|m| m.user.as_ref()).or(i.user.as_ref())
 }
 
+/// Answer an interaction that came without anyone (see [`invoker`]).
+pub async fn nobody(ctx: &Ctx, i: &Interaction) {
+    ctx.respond(i, &ui::ephemeral("Discord didn't say who pressed this; try again.")).await
+}
+
 /// Positions taking applications now (open, and any window not closed yet):
 /// (role key, label, also grants the admin role).
 pub fn positions(ctx: &Ctx) -> Vec<(String, String, bool)> {
@@ -291,7 +296,7 @@ pub async fn review(ctx: &Ctx, i: &Interaction, accept: bool, id: i64, seen: Opt
     if !ctx.is_admin(i.member.as_ref()) {
         return ctx.respond(i, &ui::ephemeral(&crate::manage::admins_only(&ctx.cfg()))).await;
     }
-    let Some(reviewer) = invoker(i).map(actor) else { return };
+    let Some(reviewer) = invoker(i).map(actor) else { return nobody(ctx, i).await };
     let app = match chipsoc_admin::claim_seen(ctx, id, accept, seen, &reviewer).await {
         Ok(app) => app,
         Err(why) => return ctx.respond(i, &ui::ephemeral(&why.markdown())).await,
@@ -367,7 +372,7 @@ pub async fn reject_rest(ctx: &Ctx, i: &Interaction, role: &str, reason: &str) {
             chipsoc_admin::rounds::label(&ctx.cfg(), role),
             if why.is_some() { " why" } else { "" }
         ),
-        Err(why) => why,
+        Err(why) => why.markdown(),
     };
     ctx.edit_response(i, &text, &[]).await;
 }

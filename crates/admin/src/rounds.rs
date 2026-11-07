@@ -177,7 +177,7 @@ async fn render<H: Host>(h: &H, head: &str, rows: &[Decision]) -> (String, Value
         blocks.push((top, answers.join("\n"), status));
     }
     // Each applicant gets an even share of the message; their answers are what's cut.
-    let room = (MAX_CONTENT - 1).saturating_sub(head.chars().count() + 1);
+    let room = MAX_CONTENT.saturating_sub(head.chars().count() + 1);
     let share = room / rows.len().max(1);
     let mut text = head.to_owned();
     for (top, answers, status) in &blocks {
@@ -189,7 +189,7 @@ async fn render<H: Host>(h: &H, head: &str, rows: &[Decision]) -> (String, Value
         }
         text.push_str(status);
     }
-    let text = truncate(&text, MAX_CONTENT - 1);
+    let text = truncate(&text, MAX_CONTENT);
 
     let button =
         |label: String, id: String, style: u8| json!({ "type": 2, "style": style, "label": label, "custom_id": id });
@@ -239,10 +239,10 @@ pub async fn redraw<H: Host>(h: &H, channel: &str, message: &str) -> Result<()> 
 
 /// Reject everyone still waiting on `role`'s round cards, telling each
 /// `why`; then draw the cards again. Says how many were rejected.
-pub async fn reject_rest<H: Host>(h: &H, role: &str, why: Option<&str>, by: &Actor) -> Result<usize, String> {
+pub async fn reject_rest<H: Host>(h: &H, role: &str, why: Option<&str>, by: &Actor) -> Result<usize, crate::Refusal> {
     let waiting = h.db().posted_round(AppKind::Position, role).await.map_err(|e| {
         tracing::warn!("reading a round failed: {e:#}");
-        "Couldn't read who's waiting; try again.".to_owned()
+        "Couldn't read who's waiting; try again."
     })?;
     let mut cards = std::collections::BTreeSet::new();
     let mut done = 0;
