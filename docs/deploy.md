@@ -42,10 +42,10 @@ environment.
 `scripts/deploy.sh` runs one bot (and its web UI) for one config repo on a
 Linux server. The server needs systemd, root over ssh, git, sudo, `sqlite3`
 for backups while running, and Tailscale (installed and logged in) for the
-web UI. To build there (the default), also `cmake`, a C compiler, `make`,
-`curl`, `pkg-config` and OpenSSL's headers (`libssl-dev`); deploy.sh asks
-to install the ones it can name, and installs Rust for the build user
-itself. Your machine needs Rust (the tests run first; `SKIP_TESTS=1` skips
+web UI. To build there (the default), also a C compiler, `make`, `curl`,
+`pkg-config`, OpenSSL's headers (`libssl-dev`) and either the Opus
+library's (`libopus-dev`) or `cmake`; deploy.sh asks to install the ones it
+can name, and installs Rust for the build user itself. Your machine needs Rust (the tests run first; `SKIP_TESTS=1` skips
 them), ssh and, optionally, the GitHub CLI. How big a server: [Server
 size](#server-size).
 
