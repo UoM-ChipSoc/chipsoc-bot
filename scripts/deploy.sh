@@ -517,11 +517,13 @@ build_there() {
       # Older versions of this script built as root, in these.
       rm -rf $DIR/src $DIR/target
       mkdir -p $DIR/releases"
+  # No RestrictSUIDSGID: on systemd 259 + Linux 7.0 its filter makes mkdir/open fail with
+  # ENOSYS. NoNewPrivileges already makes setuid bits inert, and only $BUILD is writable.
   run="systemd-run --quiet --wait --pipe --collect -p User=$BUILDER -p Group=$BUILDER \
     -p WorkingDirectory=$BUILD -p UMask=0077 -p NoNewPrivileges=yes -p ProtectSystem=strict \
     -p ReadWritePaths=$BUILD -p ProtectHome=yes -p PrivateTmp=yes -p PrivateDevices=yes \
     -p ProtectKernelTunables=yes -p ProtectKernelModules=yes -p ProtectControlGroups=yes \
-    -p RestrictSUIDSGID=yes -p InaccessiblePaths=-$DIR/.env -p InaccessiblePaths=-$DIR/config \
+    -p InaccessiblePaths=-$DIR/.env -p InaccessiblePaths=-$DIR/config \
     -p InaccessiblePaths=-$DIR/.ssh -p InaccessiblePaths=-$DIR/backup -p InaccessiblePaths=-$STATE \
     -E HOME=$BUILD -E CARGO_HOME=$BUILD/cargo -E RUSTUP_HOME=$BUILD/rustup -E CARGO_TARGET_DIR=$BUILD/target \
     -E PATH=$BUILD/cargo/bin:/usr/local/bin:/usr/bin:/bin"
