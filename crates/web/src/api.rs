@@ -28,8 +28,8 @@ use crate::App;
 use crate::auth::{Session, random_token};
 use crate::projects;
 use crate::remote::{
-    ApplyRequest, Appoint, Checked, Decision, Exported, Me, NewFeed, NewProject, Note, Pause, Planned, Preview,
-    ProjectList, PullRequest, Refusal, Saved, SetApplications, SetStatus, Status, Step,
+    ApplyRequest, Appoint, Checked, CloseIdea, Decision, Exported, Me, NewFeed, NewProject, Note, Pause, Planned,
+    Preview, ProjectList, PullRequest, Refusal, Saved, SetApplications, SetStatus, Status, Step,
 };
 
 /// How long a plan waits to be applied.
@@ -612,6 +612,24 @@ pub(crate) async fn archive_resource<R: Rest + Clone + 'static>(
     match archived.await? {
         true => Ok(StatusCode::NO_CONTENT),
         false => Err(failure(StatusCode::NOT_FOUND, "No such post in the resources forum.")),
+    }
+}
+
+/// `POST /ideas/{id}/close` (`{"reason"?}`): close an idea's post, the reason
+/// posted in it (see [`chipsoc_admin::close_idea`]).
+pub(crate) async fn close_idea<R: Rest + Clone + 'static>(
+    State(app): State<Arc<App<R>>>,
+    Extension(s): Extension<Session>,
+    Path(id): Path<Snowflake>,
+    Json(c): Json<CloseIdea>,
+) -> Reply<Note> {
+    let closed = to_end(async move {
+        let desk = app.desk(&s).await?;
+        chipsoc_admin::close_idea(&desk, id, c.reason.as_deref(), &desk.actor).await
+    });
+    match closed.await? {
+        Some(c) => Ok(Json(note(c.plain()))),
+        None => Err(failure(StatusCode::NOT_FOUND, "No such post in the ideas forum.")),
     }
 }
 

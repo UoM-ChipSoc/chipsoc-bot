@@ -273,6 +273,11 @@ pub fn welcome_text(cfg: &chipsoc_config::Config, log: Option<String>, link: Opt
     out.push(
         "• `/server help`: everything admins can do from Discord: appoint people, open positions, review applications, apply the config.".to_owned(),
     );
+    if cfg.bot.recording.is_some() {
+        out.push(
+            "• `/record start` / `stop`: record a meeting in a call (everyone in it is told); recordings are on the dashboard's Recordings page.".to_owned(),
+        );
+    }
     if let Some(w) = &cfg.bot.web {
         out.push(format!("• Dashboard: {} (sign in with Discord).", w.url));
     }
@@ -541,6 +546,9 @@ Changes made only in Discord show up in the bot log as drift; make them through 
             "{text}"
         );
         assert!(!welcome_text(&cfg, None, None).contains("Tailscale"), "no link step without a link");
+        assert!(!text.contains("/record"), "no recording line while recording is off");
+        cfg.bot.recording = Some(toml::from_str("channel = \"committee\"").unwrap());
+        assert!(welcome_text(&cfg, None, None).contains("• `/record start` / `stop`: record a meeting"));
     }
 
     #[tokio::test]

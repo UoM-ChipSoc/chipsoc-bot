@@ -166,7 +166,8 @@ impl Said {
     }
 
     /// As plain text: people by name (once looked up, else their id),
-    /// channels by `cfg`'s names, times in UTC. Commands keep their backticks.
+    /// channels by `cfg`'s names, times in its time zone (UTC without one).
+    /// Commands keep their backticks.
     pub fn plain(&self, cfg: Option<&Config>) -> String {
         self.0
             .iter()
@@ -175,7 +176,9 @@ impl Said {
                 Part::User { name: Some(n), .. } => n.clone(),
                 Part::User { id, name: None } => format!("user {id}"),
                 Part::Channel(id) => channel_name(cfg, *id),
-                Part::Time(ts) => format!("{} UTC", chipsoc_model::utc_minute(*ts)),
+                Part::Time(ts) => {
+                    cfg.map_or_else(|| format!("{} UTC", chipsoc_model::utc_minute(*ts)), |c| c.bot.local_minute(*ts))
+                }
                 Part::Code(c) => format!("`{c}`"),
             })
             .collect::<String>()

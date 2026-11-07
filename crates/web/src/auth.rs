@@ -562,10 +562,11 @@ impl Auth {
             }
             Ok(false) => {
                 tracing::info!(user = %user.name, id = %user.id, "refused web UI sign-in: not an admin");
+                let who = self.members.who_may_use().await;
                 Err((
                     StatusCode::FORBIDDEN,
                     format!(
-                        "{NOT_COMMITTEE} {}. Only the committee can use this (the admin role, or Manage Server). \
+                        "{NOT_COMMITTEE} {}. Only {who} can use this. \
                          Wrong account? Sign out of Discord in this browser first.",
                         user.name
                     ),

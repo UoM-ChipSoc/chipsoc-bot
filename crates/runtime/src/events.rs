@@ -37,7 +37,7 @@ pub fn form(ctx: &Ctx, i: &Interaction) -> (String, Vec<Component>) {
         ui::input("title", "Title", TextInputStyle::Short, true, None),
         ui::input(
             "start",
-            "Starts (local time)",
+            &format!("Starts ({})", ctx.cfg().bot.zone_label()),
             TextInputStyle::Short,
             true,
             Some("2026-11-12 18:00, or tomorrow 18:00"),

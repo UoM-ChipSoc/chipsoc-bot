@@ -128,6 +128,10 @@ pub async fn poll_loop(ctx: Arc<Ctx>) {
                     continue;
                 }
             };
+            let name = title(&feed, &f.url);
+            if f.title.as_deref() != Some(name.as_str()) {
+                ctx.log_err(ctx.db().set_feed_title(f.id, &name).await, "keeping a feed's title");
+            }
             post_new(&ctx, &f, &feed).await;
         }
     }

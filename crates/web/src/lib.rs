@@ -219,6 +219,7 @@ impl<R: Rest> App<R> {
         if let Some(b) = &self.baseline {
             chipsoc_engine::vet_with(&**b, &mut cfg).await?;
         }
+        crate::form::set_zone(&cfg.bot.timezone);
         let cfg = Arc::new(cfg);
         *self.loaded.lock().unwrap_or_else(|e| e.into_inner()) = Some(Loaded { files, trusted, cfg: cfg.clone() });
         Ok(cfg)
@@ -290,6 +291,16 @@ impl<R: Rest + 'static> Members for App<R> {
             let admin_role = cfg.and_then(|c| c.desired.lock.role(c.bot.admin_role.as_deref()?));
             let g = self.guild(cfg).await?;
             chipsoc_admin::is_admin(&self.rest, g, admin_role, user).await
+        })
+    }
+
+    fn who_may_use(&self) -> BoxFuture<'_, String> {
+        Box::pin(async move {
+            let cfg = self.config().await.ok().or_else(|| self.cached().map(|c| c.cfg));
+            match cfg.as_deref().and_then(|c| Some((c, c.bot.admin_role.as_deref()?))) {
+                Some((c, k)) => format!("members of {}, or anyone with Manage Server", chipsoc_admin::role_name(c, k)),
+                None => "anyone with Manage Server".to_owned(),
+            }
         })
     }
 
@@ -395,6 +406,7 @@ fn router<R: Rest + Clone + 'static>(engine: Engine<R>, db: String, sign_in: Sig
         .route("/feeds/{id}", delete(api::remove_feed::<R>))
         .route("/resources", get(api::resources::<R>).post(api::post_resource::<R>))
         .route("/ideas", get(api::ideas::<R>))
+        .route("/ideas/{id}/close", post(api::close_idea::<R>))
         .route("/share", post(api::share::<R>))
         .route("/activity", get(api::activity::<R>))
         .route("/changes", get(api::changes::<R>))

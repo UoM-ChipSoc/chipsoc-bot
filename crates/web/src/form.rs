@@ -5,6 +5,7 @@
 use anyhow::Result;
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
+use chipsoc_config::Config;
 use chipsoc_config::ops::{Change, Op};
 use chipsoc_discord::Rest;
 use chipsoc_engine::Problems;
@@ -388,17 +389,85 @@ pub(crate) fn summary_label(label: &str) -> String {
 /// or nothing (a refused one leaves the config as it was). What was done,
 /// as one line for a flash.
 pub(crate) async fn run_ops<R: Rest>(app: &App<R>, s: &Session, ops: &[Op]) -> Result<String> {
-    Ok(said(&app.edit_ops(s, ops).await?))
+    // Read first: names as they were (a rename says the old one).
+    let cfg = app.config().await.ok();
+    Ok(said(cfg.as_deref(), ops, &app.edit_ops(s, ops).await?))
 }
 
-/// "Role member: hoist on; role member: name to "X"." and new warnings.
-fn said(c: &Change) -> String {
+/// "Saved: Treasurer stopped taking applications." and new warnings.
+fn said(cfg: Option<&Config>, ops: &[Op], c: &Change) -> String {
     if c.files.is_empty() {
         return "Nothing to change.".into();
     }
-    let mut out = vec![format!("{}.", c.summary)];
+    let done = match (cfg, ops) {
+        (Some(cfg), [op]) => saved(cfg, op),
+        _ => None,
+    };
+    let mut out = vec![done.unwrap_or_else(|| format!("Saved: {}.", c.summary))];
     out.extend(c.warnings.iter().map(|w| format!("Worth a look: {w}")));
     out.join(" ")
+}
+
+/// What saving `op` did, in people's words and names, for the edits the
+/// pages make most; `None` for the rest (they say the commit's summary).
+fn saved(cfg: &Config, op: &Op) -> Option<String> {
+    use chipsoc_config::ops::{ChannelField as C, PositionField as P, ProjectField as J, RoleField as R};
+    let role = |k: &str| cfg.desired.role(k).map_or_else(|| k.to_owned(), |r| r.name.clone());
+    let channel = |k: &str| format!("#{}", cfg.desired.channel(k).map_or(k, |c| c.name.as_str()));
+    let project = |s: &str| cfg.projects.iter().find(|p| p.slug == s).map_or_else(|| s.to_owned(), |p| p.name.clone());
+    Some(match op {
+        Op::SetPosition { role: r, set } => {
+            let p = cfg.bot.positions.iter().find(|p| p.role == *r);
+            let name = p.and_then(|p| p.label.clone()).unwrap_or_else(|| role(r));
+            match set {
+                P::Open(true) => format!("Saved: {name} takes applications again."),
+                P::Open(false) => format!("Saved: {name} stopped taking applications."),
+                P::Label(_) => format!("Saved {name}'s label."),
+                P::Intro(_) => format!("Saved {name}'s intro."),
+                P::Questions(_) => format!("Saved {name}'s questions."),
+                P::Admin(true) => format!("Saved: {name}'s holders are admins now."),
+                P::Admin(false) => format!("Saved: {name}'s holders aren't admins any more."),
+            }
+        }
+        Op::SetRole { key, set } => {
+            let name = role(key);
+            match set {
+                R::Name(to) => format!("Saved: {name} is now called “{to}”."),
+                R::Color(_) => format!("Saved {name}'s colour."),
+                R::Hoist(true) => format!("Saved: {name} is shown on its own in the member list."),
+                R::Hoist(false) => format!("Saved: {name} isn't shown on its own in the member list."),
+                R::Mentionable(true) => format!("Saved: anyone can mention {name}."),
+                R::Mentionable(false) => format!("Saved: {name} can't be mentioned by everyone."),
+                R::Permissions(_) => format!("Saved {name}'s permissions."),
+            }
+        }
+        Op::SetChannel { key, set } => {
+            let name = channel(key);
+            match set {
+                C::Name(to) => format!("Saved: {name} is now called #{to}."),
+                C::Topic(_) => format!("Saved {name}'s topic."),
+                C::Overwrites(_) | C::Inherit(_) => format!("Saved {name}'s permissions."),
+                _ => format!("Saved {name}'s settings."),
+            }
+        }
+        Op::SetProject { slug, set } => {
+            let name = project(slug);
+            match set {
+                J::Applications(true) => format!("Saved: {name} takes applications."),
+                J::Applications(false) => format!("Saved: {name} stopped taking applications."),
+                J::Status(st) => format!("Saved: {name} is {} now.", st.as_str()),
+                J::Name(to) => format!("Saved: {name} is now called “{to}”."),
+                _ => format!("Saved {name}."),
+            }
+        }
+        Op::SetBrief { slug, .. } => format!("Saved {}'s post text.", project(slug)),
+        Op::SetPost { channel: c, .. } => format!("Saved the post in {}.", channel(c)),
+        Op::AddRole { role } => format!("Saved: added the role {}.", role.name),
+        Op::RemoveRole { key } => format!("Saved: removed the role {}.", role(key)),
+        Op::RemoveChannel { key } => format!("Saved: removed {}.", channel(key)),
+        Op::AddPosition { position } => format!("Saved: added the position {}.", role(&position.role)),
+        _ => return None,
+    })
 }
 
 /// After a config edit: what's next.
@@ -425,9 +494,20 @@ macro_rules! spawned {
 }
 pub(crate) use spawned;
 
-/// `ts` (seconds) as "2026-11-04 13:05 UTC".
+/// The config's time zone, which pages show times in (UTC until it's read).
+static ZONE: std::sync::RwLock<String> = std::sync::RwLock::new(String::new());
+
+/// Show times in `tz` from now on: the config's `timezone`.
+pub(crate) fn set_zone(tz: &str) {
+    let mut z = ZONE.write().unwrap_or_else(|e| e.into_inner());
+    if *z != tz {
+        tz.clone_into(&mut z);
+    }
+}
+
+/// `ts` (seconds) as "2026-11-04 13:05 UK time", in the config's time zone.
 pub(crate) fn when(ts: i64) -> String {
-    format!("{} UTC", chipsoc_model::utc_minute(ts))
+    chipsoc_config::bot::local_minute(&ZONE.read().unwrap_or_else(|e| e.into_inner()), ts)
 }
 
 /// A role or channel key from what someone typed: given, else made from the name.
@@ -528,10 +608,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn flashes_say_what_changed_by_name() {
+        use chipsoc_config::ops::PositionField;
+        let mut cfg = Config::default();
+        cfg.bot.positions.push(chipsoc_config::bot::Position {
+            role: "treasurer".into(),
+            label: Some("Treasurer".into()),
+            ..Default::default()
+        });
+        let close = Op::SetPosition { role: "treasurer".into(), set: PositionField::Open(false) };
+        assert_eq!(saved(&cfg, &close).unwrap(), "Saved: Treasurer stopped taking applications.");
+        let brief = Op::SetBrief { slug: "golem".into(), body: String::new() };
+        assert_eq!(saved(&cfg, &brief).unwrap(), "Saved golem's post text.", "a slug when there's no such project");
+        let change = Change { summary: "2 changes: …".into(), files: vec!["bot.toml".into()], warnings: Vec::new() };
+        assert_eq!(said(Some(&cfg), &[close.clone(), close], &change), "Saved: 2 changes: ….");
+    }
+
+    #[test]
     fn dates_and_ids_read_right() {
-        assert_eq!(when(0), "1970-01-01 00:00 UTC");
-        assert_eq!(when(1_793_793_900), "2026-11-04 12:05 UTC");
-        assert_eq!(when(951_782_400), "2000-02-29 00:00 UTC");
+        // `when` itself uses whichever config a test last read: the zone is tested in config.
+        let utc = |ts| chipsoc_config::bot::local_minute("UTC", ts);
+        assert_eq!(utc(0), "1970-01-01 00:00 UTC");
+        assert_eq!(utc(951_782_400), "2000-02-29 00:00 UTC");
         assert_eq!(user_id("<@123>").map(|s| s.0), Some(123));
         assert!(user_id("ada").is_none() && user_id("").is_none());
         assert_eq!(split_list("a, b\nc,,"), ["a", "b", "c"]);

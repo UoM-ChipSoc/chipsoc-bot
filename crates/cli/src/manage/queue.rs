@@ -52,7 +52,7 @@ pub async fn queue<R: Rest + Clone>(c: &Ctx<'_, R>, cmd: QueueCmd) -> Result<()>
             for a in &q {
                 let lead = if a.as_lead { " · would like to lead" } else { "" };
                 let kind = AppKind::label_of(&a.kind);
-                println!("#{:<5} {kind:<20} {:<24} user {} · {}{lead}", a.id, a.what, a.user, when(a.created_at));
+                println!("#{:<5} {kind:<20} {:<24} from {} · {}{lead}", a.id, a.what, from(a), when(a.created_at));
             }
             if !q.is_empty() {
                 println!("\n`{BIN} queue show <id>` for the answers; then `queue accept <id>` or `queue reject <id>`.");
@@ -66,7 +66,7 @@ pub async fn queue<R: Rest + Clone>(c: &Ctx<'_, R>, cmd: QueueCmd) -> Result<()>
                 return print_json(a);
             }
             let kind = AppKind::label_of(&a.kind);
-            println!("#{} {kind}: {} from user {} ({})", a.id, a.what, a.user, when(a.created_at));
+            println!("#{} {kind}: {} from {} ({})", a.id, a.what, from(a), when(a.created_at));
             for ans in &a.answers {
                 println!("\n{}\n{}", ans.question, indent(if ans.answer.is_empty() { "(blank)" } else { &ans.answer }));
             }
@@ -111,13 +111,19 @@ pub async fn queue<R: Rest + Clone>(c: &Ctx<'_, R>, cmd: QueueCmd) -> Result<()>
                 println!("No decisions yet.");
             }
             for p in &h {
-                let by = p.reviewed_by.as_deref().map(|b| format!(" by {b}")).unwrap_or_default();
+                let by = p.by.as_deref().or(p.reviewed_by.as_deref()).map(|b| format!(" by {b}")).unwrap_or_default();
                 let at = p.reviewed_at.map(|t| format!(" on {}", when(t))).unwrap_or_default();
                 let why = p.reason.as_deref().map(|r| format!(" ({r})")).unwrap_or_default();
                 let kind = AppKind::label_of(&p.kind);
-                println!("#{:<5} {kind:<20} {:<24} user {} {}{by}{at}{why}", p.id, p.what, p.user, p.status);
+                let from = if p.from.is_empty() { &p.user } else { &p.from };
+                println!("#{:<5} {kind:<20} {:<24} from {from}: {}{by}{at}{why}", p.id, p.what, p.status);
             }
             Ok(())
         }
     }
+}
+
+/// Who sent it, by name (their id if the server didn't say).
+fn from(a: &chipsoc_admin::Pending) -> &str {
+    if a.from.is_empty() { &a.user } else { &a.from }
 }

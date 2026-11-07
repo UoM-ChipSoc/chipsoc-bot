@@ -34,6 +34,8 @@ pub enum Then {
     Appoint,
     AddFeed,
     AddResource,
+    /// Close this idea's post, with the reason given.
+    CloseIdea(Snowflake),
 }
 
 impl Then {
@@ -57,6 +59,7 @@ impl Then {
             Self::Appoint => "appoint",
             Self::AddFeed => "follow",
             Self::AddResource => "share",
+            Self::CloseIdea(_) => "close idea",
         }
     }
 }
@@ -199,6 +202,7 @@ impl App {
             Tab::Resources if self.resources.get().is_some() => {
                 v.extend(self.resources_on().then_some(NEW_RESOURCE));
                 v.extend(matches!(self.shared(), Some(Shared::Resource(_))).then_some(ARCHIVE_POST));
+                v.extend(self.open_idea().is_some().then_some(CLOSE_IDEA));
             }
             _ => {}
         }
@@ -499,13 +503,13 @@ impl App {
                 .map(|r| (r.key.clone(), r.name.clone()))
                 .collect();
             if roles.is_empty() {
-                self.error("Every role already has a position; add a role first (tab 2).");
+                self.error("Every role already has a position; add a role first (tab 9).");
                 return None;
             }
             let fields = vec![
                 Input::choice(Key::Role, roles, ""),
                 Input::text(Key::Label, "").hint("Shown in /volunteer; blank uses the role's name"),
-                Input::toggle(Key::AdminPosition, false).hint(ADMIN_HINT),
+                Input::toggle(Key::AdminPosition, false).labelled(self.admin_label()).hint(ADMIN_HINT),
             ];
             return self.form("New position", fields, Then::NewPosition);
         }
@@ -516,7 +520,7 @@ impl App {
                 let fields = vec![
                     Input::text(Key::Label, p.label.clone().unwrap_or_default())
                         .hint("Shown in /volunteer; blank uses the role's name"),
-                    Input::toggle(Key::AdminPosition, p.admin).hint(ADMIN_HINT),
+                    Input::toggle(Key::AdminPosition, p.admin).labelled(self.admin_label()).hint(ADMIN_HINT),
                     Input::toggle(Key::TakingApplications, p.open),
                 ];
                 let name = self.position_name(&p);
@@ -636,7 +640,8 @@ impl App {
         match act {
             Act::TogglePause => Some(self.start(Job::Admin(Admin::PauseFeed(f.id, !f.paused)))),
             Act::Remove => {
-                let lines = vec![format!("Stop following {}?", f.url), "Its past posts stay.".into()];
+                let lines =
+                    vec![format!("Stop following {}?", chipsoc_admin::feeds::shown(&f)), "Its past posts stay.".into()];
                 self.confirm("Remove feed?", lines, Job::Admin(Admin::RemoveFeed(f.id)));
                 None
             }
@@ -661,8 +666,22 @@ impl App {
                 self.confirm("Archive post?", lines, Job::Admin(Admin::ArchiveResource(post.id)));
                 None
             }
+            (Act::Remove, Some(Shared::Idea(_))) => {
+                let post = self.open_idea()?;
+                let field = Input::text(Key::Reason, "")
+                    .labelled("Reason (optional, posted on the idea)")
+                    .hint("It's locked and stays readable; it's never deleted");
+                self.form(format!("Close \"{}\"", post.title), vec![field], Then::CloseIdea(post.id))
+            }
             _ => None,
         }
+    }
+
+    /// The idea selected, if it's still open.
+    fn open_idea(&self) -> Option<chipsoc_admin::Post> {
+        let Some(Shared::Idea(i)) = self.shared() else { return None };
+        let ideas = self.resources.get()?.1.as_ref().ok()?;
+        ideas.get(i).filter(|p| !p.locked).cloned()
     }
 
     // ---- saving ----
@@ -701,6 +720,15 @@ impl App {
         let project = project.map_or(slug.clone(), |p| p.name.clone());
         let lines = vec![format!("Take {name} off {project}'s leads? They lose the Lead role straight away.")];
         self.confirm("Remove lead?", lines, Job::Admin(Admin::RemoveLead(slug, user)));
+    }
+
+    /// The admin-position toggle, by the admin role's name: "Also gives Committee".
+    fn admin_label(&self) -> String {
+        let s = self.schema.as_ref();
+        match s.and_then(|s| Some((s, s.bot.admin_role.as_deref()?))) {
+            Some((s, k)) => format!("Also gives {}", lists::role_name(s, k)),
+            None => Key::AdminPosition.label().to_owned(),
+        }
     }
 
     fn position_name(&self, p: &Position) -> String {
@@ -831,6 +859,7 @@ impl App {
             Then::Reject(id) => {
                 Ok(Some(Job::Admin(Admin::Decide { id: *id, accept: false, reason: f.opt(Key::Reason) })))
             }
+            Then::CloseIdea(post) => Ok(Some(Job::Admin(Admin::CloseIdea(*post, f.opt(Key::Reason))))),
             Then::Appoint => {
                 let role = f.picked(Key::PositionOrRole);
                 Ok(Some(Job::Admin(Admin::Appoint(role, user_id(&f.text(Key::UserId))?))))

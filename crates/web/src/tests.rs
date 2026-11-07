@@ -454,7 +454,7 @@ async fn discord_sign_in_refuses_people_who_do_not_run_the_server() {
         let mut b = Browser::discord();
         let page = b.sign_in_with_discord(code).await;
         assert_eq!(page.status, StatusCode::FORBIDDEN, "{code}");
-        assert!(page.body.contains("Only the committee") && page.body.contains("another account"), "{}", page.body);
+        assert!(page.body.contains("Only members of") && page.body.contains("another account"), "{}", page.body);
         assert!(!b.cookies.contains_key("session"), "{code} got no session");
         assert_eq!(b.get("/").await.location.as_deref(), Some("/login"));
     }
@@ -1068,7 +1068,7 @@ async fn roles_are_edited_through_ops_with_a_flash_once() {
     assert_eq!(added.location.as_deref(), Some("/roles"));
     let page = b.follow(added).await;
     assert!(
-        page.body.contains("class=\"note good flash\"") && page.body.contains("Add role Mods (mods)"),
+        page.body.contains("class=\"note good flash\"") && page.body.contains("Saved: added the role Mods."),
         "{}",
         page.body
     );
@@ -1344,6 +1344,39 @@ async fn resources_are_shared_and_taken_down_only_when_confirmed() {
     b.submit("/resources/archive", &[("id", &id), ("confirm", "yes")]).await;
     assert!(locked(&b));
     assert!(b.get("/resources").await.body.contains("The ideas forum is off"));
+}
+
+#[tokio::test]
+async fn an_idea_is_closed_from_the_web_with_a_reason() {
+    let mut b = ada().await;
+    let p = b.dir.path();
+    write(p, "bot.toml", "name = \"Test\"\nadmin_role = \"admin\"\n[ideas]\nforum = \"projects\"\n");
+    write(
+        p,
+        "lock.toml",
+        &format!("guild = \"1000\"\n[roles]\nadmin = \"{ADMIN_ROLE}\"\n[channels]\nprojects = \"1700\"\n"),
+    );
+    b.discord.state.lock().unwrap().channels.push(json!({ "id": "1700", "type": 15, "name": "projects" }));
+    let body = json!({ "name": "A tiny GPU", "message": { "content": "Let's build one." } });
+    let idea = b.discord.call(chipsoc_discord::Method::Post, "channels/1700/threads", Some(body)).await.unwrap();
+    let id = idea["id"].as_str().unwrap().to_owned();
+
+    let page = b.get("/resources").await;
+    assert!(page.body.contains("A tiny GPU") && page.body.contains("Yes, close this idea"), "{}", page.body);
+    assert!(page.body.contains("Reason (optional, posted on the idea)"), "{}", page.body);
+    let closed =
+        b.submit("/resources/close-idea", &[("id", &id), ("confirm", "yes"), ("reason", "Merged into Golem")]).await;
+    let page = b.follow(closed).await;
+    assert!(page.body.contains("Closed A tiny GPU: locked and archived; still readable."), "{}", page.body);
+    assert!(!page.body.contains("Yes, close this idea"), "a closed idea isn't offered again");
+    let st = b.discord.state.lock().unwrap();
+    let thread = st.channels.iter().find(|c| c["id"] == id).unwrap();
+    assert_eq!(thread["thread_metadata"]["locked"], true);
+    assert!(
+        st.messages
+            .iter()
+            .any(|m| m["channel_id"] == id && m["content"].as_str().unwrap().contains("Merged into Golem"))
+    );
 }
 
 /// A tiny router with just the theme parts.

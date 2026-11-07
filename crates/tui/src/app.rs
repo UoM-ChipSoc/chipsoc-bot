@@ -31,16 +31,17 @@ pub enum Tab {
 }
 
 impl Tab {
+    /// As the web dashboard orders its pages: the usual jobs first, the server's setup last.
     pub const ALL: [Self; 10] = [
         Self::Overview,
-        Self::Roles,
-        Self::Channels,
-        Self::Projects,
-        Self::Positions,
         Self::Queue,
         Self::Members,
+        Self::Projects,
+        Self::Positions,
         Self::Feeds,
         Self::Resources,
+        Self::Channels,
+        Self::Roles,
         Self::Changes,
     ];
 

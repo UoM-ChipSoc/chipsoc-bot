@@ -236,8 +236,8 @@ fn render(s: &Session, cfg: &Schema, lock: &Lock, sh: &Shown) -> Html<String> {
     let o = cfg.onboarding.clone().unwrap_or_default();
     let n = o.prompts.len();
     let syntax = format!(
-        "Markdown the bot keeps posted in a channel, edited in place. `{{#key}}` and `{{@key}}` become mentions; \
-         a line `{{button:action|Label}}` adds a button (actions: {}).",
+        "Markdown. `{{#key}}` and `{{@key}}` become mentions of that channel or role; a line \
+         `{{button:action|Label}}` adds a button (actions: {}).",
         cfg.choices.button_actions.join(", ")
     );
     let without: Vec<(String, String)> = std::iter::once((String::new(), "Pick a channel".to_owned()))
@@ -274,7 +274,11 @@ fn render(s: &Session, cfg: &Schema, lock: &Lock, sh: &Shown) -> Html<String> {
             }
             {add_prompt(s, cfg, sh)}
             h2 { "Bot posts" }
-            p { class: "hint", {view::plain(&syntax)} }
+            p { class: "hint", "Posts the bot keeps in a channel and edits in place. Use Preview to see them as Discord will." }
+            details { class: "edit",
+                summary { "Formatting help" }
+                p { class: "hint", {view::plain(&syntax)} }
+            }
             if cfg.posts.is_empty() {
                 {empty("No bot posts yet. Start one in a channel below.")}
             }
