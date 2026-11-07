@@ -534,7 +534,7 @@ build_there() {
     on_host "$h" "$run sh -c 'curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs |
       sh -s -- -y -q --profile minimal --default-toolchain stable --no-modify-path'"
   else
-    on_host "$h" "$run $BUILD/cargo/bin/rustup update -q --no-self-update stable >/dev/null 2>&1" ||
+    on_host "$h" "$run $BUILD/cargo/bin/rustup -q update --no-self-update stable >/dev/null 2>&1" ||
       note "couldn't update Rust on $h; building with the one it has"
   fi
   git archive --format=tar "$commit" |
